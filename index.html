@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="data:,">
+<title>Тренажёр переключений</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@600&display=swap">
+</head>
+<body>
+<div class="app" id="app" data-mode="train">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)"/><path d="M16 5v6M16 21v6" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/><path d="M16 21l6-9" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="21" r="2.2" fill="var(--accent-ink)"/><path d="M12.5 11h7" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <b>Тренажёр переключений</b>
+      <span class="beta">демо-бета 0.1</span>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Режим">
+      <button class="tab" role="tab" id="tab-edit" data-mode="edit" aria-selected="false">Редактор</button>
+      <button class="tab" role="tab" id="tab-train" data-mode="train" aria-selected="true">Тренажёр</button>
+      <button class="tab" role="tab" id="tab-3d" data-mode="3d" aria-selected="false">3D и VR</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="tools">
+      <select class="sel" id="schemeSel" aria-label="Схема"></select>
+      <button class="btn" id="btnFile" title="Открыть или сохранить схему">Файл</button>
+      <button class="btn icon-btn" id="btnSound" aria-pressed="true" title="Звук" aria-label="Звук">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2z" fill="currentColor"/><path d="M11 5.5c1 .7 1.5 1.6 1.5 2.5s-.5 1.8-1.5 2.5" stroke="currentColor" fill="none" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </button>
+      <button class="btn icon-btn" id="btnTheme" title="Светлая или тёмная тема" aria-label="Тема">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
+      </button>
+      <button class="btn icon-btn" id="btnHelp" title="Как пользоваться" aria-label="Справка">?</button>
+    </div>
+  </header>
+
+  <main class="work">
+    <aside class="palette" id="palette" aria-label="Элементы"></aside>
+    <section class="stage" id="stage">
+      <svg id="sch" role="application" aria-label="Схема"></svg>
+      <div class="view3d" id="view3d" hidden>
+        <div class="v3-load" id="v3load">Загружаю 3D…</div>
+        <div class="v3-note" id="v3note" hidden></div>
+        <div class="v3-top">
+          <button class="btn" id="btnVR" disabled>Войти в VR</button>
+          <button class="btn" id="btnFull">На весь экран</button>
+          <button class="btn" id="btnCam">Вид сверху</button>
+        </div>
+        <div class="v3-tip" id="v3tip" hidden></div>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="stage-tools" id="zoomTools">
+        <button class="btn icon-btn" id="zOut" aria-label="Отдалить" title="Отдалить">−</button>
+        <button class="btn icon-btn" id="zIn" aria-label="Приблизить" title="Приблизить">+</button>
+        <button class="btn" id="zFit" title="Показать всю схему">Вписать</button>
+      </div>
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+      <div class="flash" id="flash"></div>
+    </section>
+    <aside class="side" id="side" aria-label="Панель"></aside>
+  </main>
+
+  <footer class="status" id="status"></footer>
+</div>
+<div class="modal" id="modal" hidden></div>
+<input type="file" id="fileInput" accept=".json,application/json" hidden>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

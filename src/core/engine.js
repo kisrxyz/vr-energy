@@ -29,7 +29,15 @@ import { TYPES, POS, POS_NAME, ptKey, clamp, portPoints, fmtKv, isSwitchable, wi
    11. Рубильник без дугогасительных камер — как разъединитель; с камерами — отключает ток нагрузки.
    12. Отделитель вручную — как разъединитель; короткозамыкатель на напряжение — искусственное КЗ,
        отключение со стороны питания. TODO преподаватель: автоматика ОД+КЗ не моделируется.
-   Логика — в Trainer.analyze и Trainer.clearFault. */
+   Логика — в Trainer.analyze и Trainer.clearFault.
+
+   ДОПОЛНЕНИЯ (Trainer.use): правила выше не меняют, а добавляют свои — так сделан VR-полигон (src/core/permit.js:
+   СИЗ, плакаты, замок, порядок технических мероприятий). Дополнение — объект с необязательными методами:
+     event(type, data) — события движка, раньше остальных слушателей;
+     guard(el, act) → { text, why } — механическая блокировка: операция не выполняется, попытка — ошибка;
+     done(run) — ещё одно условие выполнения задания; finish(run, completed) — перед оценкой (пропущенное);
+     hint(run) → { step, text } — подсказка вместо эталонных шагов; stepText(st) — текст шагов, которых движок не знает.
+   Ошибка вида 'safety' (охрана труда) стоит в оценке как нарушение порядка. */
 
 // Проводит ли аппарат в состоянии x (тележка — только в рабочем положении)
 function conducts(el, x) {
@@ -165,9 +173,20 @@ class Trainer {
     this.ls = new Set();
     this.opt = { interlocks: true, requireCheck: true };
     this.log = []; this.run = null; this.rec = null;
+    this.addons = [];
   }
   on(fn) { this.ls.add(fn); return () => this.ls.delete(fn); }
-  emit(type, data = {}) { for (const fn of this.ls) { try { fn(type, data); } catch (e) { console.error(e); } } }
+  emit(type, data = {}) {
+    // дополнения узнают о событии первыми: их ошибки должны попасть в задание раньше, чем его покажут
+    for (const a of this.addons) if (a.event) { try { a.event(type, data); } catch (e) { console.error(e); } }
+    for (const fn of this.ls) { try { fn(type, data); } catch (e) { console.error(e); } }
+  }
+  // Подключить дополнение (см. заголовок файла)
+  use(addon) { this.addons.push(addon); if (addon.attach) addon.attach(this); return addon; }
+  addon(name, ...args) {
+    for (const a of this.addons) if (a[name]) { const r = a[name](...args); if (r != null) return r; }
+    return null;
+  }
 
   load(s) {
     this.s = s;
@@ -230,8 +249,9 @@ class Trainer {
   }
   elapsed() { return this.run ? (Date.now() - this.run.t0) / 1000 : 0; }
   needCheck() { return this.run ? !!this.run.task.requireCheck : this.opt.requireCheck; }
-  note(kind, text, id) {
-    if (this.run && !this.run.done) this.run.errors.push({ kind, text, id, t: Math.round(this.elapsed()) });
+  // extra — дополнительные поля ошибки, например why (почему опасно) у ошибок полигона
+  note(kind, text, id, extra) {
+    if (this.run && !this.run.done) this.run.errors.push(Object.assign({ kind, text, id, t: Math.round(this.elapsed()) }, extra || {}));
     if (this.rec) this.rec.errors++;
   }
   record(step) {
@@ -442,6 +462,14 @@ class Trainer {
   operate(id, act) {
     const el = this.elOf(id);
     if (!el || !isSwitchable(el)) return null;
+    // механическая блокировка дополнения (замок на приводе в VR-полигоне) — сильнее любых настроек
+    const g = this.addon('guard', el, act);
+    if (g) {
+      this.addLog('warn', g.text, id);
+      this.note('blocked', g.text, id, g.why ? { why: g.why } : null);
+      this.emit('op', { id, blocked: true, text: g.text });
+      return { blocked: true, text: g.text };
+    }
     const T = TYPES[el.t], cur = this.sim.st[id] || { on: false, trip: false };
     const nxt = Object.assign({}, cur, { trip: false });
     let pos = null;
@@ -616,11 +644,14 @@ class Trainer {
     const r = this.run;
     if (!r || r.done) return;
     const ok = Object.entries(r.task.target).every(([id, on]) => this.isOn(id) === on) &&
-      Object.entries(r.task.targetPos || {}).every(([id, p]) => this.sim.st[id] && this.sim.st[id].pos === p);
+      Object.entries(r.task.targetPos || {}).every(([id, p]) => this.sim.st[id] && this.sim.st[id].pos === p) &&
+      this.addons.every(a => !a.done || a.done(r));
     if (ok && !Object.values(this.sim.src).some(x => x.trip)) this.finish(true);
   }
   finish(completed) {
     const r = this.run;
+    // дополнения дописывают пропущенное, пока задание ещё идёт (note пишет только в идущее задание)
+    for (const a of this.addons) if (a.finish) { try { a.finish(r, completed); } catch (e) { console.error(e); } }
     r.done = true; r.completed = completed; r.t1 = Date.now();
     r.grade = this.grade(r);
     this.addLog(completed ? 'ok' : 'warn', completed ? `Задание выполнено за ${fmtTime(r.grade.secs)}. ${r.grade.verdict}.` : 'Задание завершено без выполнения.');
@@ -628,21 +659,25 @@ class Trainer {
   }
   grade(r) {
     const c = k => r.errors.filter(e => e.kind === k).length;
-    const acc = c('accident') + c('kz'), blk = c('blocked'), sup = c('supply'), prc = c('proc');
+    const acc = c('accident') + c('kz'), blk = c('blocked'), sup = c('supply'), prc = c('proc'), saf = c('safety');
     const refOps = r.task.steps.filter(x => x.op !== 'check').length;
     const myOps = r.ops.filter(x => x.op !== 'check').length;
     const extra = Math.max(0, myOps - refOps);
-    let score = 100 - 40 * acc - 10 * blk - 15 * sup - 10 * prc - 5 * r.hints - 2 * extra;
+    // saf — охрана труда (VR-полигон): СИЗ, плакаты, порядок мероприятий; стоит как нарушение порядка
+    let score = 100 - 40 * acc - 10 * blk - 15 * sup - 10 * prc - 10 * saf - 5 * r.hints - 2 * extra;
     if (!r.completed) score = Math.min(score, 40);
     score = clamp(Math.round(score), 0, 100);
     let verdict, tone;
     if (acc) { verdict = 'Не сдано: допущена авария'; tone = 'bad'; }
     else if (!r.completed) { verdict = 'Не выполнено'; tone = 'bad'; }
-    else if (blk + sup + prc) { verdict = 'Выполнено с ошибками'; tone = 'mid'; }
+    else if (blk + sup + prc + saf) { verdict = 'Выполнено с ошибками'; tone = 'mid'; }
     else { verdict = 'Выполнено без ошибок'; tone = 'good'; }
-    return { score, verdict, tone, acc, blk, sup, prc, extra, refOps, myOps, hints: r.hints, secs: Math.round(((r.t1 || Date.now()) - r.t0) / 1000) };
+    return { score, verdict, tone, acc, blk, sup, prc, saf, extra, refOps, myOps, hints: r.hints, secs: Math.round(((r.t1 || Date.now()) - r.t0) / 1000) };
   }
   stepText(st) {
+    // шаги дополнений (надеть СИЗ, вывесить плакат, запереть привод…)
+    const ad = this.addon('stepText', st);
+    if (ad) return ad;
     const n = this.nm(st.id), el = this.elOf(st.id), T = el ? TYPES[el.t] : {};
     if (st.op === 'pos') return `перевести тележку ${n} в ${POS_NAME[st.pos]} положение`;
     if (st.op === 'check') return el && !el.pseudo ? `проверить отсутствие напряжения у ${n}` : `проверить отсутствие напряжения на проводе ${this.nodeName(this.stepNode(st.id))}`;
@@ -667,6 +702,15 @@ class Trainer {
     return null;
   }
   hint() {
+    // в задании с мероприятиями (VR-полигон) подсказка — следующее мероприятие
+    const ad = this.run && !this.run.done ? this.addon('hint', this.run) : null;
+    if (ad) {
+      this.run.hints++;
+      const text = 'Подсказка: ' + ad.text + '.';
+      this.addLog('info', text, ad.step && ad.step.id);
+      this.emit('hint', { step: ad.step, text });
+      return { step: ad.step, text };
+    }
     const st = this.nextStep();
     if (!st) return null;
     this.run.hints++;

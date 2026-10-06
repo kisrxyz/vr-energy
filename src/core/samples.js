@@ -263,10 +263,94 @@ function sampleSubstation35() {
   return s;
 }
 
+// VR-полигон «Допуск к работе»: ЗРУ-10 кВ, шесть ячеек КРУ в ряд на одной секции шин.
+// Под 3D-помещением — обычная схема, переключения считает тот же движок. s.room — как ячейки стоят в помещении:
+// тележка, ЗН, провода у верхних (шинных) и нижних (линейных) разъёмных контактов. Мероприятия задания — src/core/permit.js.
+// ЗН ячейки стоит в узле нижних контактов (до ТТ): проверка указателем и ПЗ на контактах — тот же участок, что заземляет ЗН.
+function samplePolygon() {
+  const s = emptyScheme('VR-полигон: ЗРУ-10 кВ, допуск к работе');
+  const E = (t, x, y, name, o = {}) => makeEl(s, t, x, y, Object.assign({ name }, o));
+  const W = (a, b, vf) => makeWire(s, a, b, vf);
+  const B = 10;
+  const room = { kind: 'zru', title: 'ЗРУ-10 кВ', cells: [] };
+  // яч.1 — ввод от трансформатора Т1: сверху питание, тележка ввода, снизу шины
+  E('source', 4, 1, 'Т1 10 кВ', { p: { kv: 10 } });                  // (4,2)
+  const in1 = W([4, 2], [4, 3]);
+  const q1 = E('cart', 4, 5, 'В-10 Ввод');                           // (4,3)-(4,7)
+  const up1 = W([4, 7], [4, B]);
+  E('bus', 2, B, '1С-10', { p: { len: 44 } });                       // x 2..46
+  room.cells.push({ n: 1, title: 'Ввод от Т1', kind: 'input', cart: q1.id, earth: null, up: up1.id, lo: in1.id });
+  // Линейная ячейка: шины — тележка — нижние контакты (ЗН) — ТТ — КЛ — потребитель
+  function line(n, x, load, t, kw) {
+    const up = W([x, B], [x, 11]);
+    const q = E('cart', x, 13, `В-10 яч.${n}`);                       // (x,11)-(x,15)
+    const lo = W([x, 15], [x, 16]);
+    const zn = E('earth', x + 2, 17, `ЗН яч.${n}`); W([x, 16], [x + 2, 16], false);
+    E('ct', x, 18, `ТТ яч.${n}`); W([x, 16], [x, 17]);                // (x,17)-(x,19)
+    E('cable', x, 22, `КЛ яч.${n}`, { p: { km: 0.8 } }); W([x, 19], [x, 20]); // (x,20)-(x,24)
+    E(t, x, 26, load, { p: { kw } }); W([x, 24], [x, 25]);            // (x,25)
+    room.cells.push({ n, title: `Л-${n} «${load}»`, kind: 'line', cart: q.id, earth: zn.id, up: up.id, lo: lo.id });
+  }
+  function vtCell(n, x) {
+    const up = W([x, B], [x, 11]);
+    const q = E('cartdisc', x, 13, 'ТН-10 тележка');                  // (x,11)-(x,15)
+    const lo = W([x, 15], [x, 16]);
+    E('fuse', x, 17, 'FU ТН-10');                                      // (x,16)-(x,18)
+    E('vt', x, 20, 'ТН-10'); W([x, 18], [x, 19]);                      // (x,19)
+    room.cells.push({ n, title: 'ТН-10', kind: 'vt', cart: q.id, earth: null, up: up.id, lo: lo.id });
+  }
+  line(2, 12, 'Котельная', 'load', 600);
+  line(3, 20, 'Цех №3', 'load', 900);
+  line(4, 28, 'Насосная', 'motor', 400);
+  vtCell(5, 36);
+  line(6, 44, 'Склад', 'load', 250);
+  s.room = room;
+
+  const id = n => s.els.find(e => e.name === n).id, c3 = room.cells[2], q3 = id('В-10 яч.3'), zn3 = id('ЗН яч.3');
+  const init = {}, initPos = {};
+  for (const e of s.els) { if (isSwitchable(e)) init[e.id] = e.on; if (TYPES[e.t].cart) initPos[e.id] = e.pos; }
+  s.tasks.push({
+    id: newId(s, 'task'), title: 'Подготовка рабочего места для ремонта выключателя ячейки №3',
+    desc: 'Ремонт выключателя В-10 яч.3 (Л-3 «Цех №3»). Выполните технические мероприятия в правильном порядке — руками, предметами со стенда у входа. Цех №3 отключается, остальные потребители не должны терять питание.',
+    init, initPos, target: { [q3]: false }, targetPos: { [q3]: 'repair' },
+    steps: [
+      { op: 'wear', item: 'gloves' }, { op: 'wear', item: 'helmet' },
+      { op: 'off', id: q3 }, { op: 'pos', id: q3, pos: 'repair' },
+      { op: 'hang', poster: 'nevkl', at: 'drive:3' }, { op: 'lock', at: 'drive:3' },
+      { op: 'check', id: c3.lo }, { op: 'on', id: zn3 },
+      { op: 'hang', poster: 'zazem', at: 'drive:3' }, { op: 'hang', poster: 'work', at: 'cart:3' },
+      { op: 'fence', at: 'zone:3' }, { op: 'hang', poster: 'stop', at: 'fence' },
+    ],
+    keep: ['Котельная', 'Насосная', 'Склад'].map(id),
+    // проверку перед заземлением оценивают мероприятия (с объяснением), а не правило движка — чтобы не считать дважды
+    requireCheck: false,
+    workCell: 3,
+    // этапы технических мероприятий: 0 СИЗ, 1 отключения и видимый разрыв, 2 запрещающий плакат и замок,
+    // 3 проверка отсутствия напряжения, 4 заземление, 5 указательные плакаты и ограждение
+    // TODO преподаватель: куда в КРУ вешать «Заземлено» (на привод тележки или у ЗН) и «Стой! Напряжение» (ограждение, шторка шин, соседние ячейки)?
+    measures: [
+      { k: 'ppe', stage: 0 },
+      { k: 'off', stage: 1, id: q3 },
+      { k: 'rack', stage: 1, id: q3, pos: 'repair', title: 'Выкатить тележку В-10 яч.3 в ремонтное положение (видимый разрыв)' },
+      { k: 'sign', stage: 2, poster: 'nevkl', at: ['drive:3', 'door:3'] },
+      { k: 'lock', stage: 2, at: ['drive:3'] },
+      { k: 'check', stage: 3, wire: c3.lo },
+      { k: 'earth', stage: 4, id: zn3, wire: c3.lo },
+      { k: 'sign', stage: 5, poster: 'zazem', at: ['drive:3', 'earth:3'] },
+      { k: 'sign', stage: 5, poster: 'work', at: ['cart:3'], title: 'Вывесить «Работать здесь» на выкаченную тележку яч.3' },
+      { k: 'fence', stage: 5, at: ['zone:3'] },
+      { k: 'sign', stage: 5, poster: 'stop', at: ['fence', 'shutter:3', 'door:2', 'door:4'], title: 'Вывесить «Стой! Напряжение» на ограждение или шторку шин яч.3' },
+    ],
+  });
+  return s;
+}
+
 const SAMPLES = [
   { key: 'ps110', title: 'ПС 110/10 кВ «Учебная»', make: sampleSubstation },
   { key: 'tp10', title: 'ТП 10/0,4 кВ «Цех»', make: sampleTP },
   { key: 'ps35', title: 'ПС 110/35/10 кВ «Степная»', make: sampleSubstation35 },
+  // отдельный пункт в выборе схем: в 3D — помещение ЗРУ с предметами в руках
+  { key: 'poly', title: 'VR-полигон: допуск к работе', make: samplePolygon, poly: true },
 ];
 
-export { defTask, sampleSubstation, sampleTP, sampleSubstation35, SAMPLES };
+export { defTask, sampleSubstation, sampleTP, sampleSubstation35, samplePolygon, SAMPLES };

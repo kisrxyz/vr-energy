@@ -1,10 +1,15 @@
-import { rot, clamp, bbox, vClass, wireRoute } from '../core/elements.js';
+import { TYPES, clamp, bbox, vClass, wireRoute, isPzId } from '../core/elements.js';
 import { fmtTime } from '../core/engine.js';
 import { Sound } from '../ui/sound.js';
+import { MODELS, S3, H3, makeKit } from './models/index.js';
+import { wireMid } from '../view2d/scheme2d.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
-   (1 клетка = 1,25 м), провода висят на высоте 3,4 м. Модели собраны из кубов и цилиндров.
+   (1 клетка = 1,25 м), провода висят на высоте 3,4 м. Модели собраны из кубов и цилиндров,
+   каждый тип — свой построитель в ./models/<тип>.js (интерфейс описан в models/index.js).
+   Бюджет для шлема: ≤ ~200 вызовов отрисовки на кадр. Поэтому неподвижные детали сливаются по материалам,
+   все подписи — одна сетка, все сигнальные лампы — одна InstancedMesh.
    Управление: мышь (вращать, сдвигать, щелчок по аппарату) и WebXR (луч контроллера, курок, стики). */
 let THREE = null;
 // three.js подгружается отдельным куском только при входе в 3D
@@ -12,8 +17,7 @@ async function loadThree() {
   if (!THREE) THREE = await import('three');
   return THREE;
 }
-const S3 = 1.25, H3 = 3.4;
-const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C };
+const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d };
 function rr(x, X, Y, W, H, R) {
   x.beginPath();
   x.moveTo(X + R, Y); x.lineTo(X + W - R, Y); x.quadraticCurveTo(X + W, Y, X + W, Y + R);
@@ -75,8 +79,8 @@ class View3D {
     this.ray = new T.Raycaster();
     this.clock = new T.Clock();
     this.tmp = { m: new T.Matrix4(), v: new T.Vector3(), v2: new T.Vector3(), dir: new T.Vector3(), up: new T.Vector3(0, 1, 0) };
+    this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 12, 8) };
     this.makeMats();
-    this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48) };
     this.ring = new T.Mesh(this.geo.ring, new T.MeshBasicMaterial({ color: 0xffd23f }));
     this.ring.rotation.x = -Math.PI / 2; this.ring.visible = false;
     sc.add(this.ring);
@@ -97,7 +101,12 @@ class View3D {
       wall: M(0xd9cfbd), roof: M(0x5b4a3c), motor: M(0x3f6f9e, { metalness: 0.35 }), pump: M(0x6f7d84, { metalness: 0.4 }),
       stripe: M(0xffd200, { emissive: 0x332a00 }), fan: M(0x2f3437), qf: M(0xe8e9e4), ground: M(0x7f8c66, { roughness: 1 }),
       yard: M(0xffffff, { roughness: 1 }), post: M(0x7d8285), ctrl: M(0x202428),
+      kru: M(0xd4d8d2, { metalness: 0.2, roughness: 0.6 }), cap: M(0xb9bfc4, { metalness: 0.4, roughness: 0.45 }),
+      coil: M(0x6b5a4a, { roughness: 0.8 }), pzCable: M(0xd8c25a, { roughness: 0.6 }),
     };
+    this.kit = makeKit(THREE, this.M, this.geoCache, n => this.nodeMat(n));
+    this.kit.sphere = this.geo.sphere;
+    this.kit.winTex = () => this.winTex();
   }
   boxGeo(w, h, d) { const k = `b${w}|${h}|${d}`; if (!this.geoCache.has(k)) this.geoCache.set(k, new THREE.BoxGeometry(w, h, d)); return this.geoCache.get(k); }
   cylGeo(r, h) { const k = `c${r}|${h}`; if (!this.geoCache.has(k)) this.geoCache.set(k, new THREE.CylinderGeometry(r, r, h, 14)); return this.geoCache.get(k); }
@@ -121,7 +130,6 @@ class View3D {
     if (!this.nodeMats.has(n)) this.nodeMats.set(n, new THREE.MeshStandardMaterial({ color: COL3.dead, roughness: 0.4, metalness: 0.3, emissive: 0x000000 }));
     return this.nodeMats.get(n);
   }
-  stateMat() { return new THREE.MeshStandardMaterial({ color: COL3.on, emissive: COL3.on, emissiveIntensity: 0.85, roughness: 0.4 }); }
   labelSprite(text, bg = 'rgba(14,20,18,0.82)', h = 0.36) {
     const T = THREE, c = document.createElement('canvas'), x = c.getContext('2d');
     const font = '600 40px "JetBrains Mono", ui-monospace, monospace';
@@ -156,11 +164,13 @@ class View3D {
     const T = THREE, app = this.app, s = app.scheme, topo = app.tr.topo;
     for (const ch of [...this.root.children]) this.root.remove(ch);
     this.dev.clear(); this.nodeMats.clear(); this.pickables = []; this.hover = null; this.ring.visible = false;
+    this.pzDev = new Map(); this.closeMenu3D();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const el of s.els) { const b = bbox(el); x0 = Math.min(x0, b[0]); y0 = Math.min(y0, b[1]); x1 = Math.max(x1, b[2]); y1 = Math.max(y1, b[3]); }
     if (!isFinite(x0)) { x0 = -6; y0 = -6; x1 = 6; y1 = 6; }
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
     const W = p => new T.Vector3((p[0] - cx) * S3, 0, (p[1] - cy) * S3);
+    this.toWorld = W;
     const hx = (x1 - x0) / 2 * S3 + 7, hz = (y1 - y0) / 2 * S3 + 7;
     this.bounds = { hx, hz };
     const ground = new T.Mesh(new T.PlaneGeometry(700, 700), this.M.ground);
@@ -180,14 +190,19 @@ class View3D {
     yard.rotation.x = -Math.PI / 2; yard.position.y = 0.01; yard.userData.ground = true;
     this.root.add(yard); this.pickables.push(yard);
     this.buildFence(hx, hz);
+    // Провода: видимые трубы (сливаются по узлам) и невидимые коробки для луча — на провод накладывают ПЗ и ставят указатель
+    const pmat = new T.MeshBasicMaterial({ color: 0xffffff });
     for (const w of s.wires) {
       const pts = wireRoute(w).map(p => { const v = W(p); v.y = H3; return v; });
       const mat = this.nodeMat(topo.wireNode.get(w.id));
       for (let i = 0; i < pts.length - 1; i++) {
         if (pts[i].distanceTo(pts[i + 1]) < 1e-6) continue;
         const m = this.tube(pts[i].toArray(), pts[i + 1].toArray(), 0.045, mat);
-        m.userData.wire = w.id;
         this.root.add(m);
+        const a = pts[i], b = pts[i + 1], px = new T.Mesh(this.boxGeo(Math.abs(b.x - a.x) + 0.35, 0.35, Math.abs(b.z - a.z) + 0.35), pmat);
+        px.position.set((a.x + b.x) / 2, H3, (a.z + b.z) / 2);
+        px.visible = false; px.userData.wire = w.id; px.userData.proxy = true;
+        this.root.add(px); this.pickables.push(px);
       }
     }
     for (const el of s.els) {
@@ -200,7 +215,10 @@ class View3D {
     this.start = new T.Vector3(0, 0, hz + 1.5);
     this.makeBoard();
     this.makeProxies();
+    this.compactParts();
     this.mergeStatic();
+    this.makeLamps();
+    this.makeLabels();
     this.builtFor = app.schemeVersion;
     this.builtTopo = topo;
     this.resetCamera();
@@ -231,12 +249,12 @@ class View3D {
   }
 
   // Невидимые коробки вокруг аппаратов: по ним считается щелчок и луч контроллера
-  makeProxies() {
+  makeProxies(only) {
     const T = THREE;
     this.root.updateMatrixWorld(true);
-    const mat = new T.MeshBasicMaterial({ color: 0xffffff });
-    const b = new T.Box3(), size = new T.Vector3(), c = new T.Vector3();
-    for (const [id, d] of this.dev) {
+    const mat = this._proxyMat || (this._proxyMat = new T.MeshBasicMaterial({ color: 0xffffff }));
+    const b = new T.Box3(), size = new T.Vector3(), c = new T.Vector3(), out = [];
+    for (const [id, d] of only || this.dev) {
       b.makeEmpty();
       for (const ch of d.group.children) if (!(d.far && d.far.includes(ch))) b.expandByObject(ch);
       if (b.isEmpty()) continue;
@@ -245,13 +263,49 @@ class View3D {
       m.position.copy(c); m.visible = false; m.userData.dev = id; m.userData.proxy = true;
       this.root.add(m);
       this.pickables.push(m);
+      out.push(m);
     }
+    return out;
+  }
+  // Подвижная часть из нескольких фигур (тележка, ротор, ПЗ) сливается по материалам в своей системе координат
+  compactParts() {
+    for (const d of this.dev.values()) {
+      const parts = ['pivot', 'lever', 'slide', 'show', 'mark'].map(k => d[k]).filter(Boolean).concat(d.spin || []);
+      for (const g of parts) this.mergeInto(g);
+    }
+  }
+  mergeInto(g) {
+    const T = THREE, buckets = new Map();
+    g.updateMatrixWorld(true);
+    const inv = new T.Matrix4().copy(g.matrixWorld).invert(), m4 = new T.Matrix4();
+    g.traverse(o => { if (o.isMesh && o !== g) { let l = buckets.get(o.material); if (!l) buckets.set(o.material, l = []); l.push(o); } });
+    for (const [mat, list] of buckets) {
+      if (list.length < 2) continue;
+      const geo = this.joinGeos(list.map(m => { const q = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); q.applyMatrix4(m4.multiplyMatrices(inv, m.matrixWorld)); return q; }));
+      for (const m of list) m.parent.remove(m);
+      g.add(new T.Mesh(geo, mat));
+    }
+  }
+  joinGeos(parts) {
+    const T = THREE, out = new T.BufferGeometry();
+    for (const nm of ['position', 'normal', 'uv']) {
+      if (!parts.every(q => q.attributes[nm])) continue;
+      let len = 0;
+      for (const q of parts) len += q.attributes[nm].array.length;
+      const arr = new Float32Array(len);
+      let off = 0;
+      for (const q of parts) { arr.set(q.attributes[nm].array, off); off += q.attributes[nm].array.length; }
+      out.setAttribute(nm, new T.BufferAttribute(arr, parts[0].attributes[nm].itemSize));
+    }
+    parts.forEach(q => q.dispose());
+    out.computeBoundingSphere();
+    return out;
   }
   // Неподвижные детали с одинаковым материалом сливаются в одну сетку: меньше вызовов отрисовки в шлеме
   mergeStatic() {
     const T = THREE, dyn = new Set();
     for (const d of this.dev.values()) {
-      for (const k of ['pivot', 'lever', 'lamp', 'knob', 'flag', 'ind', 'beacon']) if (d[k]) d[k].traverse(o => dyn.add(o));
+      for (const k of ['pivot', 'lever', 'slide', 'show', 'mark', 'beacon']) if (d[k]) d[k].traverse(o => dyn.add(o));
       if (d.spin) for (const sp of d.spin) sp.traverse(o => dyn.add(o));
     }
     const buckets = new Map();
@@ -265,174 +319,148 @@ class View3D {
     });
     for (const [mat, list] of buckets) {
       if (list.length < 2) continue;
-      const parts = list.map(m => { const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); g.applyMatrix4(m.matrixWorld); return g; });
-      const out = new T.BufferGeometry();
-      for (const nm of ['position', 'normal', 'uv']) {
-        if (!parts.every(g => g.attributes[nm])) continue;
-        let len = 0;
-        for (const g of parts) len += g.attributes[nm].array.length;
-        const arr = new Float32Array(len);
-        let off = 0;
-        for (const g of parts) { arr.set(g.attributes[nm].array, off); off += g.attributes[nm].array.length; }
-        out.setAttribute(nm, new T.BufferAttribute(arr, parts[0].attributes[nm].itemSize));
-      }
-      parts.forEach(g => g.dispose());
-      out.computeBoundingSphere();
+      const out = this.joinGeos(list.map(m => { const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); g.applyMatrix4(m.matrixWorld); return g; }));
       this.root.add(new T.Mesh(out, mat));
       for (const m of list) m.parent.remove(m);
     }
   }
+  // Все сигнальные лампы схемы — одна InstancedMesh с цветом на каждую лампу
+  makeLamps() {
+    const T = THREE, list = [];
+    this.root.updateMatrixWorld(true);
+    for (const d of this.dev.values()) for (const l of d.lamps || []) list.push({ d, l });
+    this.lampList = list; this.lampMesh = null;
+    if (!list.length) return;
+    const im = new T.InstancedMesh(this.geo.lamp, new T.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), list.length);
+    const m4 = new T.Matrix4(), v = new T.Vector3(), q = new T.Quaternion(), sc = new T.Vector3();
+    list.forEach(({ d, l }, i) => {
+      v.set(l.p[0], l.p[1], l.p[2]).applyMatrix4(d.group.matrixWorld);
+      m4.compose(v, q, sc.setScalar(l.s));
+      im.setMatrixAt(i, m4);
+      im.setColorAt(i, new T.Color(COL3.lampDark));
+      l.i = i;
+    });
+    im.frustumCulled = false;
+    this.root.add(im);
+    this.lampMesh = im;
+  }
+  setLamps(blink) {
+    const im = this.lampMesh;
+    if (!im) return;
+    const c = this._lampColor || (this._lampColor = new THREE.Color());
+    for (const { d, l } of this.lampList) {
+      let hex = d.lampState === 'blown' ? COL3.blown : d.lampState === 'on' ? COL3.on : d.lampState === 'off' ? COL3.off : COL3.lampDark;
+      if (d.trip && !blink) hex = COL3.lampDark;
+      im.setColorAt(l.i, c.setHex(hex));
+    }
+    im.instanceColor.needsUpdate = true;
+  }
+  // Все подписи — одна сетка: текстуры подписей в одном атласе, квадраты всегда смотрят на камеру
+  makeLabels() {
+    const T = THREE, list = [];
+    for (const d of this.dev.values()) if (d.labelPos) list.push(d);
+    this.labelMesh = null;
+    if (!list.length) return;
+    const font = '600 40px "JetBrains Mono", ui-monospace, monospace', LH = 60, AW = 2048;
+    const c = document.createElement('canvas'), x = c.getContext('2d');
+    x.font = font;
+    let cx = 0, cy = 0;
+    const boxes = list.map(d => {
+      const w = Math.min(AW, Math.ceil(x.measureText(d.el.name).width) + 32);
+      if (cx + w > AW) { cx = 0; cy += LH; }
+      const b = { x: cx, y: cy, w };
+      cx += w + 2;
+      return b;
+    });
+    c.width = AW; c.height = cy + LH;
+    x.font = font; x.textBaseline = 'middle';
+    list.forEach((d, i) => {
+      const b = boxes[i];
+      x.fillStyle = 'rgba(14,20,18,0.82)'; rr(x, b.x, b.y, b.w, LH, 12); x.fill();
+      x.fillStyle = '#ffffff'; x.fillText(d.el.name, b.x + 16, b.y + 32);
+    });
+    const tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 4;
+    const n = list.length, center = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), idx = [];
+    const v = new T.Vector3(), h = 0.36;
+    this.root.updateMatrixWorld(true);
+    list.forEach((d, i) => {
+      const b = boxes[i], w = h * b.w / LH;
+      v.set(d.labelPos[0], d.labelPos[1], d.labelPos[2]).applyMatrix4(d.group.matrixWorld);
+      const u0 = b.x / AW, u1 = (b.x + b.w) / AW, v1 = 1 - b.y / c.height, v0 = 1 - (b.y + LH) / c.height;
+      const cs = [[-w / 2, -h / 2, u0, v0], [w / 2, -h / 2, u1, v0], [w / 2, h / 2, u1, v1], [-w / 2, h / 2, u0, v1]];
+      cs.forEach(([ox, oy, uu, vv], j) => {
+        center.set([v.x, v.y, v.z], (i * 4 + j) * 3);
+        corner.set([ox, oy], (i * 4 + j) * 2);
+        uv.set([uu, vv], (i * 4 + j) * 2);
+      });
+      idx.push(i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3);
+    });
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(center, 3));
+    geo.setAttribute('corner', new T.BufferAttribute(corner, 2));
+    geo.setAttribute('uv', new T.BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeBoundingSphere();
+    const mat = new T.ShaderMaterial({
+      uniforms: { map: { value: tex }, far: { value: 0 } },
+      vertexShader: `attribute vec2 corner; varying vec2 vUv; uniform float far;
+        void main() { vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); mv.xy += corner;
+          gl_Position = projectionMatrix * mv; if (far > 0.0 && -mv.z > far) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }`,
+      fragmentShader: `uniform sampler2D map; varying vec2 vUv;
+        void main() { vec4 c = texture2D(map, vUv); if (c.a < 0.02) discard; gl_FragColor = c;
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false,
+    });
+    const mesh = new T.Mesh(geo, mat);
+    mesh.renderOrder = 2; mesh.frustumCulled = false; mesh.userData.board = true; mesh.raycast = () => {};
+    this.root.add(mesh);
+    this.labelMesh = mesh;
+  }
 
   // ---------- модели ----------
   model(el, topo) {
-    const T = THREE, M = this.M, tm = topo.term.get(el.id), g = new T.Group();
-    const nm = i => this.nodeMat(tm[i] != null ? tm[i] : tm[0]);
-    const d = { el, group: g, kind: el.t, trip: false };
-    let ly = H3 + 1.0, lz = 0, lx = 0;
-    switch (el.t) {
-      case 'breaker': {
-        g.add(this.box(0.4, 1.95, 0.4, M.galv, 0, 0.975, 0));
-        g.add(this.cyl(0.34, 2 * S3 + 0.4, M.tank, 0, 2.3, 0, 'z'));
-        for (const [i, z] of [[0, -S3], [1, S3]]) { g.add(this.cyl(0.1, H3 - 2.55, M.porcelain, 0, (2.55 + H3) / 2, z)); g.add(this.cyl(0.07, 0.14, nm(i), 0, H3, z)); }
-        g.add(this.box(0.7, 1.3, 0.5, M.cabinet, 1.05, 0.65, 0));
-        d.lamp = new T.Mesh(this.geo.sphere, this.stateMat()); d.lamp.scale.setScalar(0.12); d.lamp.position.set(1.05, 1.44, 0); g.add(d.lamp);
-        d.lever = new T.Group(); d.lever.position.set(1.42, 0.8, 0); d.lever.add(this.box(0.06, 0.38, 0.06, M.handle, 0, 0.19, 0)); g.add(d.lever);
-        ly = H3 + 0.9;
-        break;
-      }
-      case 'acb': {
-        g.add(this.box(0.16, H3 + 0.35, 0.16, M.galv, -0.55, (H3 + 0.35) / 2, 0));
-        g.add(this.box(0.45, 0.12, 0.12, M.galv, -0.33, H3 - 0.3, 0));
-        g.add(this.box(0.44, 0.72, 0.62, M.qf, 0, H3, 0));
-        for (const [i, sg] of [[0, -1], [1, 1]]) g.add(this.tube([0, H3, sg * 0.31], [0, H3, sg * S3], 0.035, nm(i)));
-        d.lever = new T.Group(); d.lever.position.set(0.24, H3 + 0.02, 0); d.lever.add(this.box(0.05, 0.28, 0.07, M.handle, 0.02, 0.14, 0)); g.add(d.lever);
-        d.ind = new T.Mesh(this.boxGeo(0.02, 0.1, 0.18), this.stateMat()); d.ind.position.set(0.225, H3 + 0.25, 0); g.add(d.ind);
-        ly = H3 + 0.85;
-        break;
-      }
-      case 'disconnector': {
-        g.add(this.box(0.3, 1.95, 0.3, M.galv, 0, 0.975, 0));
-        g.add(this.box(0.28, 0.22, 2 * S3 + 0.5, M.galv, 0, 2.06, 0));
-        for (const [i, z] of [[0, -S3], [1, S3]]) { g.add(this.cyl(0.1, H3 - 2.23, M.porcelain, 0, (2.17 + H3 - 0.06) / 2, z)); g.add(this.box(0.18, 0.1, 0.24, nm(i), 0, H3, z)); }
-        d.pivot = new T.Group(); d.pivot.position.set(0, H3 + 0.06, -S3);
-        d.pivot.add(this.box(0.08, 0.08, 2 * S3, M.blade, 0, 0, S3));
-        g.add(d.pivot);
-        g.add(this.box(0.4, 0.55, 0.32, M.cabinet, 0.75, 0.9, 0));
-        d.knob = new T.Mesh(this.cylGeo(0.1, 0.06), this.stateMat()); d.knob.position.set(0.75, 1.21, 0); g.add(d.knob);
-        d.ang = 0; d.angT = 0;
-        break;
-      }
-      case 'earth': {
-        const hz = 0.45, hy = 1.15;
-        g.add(this.box(0.26, hy, 0.26, M.galv, 0, hy / 2, hz));
-        g.add(this.box(0.8, 0.04, 0.8, M.plate, 0, 0.02, hz + 0.3));
-        g.add(this.box(0.2, 0.12, 0.26, nm(0), 0, H3, -S3));
-        const L = Math.hypot(H3 - hy, S3 + hz);
-        d.pivot = new T.Group(); d.pivot.position.set(0, hy, hz);
-        d.pivot.add(this.box(0.07, L, 0.07, M.earthBlade, 0, L / 2, 0));
-        g.add(d.pivot);
-        d.closedAng = -Math.atan2(S3 + hz, H3 - hy); d.openAng = 1.2;
-        d.flag = new T.Mesh(this.boxGeo(0.16, 0.16, 0.16), this.stateMat()); d.flag.position.set(0, hy + 0.14, hz + 0.22); g.add(d.flag);
-        d.ang = d.openAng; d.angT = d.openAng;
-        ly = 2.3; lz = hz + 0.4;
-        break;
-      }
-      case 'transformer': {
-        g.add(this.box(2.4, 0.3, 3.0, M.concrete, 0, 0.15, 0));
-        g.add(this.box(1.9, 2.1, 2.3, M.tank, 0, 1.35, 0));
-        for (const sx of [-1, 1]) g.add(this.box(0.28, 1.7, 1.9, M.radiator, sx * 1.12, 1.3, 0));
-        g.add(this.cyl(0.25, 1.4, M.tank, 0, 2.78, 0, 'x'));
-        for (const x of [-0.5, 0, 0.5]) g.add(this.cyl(0.08, 1.2, M.porcelain, x, 3.0, -0.75));
-        g.add(this.tube([0, 3.6, -0.75], [0, H3, -2 * S3], 0.04, nm(0)));
-        for (const x of [-0.45, 0, 0.45]) g.add(this.cyl(0.07, 0.6, M.porcelain, x, 2.7, 0.75));
-        g.add(this.tube([0, 3.0, 0.75], [0, H3, 2 * S3], 0.04, nm(1)));
-        d.spin = [];
-        for (const sx of [-1, 1]) for (const z of [-0.5, 0.5]) {
-          const f = new T.Group(); f.position.set(sx * 1.34, 0.72, z);
-          f.add(this.box(0.04, 0.5, 0.08, M.fan), this.box(0.04, 0.08, 0.5, M.fan));
-          g.add(f); d.spin.push(f);
-        }
-        d.speed = 0; d.speedT = 0;
-        ly = 4.5;
-        break;
-      }
-      case 'source': {
-        for (const x of [-1.5, 1.5]) g.add(this.box(0.3, H3 + 1.3, 0.3, M.galv, x, (H3 + 1.3) / 2, 0));
-        g.add(this.box(3.3, 0.3, 0.3, M.galv, 0, H3 + 1.15, 0));
-        g.add(this.cyl(0.07, 0.8, M.porcelain, 0, H3 + 0.6, 0));
-        g.add(this.tube([0, H3 + 0.2, 0], [0, H3, S3], 0.04, nm(0)));
-        d.far = [this.tube([0, H3 + 0.2, 0], [0, H3 + 9, -60], 0.05, nm(0)), this.box(0.7, H3 + 11, 0.7, M.galv, 0, (H3 + 11) / 2, -60.5), this.box(5, 0.35, 0.35, M.galv, 0, H3 + 9.3, -60.5)];
-        g.add(...d.far);
-        d.beacon = new T.Mesh(this.geo.sphere, new T.MeshStandardMaterial({ color: 0xff4d4d, emissive: 0xff2020, emissiveIntensity: 1 }));
-        d.beacon.scale.setScalar(0.13); d.beacon.position.set(0, H3 + 1.45, 0); g.add(d.beacon);
-        ly = H3 + 2.2;
-        break;
-      }
-      case 'gen': {
-        g.add(this.box(2.8, 0.4, 1.6, M.concrete, 0, 0.2, -0.6));
-        g.add(this.cyl(0.75, 2.0, M.motor, 0, 1.15, -0.6, 'x'));
-        const rotor = new T.Group(); rotor.position.set(1.15, 1.15, -0.6);
-        rotor.add(this.cyl(0.08, 0.3, M.blade, 0.1, 0, 0, 'x'), this.cyl(0.45, 0.08, M.dark, 0.25, 0, 0, 'x'), this.box(0.1, 0.86, 0.14, M.stripe, 0.25, 0, 0));
-        g.add(rotor);
-        g.add(this.tube([0, 1.9, -0.6], [0, H3, S3], 0.04, nm(0)));
-        d.spin = [rotor]; d.speed = 0; d.speedT = 0;
-        ly = 2.6; lz = -0.6;
-        break;
-      }
-      case 'load': {
-        const bw = 4.4, bd = 3.6, bh = 3.1, z0 = 0.5, wt = this.winTex();
-        g.add(this.box(bw, bh, bd, M.wall, 0, bh / 2, z0 + bd / 2));
-        g.add(this.box(bw + 0.3, 0.22, bd + 0.3, M.roof, 0, bh + 0.11, z0 + bd / 2));
-        d.win = new T.MeshStandardMaterial({ map: wt.map, emissiveMap: wt.mask, emissive: 0x000000, emissiveIntensity: 1, roughness: 0.6 });
-        for (const [z, ry] of [[z0 - 0.01, Math.PI], [z0 + bd + 0.01, 0]]) {
-          const m = new T.Mesh(new T.PlaneGeometry(bw - 0.3, bh - 0.5), d.win);
-          m.position.set(0, bh / 2, z); m.rotation.y = ry; g.add(m);
-        }
-        g.add(this.tube([0, H3, -S3], [0, bh - 0.35, z0 - 0.05], 0.04, nm(0)));
-        g.add(this.cyl(0.07, 0.35, M.porcelain, 0, bh - 0.35, z0 - 0.12, 'z'));
-        ly = bh + 1.0; lz = z0 + bd / 2;
-        break;
-      }
-      case 'motor': {
-        const z = 0.9;
-        g.add(this.box(2.2, 0.3, 0.9, M.concrete, 0.3, 0.15, z));
-        g.add(this.cyl(0.38, 1.0, M.motor, -0.25, 0.68, z, 'x'));
-        g.add(this.box(0.3, 0.26, 0.3, M.motor, -0.25, 1.15, z));
-        const rotor = new T.Group(); rotor.position.set(0.4, 0.68, z);
-        rotor.add(this.cyl(0.05, 0.4, M.blade, 0.1, 0, 0, 'x'), this.cyl(0.3, 0.08, M.dark, 0.3, 0, 0, 'x'), this.box(0.09, 0.58, 0.12, M.stripe, 0.3, 0, 0));
-        g.add(rotor);
-        g.add(this.cyl(0.32, 0.55, M.pump, 1.05, 0.62, z, 'x'));
-        g.add(this.tube([0, H3, -S3], [-0.25, 1.28, z], 0.035, nm(0)));
-        d.spin = [rotor]; d.speed = 0; d.speedT = 0;
-        ly = 2.0; lz = z;
-        break;
-      }
-      case 'bus': {
-        const len = el.p.len * S3, step = 3;
-        g.add(this.tube([0, H3, 0], [len, H3, 0], 0.08, nm(0)));
-        const xs = [];
-        for (let i = 0; i <= el.p.len; i += step) xs.push(i * S3);
-        if (el.p.len % step) xs.push(len);
-        for (const x of xs) { g.add(this.box(0.26, 2.3, 0.26, M.galv, x, 1.15, 0)); g.add(this.cyl(0.09, H3 - 2.35, M.porcelain, x, (2.35 + H3) / 2, 0)); }
-        ly = H3 + 0.7; lx = 0.6;
-        break;
-      }
-      default: return null;
-    }
-    const lab = this.labelSprite(el.name);
-    lab.position.set(lx, ly, lz);
-    g.add(lab);
-    d.label = lab;
+    const mod = MODELS[el.t];
+    if (!mod) return null;
+    const d = { el, group: new THREE.Group(), kind: el.t, trip: false, mod };
+    const k = this.kit.forEl(el, topo, d);
+    const r = mod.build(k, el, d) || {};
+    d.labelPos = r.label || [0, H3 + 0.8, 0];
     this.dev.set(el.id, d);
-    return g;
+    return d.group;
+  }
+  // ПЗ, наложенные в тренажёре: модель ставится в точку провода и убирается, когда ПЗ снято
+  syncPz() {
+    const tr = this.app.tr, on = new Set(tr.pzOn());
+    for (const [id, d] of this.pzDev) if (!on.has(id)) {
+      this.root.remove(d.group);
+      for (const p of d.proxies) { this.root.remove(p); this.pickables.splice(this.pickables.indexOf(p), 1); }
+      this.dev.delete(id); this.pzDev.delete(id);
+    }
+    for (const id of on) {
+      if (this.pzDev.has(id)) continue;
+      const pl = this.app.view.pzPlace(id);
+      if (!pl) continue;
+      const el = tr.elOf(id), d = { el, group: new THREE.Group(), kind: 'pz', trip: false, mod: MODELS.pz };
+      const k = this.kit.forEl(el, tr.topo, d);
+      MODELS.pz.build(k, el, d);
+      this.mergeInto(d.show);
+      d.group.position.copy(this.toWorld(pl.p));
+      d.group.rotation.y = pl.r ? -Math.PI / 2 : 0;
+      this.root.add(d.group);
+      this.dev.set(id, d);
+      d.proxies = this.makeProxies(new Map([[id, d]]));
+      this.pzDev.set(id, d);
+    }
   }
 
   // ---------- состояние ----------
-  setState(mat, on) { const c = on ? COL3.on : COL3.off; mat.color.setHex(c); mat.emissive.setHex(c); }
   update(instant) {
     if (!this.ready || !this.active) return;
     const tr = this.app.tr;
     if (this.builtTopo !== tr.topo) this.build();
+    this.syncPz();
     const st = tr.state;
     for (const [n, m] of this.nodeMats) {
       const kv = st.V.get(n);
@@ -440,33 +468,26 @@ class View3D {
       if (kv != null) { col = COL3[vClass(kv)]; ei = 0.55; } else if (st.G.has(n)) { col = COL3.gnd; ei = 0.3; } else { col = COL3.dead; ei = 0; }
       m.color.setHex(col); m.emissive.setHex(col); m.emissiveIntensity = ei;
     }
-    for (const d of this.dev.values()) {
-      const id = d.el.id, sw = tr.sim.st[id], tm = tr.topo.term.get(id);
-      const on = sw ? sw.on : false;
-      d.trip = sw ? sw.trip : false;
-      const live = i => st.V.has(tm[i]);
-      switch (d.kind) {
-        case 'breaker': this.setState(d.lamp.material, on); d.leverT = on ? -0.6 : 0.6; break;
-        case 'acb': this.setState(d.ind.material, on); d.leverT = on ? -0.35 : -2.7; break;
-        case 'disconnector': d.angT = on ? 0 : -1.35; this.setState(d.knob.material, on); break;
-        case 'earth': d.angT = on ? d.closedAng : d.openAng; this.setState(d.flag.material, on); break;
-        case 'motor': d.speedT = live(0) ? 16 : 0; break;
-        case 'gen': d.speedT = live(0) ? 12 : 0; break;
-        case 'transformer': d.speedT = (live(0) || live(1)) ? 7 : 0; break;
-        case 'load': d.win.emissive.setHex(live(0) ? 0xffcf70 : 0x000000); break;
-        case 'source': { const ss = tr.sim.src[id]; d.beacon.material.emissiveIntensity = ss && ss.on && !ss.trip ? 1.2 : 0; break; }
-      }
+    for (const [id, d] of this.dev) {
+      const sw = tr.sim.st[id], tm = tr.topo.term.get(id) || [];
+      d.trip = sw ? !!sw.trip : false;
+      const ss = tr.sim.src[id];
+      const s = { on: sw ? !!sw.on : false, pos: sw && sw.pos, trip: d.trip, blown: !!(sw && sw.blown), src: !!(ss && ss.on && !ss.trip), live: i => st.V.has(tm[i]) };
+      if (d.mod.update) d.mod.update(d, s);
       if (instant) {
         if (d.angT != null) { d.ang = d.angT; d.pivot.rotation.x = d.ang; }
         if (d.leverT != null) d.lever.rotation.x = d.leverT;
+        if (d.slideT != null) { d.slideX = d.slideT; d.slide.position.x = d.slideX; }
         if (d.speedT != null) d.speed = d.speedT;
       }
     }
+    this.setLamps(true);
     this.drawBoard();
   }
   loop(time) {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const blink = Math.floor(time / 350) % 2 === 0;
+    let trips = false;
     for (const d of this.dev.values()) {
       if (d.pivot && d.angT != null && d.ang !== d.angT) {
         const diff = d.angT - d.ang;
@@ -477,21 +498,24 @@ class View3D {
         const cur = d.lever.rotation.x, diff = d.leverT - cur;
         if (diff) d.lever.rotation.x = cur + Math.sign(diff) * Math.min(Math.abs(diff), 9 * dt);
       }
-      if (d.spin) {
+      if (d.slide && d.slideT != null && d.slideX !== d.slideT) {
+        const diff = d.slideT - d.slideX;
+        d.slideX += Math.sign(diff) * Math.min(Math.abs(diff), 0.8 * dt);
+        d.slide.position.x = d.slideX;
+      }
+      if (d.spin && d.spin.length) {
         d.speed += (d.speedT - d.speed) * Math.min(1, dt * (d.speedT > d.speed ? 0.9 : 0.45));
         if (d.speed > 0.01) for (const sp of d.spin) sp.rotation.x += d.speed * dt;
       }
-      if (d.lamp) d.lamp.visible = !d.trip || blink;
+      if (d.trip) trips = true;
     }
+    if (trips || this._tripsWas) this.setLamps(blink);
+    this._tripsWas = trips;
     this.stepFx(dt);
-    if (this.renderer.xr.isPresenting) {
-      this.xrFrame(dt);
-      if ((this.lodTick = (this.lodTick || 0) + 1) % 15 === 0) {
-        const cam = this.tmp.v2;
-        this.camera.getWorldPosition(cam);
-        for (const d of this.dev.values()) if (d.label) { d.label.getWorldPosition(this.tmp.dir); d.label.visible = this.tmp.dir.distanceTo(cam) < 32; }
-      }
-    }
+    const xr = this.renderer.xr.isPresenting;
+    if (this.labelMesh) this.labelMesh.material.uniforms.far.value = xr ? 32 : 0;
+    if (xr) this.xrFrame(dt);
+    if (this.menu3d && performance.now() > this.menu3d.until) this.closeMenu3D();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -579,33 +603,42 @@ class View3D {
     el.addEventListener('wheel', e => { e.preventDefault(); this.orbit.r = clamp(this.orbit.r * Math.exp(e.deltaY * 0.001), 4, 260); this.applyOrbit(); }, { passive: false });
     el.addEventListener('contextmenu', e => e.preventDefault());
   }
+  clickAt(cx, cy, shift) {
+    const h = this.pick(cx, cy);
+    if (!h) return;
+    const u = h.object.userData;
+    if (u.board) { this.boardClick(h.uv); return; }
+    if (u.menu) { this.menuClick(h.uv); return; }
+    if (u.dev) { this.app.pick3D(u.dev, shift, { cx, cy }); this.hover = null; this.hoverAt(cx, cy); return; }
+    if (u.wire) this.app.pickWire3D(u.wire, shift);
+  }
+  // Луч ловит провод только с инструментом (указатель, ПЗ) — иначе провод не мешает щёлкать по аппаратам
   pick(cx, cy) {
     const r = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     this.ray.setFromCamera(ndc, this.camera);
     this.ray.far = 900;
-    const hits = this.ray.intersectObjects(this.pickables, false);
-    return hits.find(h => !h.object.userData.ground) || null;
+    return this.firstHit(this.ray.intersectObjects(this.pickables, false));
   }
-  clickAt(cx, cy, shift) {
-    const h = this.pick(cx, cy);
-    if (!h) return;
-    if (h.object.userData.board) { this.boardClick(h.uv); return; }
-    if (h.object.userData.dev) { this.app.pick3D(h.object.userData.dev, shift); this.hover = null; this.hoverAt(cx, cy); }
+  firstHit(hits) {
+    const tool = !!this.app.tool;
+    return hits.find(h => !h.object.userData.ground && (tool || !h.object.userData.wire)) || null;
   }
   hoverAt(cx, cy) {
     const h = this.pick(cx, cy);
-    const id = h && h.object.userData.dev;
+    const u = h ? h.object.userData : {}, id = u.dev;
     this.setHover(id || null);
-    const cv = this.renderer.domElement;
+    const cv = this.renderer.domElement, tr = this.app.tr;
     if (id) {
-      const el = this.app.scheme.els.find(e => e.id === id), sw = this.app.tr.sim.st[id];
-      let t = el.name + (sw ? (sw.on ? ' · включён' : ' · отключён') : '');
+      const el = tr.elOf(id), sw = tr.sim.st[id], T = TYPES[el.t];
+      let t = el.name + (sw ? (T.cart ? ` · тележка: ${{ work: 'рабочее', test: 'контрольное', repair: 'ремонтное' }[sw.pos]}` + (T.sw === 'breaker' ? (sw.on ? ', включён' : ', отключён') : '') : sw.on ? ' · включён' : ' · отключён') : '');
       if (this.app.tool === 'check') t += ' — проверить напряжение';
-      else if (sw) t += sw.on ? ' — щелчок: отключить' : ' — щелчок: включить';
+      else if (this.app.tool === 'pz') t += el.t === 'bus' ? ' — наложить ПЗ' : isPzId(id) ? ' — снять ПЗ' : '';
+      else if (sw) t += tr.actions(id).length > 1 ? ' — щелчок: меню' : sw.on ? ' — щелчок: отключить' : ' — щелчок: включить';
       this.tip(t, cx, cy);
       cv.style.cursor = 'pointer';
-    } else if (h && h.object.userData.board) { this.tip('Щит: нажмите кнопку', cx, cy); cv.style.cursor = 'pointer'; }
+    } else if (u.wire) { this.tip(this.app.tool === 'pz' ? 'Провод — наложить или снять ПЗ' : 'Провод — проверить напряжение', cx, cy); cv.style.cursor = 'pointer'; }
+    else if (u.board || u.menu) { this.tip(u.menu ? 'Выберите действие' : 'Щит: нажмите кнопку', cx, cy); cv.style.cursor = 'pointer'; }
     else { this.tip(null); cv.style.cursor = 'grab'; }
   }
   setHover(id) {
@@ -615,7 +648,7 @@ class View3D {
     const d = this.dev.get(id), p = this.tmp.v;
     d.group.getWorldPosition(p);
     this.ring.position.set(p.x, 0.06, p.z);
-    this.ring.scale.setScalar(d.kind === 'transformer' ? 2.2 : d.kind === 'load' ? 2.6 : 1.25);
+    this.ring.scale.setScalar(d.kind === 'transformer' || d.kind === 'tr3' ? 2.3 : d.kind === 'load' ? 2.6 : 1.25);
     this.ring.visible = d.kind !== 'bus';
   }
   tip(text, x, y) {
@@ -681,7 +714,8 @@ class View3D {
     x.fillStyle = '#3b4fd1'; x.fillRect(0, 0, W, 8);
     x.fillStyle = '#eef4f1'; x.font = F(600, 32); x.fillText(this.fit(x, app.scheme.title, W - 64), 32, 58);
     x.fillStyle = '#93a69e'; x.font = F(400, 22);
-    x.fillText(this.fit(x, `Блокировки ${tr.opt.interlocks ? 'включены' : 'выключены'} · ${app.tool === 'check' ? 'режим указателя напряжения' : 'курок — операция, боковая кнопка — указатель'}`, W - 64), 32, 92);
+    const mode = app.tool === 'check' ? 'режим указателя напряжения' : app.tool === 'pz' ? 'переносное заземление: курок по проводу или шине' : 'курок — операция, боковая кнопка — указатель';
+    x.fillText(this.fit(x, `Блокировки ${tr.opt.interlocks ? 'включены' : 'выключены'} · ${mode}`, W - 64), 32, 92);
     let y = 142;
     const para = (text, size, weight, color, maxLines) => {
       x.font = F(weight, size); x.fillStyle = color;
@@ -716,20 +750,23 @@ class View3D {
       x.fillStyle = e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#c6d3cd';
       x.fillText(this.fit(x, e.text, W - 64), 32, y); y += 30;
     }
-    const btns = [];
-    if (run && !run.done) btns.push(['hint', 'Подсказка'], ['ack', 'Квитировать'], ['stop', 'Завершить']);
+    const btns = [], pz = ['pz', 'ПЗ'];
+    if (run && !run.done) btns.push(['hint', 'Подсказка'], ['ack', 'Квитировать'], pz, ['stop', 'Завершить']);
     else if (run && run.done) btns.push(['again', 'Ещё раз'], ['exit', 'Свободный режим'], ['lock', tr.opt.interlocks ? 'Блокировки: вкл' : 'Блокировки: выкл']);
     else {
       if (tasks.length) btns.push(['prev', '‹'], ['next', '›'], ['start', 'Начать']);
-      btns.push(['ack', 'Квитировать'], ['reset', 'Сброс'], ['lock', tr.opt.interlocks ? 'Блок.: вкл' : 'Блок.: выкл']);
+      btns.push(['ack', 'Квитировать'], pz, ['reset', 'Сброс'], ['lock', tr.opt.interlocks ? 'Блок.: вкл' : 'Блок.: выкл']);
     }
-    const bh = 64, by = H - bh - 22, gap = 12, small = btns.filter(b => b[0] === 'prev' || b[0] === 'next').length;
-    const bigW = (W - 64 - small * 76 - gap * (btns.length - 1)) / (btns.length - small);
+    // узкие кнопки: стрелки и ПЗ
+    const fixed = { prev: 76, next: 76, pz: 92 };
+    const bh = 64, by = H - bh - 22, gap = 12, fx = btns.reduce((a, b) => a + (fixed[b[0]] || 0), 0), nf = btns.filter(b => fixed[b[0]]).length;
+    const bigW = (W - 64 - fx - gap * (btns.length - 1)) / (btns.length - nf);
     let bx = 32;
     this.boardBtns = [];
     for (const [act, label] of btns) {
-      const w = act === 'prev' || act === 'next' ? 76 : bigW;
-      x.fillStyle = act === 'start' || act === 'again' ? '#3b4fd1' : '#24332d'; rr(x, bx, by, w, bh, 12); x.fill();
+      const w = fixed[act] || bigW;
+      const lit = act === 'start' || act === 'again' || (act === 'pz' && app.tool === 'pz');
+      x.fillStyle = lit ? '#3b4fd1' : '#24332d'; rr(x, bx, by, w, bh, 12); x.fill();
       x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
       x.fillStyle = '#ffffff'; x.font = F(600, act === 'prev' || act === 'next' ? 40 : 24); x.textAlign = 'center';
       x.fillText(label, bx + w / 2, by + (act === 'prev' || act === 'next' ? 46 : 41));
@@ -759,17 +796,24 @@ class View3D {
     else if (act === 'reset') { if (!tr.resetToNormal()) this.banner('Сначала завершите задание.', 'warn'); }
     else if (act === 'lock') { tr.opt.interlocks = !tr.opt.interlocks; app.toast(`Блокировки: ${tr.opt.interlocks ? 'включены' : 'выключены'}.`); }
     else if (act === 'exit') tr.exitTask();
+    else if (act === 'pz') app.toggleTool('pz');
     app.renderSide();
     this.drawBoard();
   }
 
   // ---------- эффекты ----------
+  // Точка в сцене для эффекта: аппарат, ПЗ на проводе или середина провода
+  posOf(id) {
+    const p = new THREE.Vector3(), dv = this.dev.get(id);
+    if (dv) { dv.group.getWorldPosition(p); return p; }
+    if (isPzId(id)) { const pl = this.app.view.pzPlace(id); return pl ? this.toWorld(pl.p) : null; }
+    const w = this.app.scheme.wires.find(v => v.id === id);
+    return w ? this.toWorld(wireMid(w)) : null;
+  }
   fx(d) {
     if (!this.active) return;
-    const dv = this.dev.get(d.id);
-    if (!dv) return;
-    const p = new THREE.Vector3();
-    dv.group.getWorldPosition(p);
+    const p = this.posOf(d.id);
+    if (!p) return;
     p.y = H3;
     this.arc(p);
   }
@@ -794,10 +838,8 @@ class View3D {
   }
   checkFx(d) {
     if (!this.active) return;
-    const dv = this.dev.get(d.target);
-    if (!dv) return;
-    const p = new THREE.Vector3();
-    dv.group.getWorldPosition(p);
+    const p = this.posOf(d.target);
+    if (!p) return;
     const sp = this.labelSprite(d.live ? 'U есть' : 'U нет', d.live ? 'rgba(210,25,50,0.92)' : 'rgba(20,150,80,0.92)', 0.5);
     sp.position.set(p.x, H3 + 1.7, p.z);
     this.scene.add(sp);
@@ -902,7 +944,7 @@ class View3D {
     x.clearRect(0, 0, c.width, c.height);
     x.fillStyle = 'rgba(16,24,21,0.9)'; rr(x, 0, 0, c.width, c.height, 22); x.fill();
     x.fillStyle = '#93a69e'; x.font = '500 22px "Golos Text", system-ui, sans-serif';
-    x.fillText(this.app.tool === 'check' ? 'Указатель напряжения включён' : 'Курок — операция · боковая — указатель', 20, 38);
+    x.fillText(this.app.tool === 'check' ? 'Указатель напряжения включён' : this.app.tool === 'pz' ? 'ПЗ: курок по проводу или шине' : 'Курок — операция · боковая — указатель', 20, 38);
     const e = tr.log[0];
     x.fillStyle = !e ? '#c6d3cd' : e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#eef4f1';
     x.font = '600 26px "Golos Text", system-ui, sans-serif';
@@ -928,7 +970,7 @@ class View3D {
     this.ray.ray.direction.set(0, 0, -1).applyMatrix4(this.tmp.m);
     this.ray.far = 80;
     const hits = this.ray.intersectObjects(this.pickables, false);
-    return hits[0] || null;
+    return hits.find(h => this.app.tool || !h.object.userData.wire) || null;
   }
   pulse(info, k) {
     const gp = info.src && info.src.gamepad, ha = gp && gp.hapticActuators && gp.hapticActuators[0];
@@ -940,7 +982,10 @@ class View3D {
     if (!h) return;
     const u = h.object.userData;
     if (u.board) { this.boardClick(h.uv); this.pulse(info, 0.3); return; }
-    if (u.dev) { this.app.pick3D(u.dev, false); this.pulse(info, 0.7); return; }
+    if (u.menu) { this.menuClick(h.uv); this.pulse(info, 0.5); return; }
+    this.closeMenu3D();
+    if (u.dev) { this.app.pick3D(u.dev, false, { menu3d: acts => this.showMenu3D(u.dev, acts, h.point) }); this.pulse(info, 0.7); return; }
+    if (u.wire) { this.app.pickWire3D(u.wire, false); this.pulse(info, 0.5); return; }
     if (u.ground) {
       const p = this.tmp.v;
       this.camera.getWorldPosition(p);
@@ -951,6 +996,53 @@ class View3D {
   xrSqueeze(info) {
     const h = this.xrHit(info);
     if (h && h.object.userData.dev) { this.app.pick3D(h.object.userData.dev, true); this.pulse(info, 0.4); }
+    else if (h && h.object.userData.wire) { this.app.pickWire3D(h.object.userData.wire, true); this.pulse(info, 0.4); }
+  }
+  // Меню аппарата в VR (выкатная тележка): панель перед аппаратом, кнопки нажимаются лучом
+  showMenu3D(id, acts, point) {
+    this.closeMenu3D();
+    const T = THREE, w = 560, rowH = 84, top = 70, H = top + acts.length * rowH + 14;
+    const c = document.createElement('canvas'); c.width = w; c.height = H;
+    const x = c.getContext('2d'), F = (wt, sz) => `${wt} ${sz}px "Golos Text", system-ui, sans-serif`;
+    x.fillStyle = 'rgba(16,24,21,0.95)'; rr(x, 0, 0, w, H, 22); x.fill();
+    x.fillStyle = '#93a69e'; x.font = F(600, 30); x.fillText(this.fit(x, this.app.tr.nm(id), w - 48), 24, 46);
+    const btns = acts.map((a, i) => {
+      const y = top + i * rowH;
+      x.fillStyle = '#24332d'; rr(x, 14, y, w - 28, rowH - 12, 14); x.fill();
+      x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
+      x.fillStyle = '#ffffff'; x.font = F(600, 28); x.fillText(this.fit(x, a.label, w - 70), 34, y + 46);
+      return { y0: y, y1: y + rowH - 12, a };
+    });
+    const tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace;
+    const pw = 1.0, m = new T.Mesh(new T.PlaneGeometry(pw, pw * H / w), new T.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false }));
+    m.renderOrder = 11;
+    const cam = this.camera.getWorldPosition(new T.Vector3()), dir = cam.clone().sub(point);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    m.position.copy(point).addScaledVector(dir, Math.min(1.2, cam.distanceTo(point) * 0.5));
+    m.position.y = clamp(cam.y - 0.15, 0.8, 2.4);
+    m.lookAt(cam.x, m.position.y, cam.z);
+    m.userData.menu = true;
+    this.scene.add(m); this.pickables.push(m);
+    this.menu3d = { m, id, btns, H, until: performance.now() + 12000 };
+  }
+  menuClick(uv) {
+    const mm = this.menu3d;
+    if (!mm || !uv) return;
+    const py = (1 - uv.y) * mm.H, b = mm.btns.find(q => py >= q.y0 && py <= q.y1);
+    if (!b) return;
+    this.closeMenu3D();
+    this.app.tr.operate(mm.id, b.a.pos ? { pos: b.a.pos } : undefined);
+  }
+  closeMenu3D() {
+    const mm = this.menu3d;
+    if (!mm) return;
+    this.scene.remove(mm.m);
+    const i = this.pickables.indexOf(mm.m);
+    if (i >= 0) this.pickables.splice(i, 1);
+    mm.m.material.map.dispose(); mm.m.material.dispose(); mm.m.geometry.dispose();
+    this.menu3d = null;
   }
   xrFrame(dt) {
     let hoverId = null;
@@ -1006,7 +1098,6 @@ class View3D {
     this.rig.position.set(0, 0, 0);
     this.rig.rotation.set(0, 0, 0);
     for (const info of this.ctrls) { info.line.visible = false; info.dot.visible = false; }
-    for (const d of this.dev.values()) if (d.label) d.label.visible = true;
     this.bannerH.m.visible = false;
     document.getElementById('btnVR').textContent = 'Войти в VR';
     this.applyOrbit();

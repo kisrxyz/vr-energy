@@ -1,7 +1,8 @@
-import { TYPES, ptKey, clamp, esc, portPoints, isSwitchable, emptyScheme, makeEl, makeWire, normalizeScheme } from './core/elements.js';
+import { TYPES, ptKey, clamp, esc, portPoints, bbox, isSwitchable, isPzId, emptyScheme, makeEl, makeWire, normalizeScheme } from './core/elements.js';
+import { GLOSSARY } from './core/glossary.js';
 import { SAMPLES } from './core/samples.js';
 import { buildTopo, makeSim, compute, Trainer } from './core/engine.js';
-import { elSubtitle, Scheme2D } from './view2d/scheme2d.js';
+import { elSubtitle, nearestOnWire, Scheme2D } from './view2d/scheme2d.js';
 import { Panels } from './ui/panels.js';
 import { store } from './ui/store.js';
 import { Sound } from './ui/sound.js';
@@ -110,27 +111,84 @@ const app = Object.assign({
       load.textContent = 'Не удалось загрузить 3D-библиотеку. Проверьте интернет и обновите страницу.';
     }
   },
-  toggleTool() {
-    this.tool = this.tool === 'check' ? null : 'check';
+  // Инструменты тренажёра: check — указатель напряжения, pz — переносное заземление
+  toggleTool(tool = 'check') {
+    this.tool = this.tool === tool ? null : tool;
     document.getElementById('app').dataset.tool = this.tool || '';
-    if (this.tool) this.toast('Указатель напряжения: нажмите на аппарат, шину или провод.');
+    if (this.tool === 'check') this.toast('Указатель напряжения: нажмите на аппарат, шину или провод.');
+    if (this.tool === 'pz') this.toast('Переносное заземление: нажмите на провод или шину — наложить, на значок ПЗ — снять.');
+    this.closeActMenu();
     this.renderSide(); this.view.render();
     if (this.v3) this.v3.drawBoard();
   },
 
   // ---------- действия на схеме ----------
   pick2D(c) {
-    if (c.el) { this.pickEl(c.el, this.tool === 'check'); return; }
+    if (this.tool === 'pz') {
+      if (c.w) { const w = this.scheme.wires.find(v => v.id === c.w); this.tr.pzToggle(c.w, w && c.p ? nearestOnWire(w, c.p) : null); return; }
+      if (c.el) this.pzAt(c.el, c.p);
+      return;
+    }
+    if (c.el) { this.pickEl(c.el, this.tool === 'check', c); return; }
     if (c.w && this.tool === 'check') this.tr.check(c.w);
   },
-  pick3D(id, alt) { this.pickEl(id, alt || this.tool === 'check'); },
-  pickEl(id, check) {
+  // ПЗ инструментом: на шину — наложить, на значок ПЗ — снять, на аппарат — подсказать
+  pzAt(id, p) {
+    if (isPzId(id)) { this.tr.operate(id); return; }
     const el = this.scheme.els.find(e => e.id === id);
+    if (el && el.t === 'bus') {
+      let pt = null;
+      if (p) { const b = bbox(el); pt = el.r % 2 ? [el.x, clamp(Math.round(p[1]), Math.ceil(b[1]), Math.floor(b[3]))] : [clamp(Math.round(p[0]), Math.ceil(b[0]), Math.floor(b[2])), el.y]; }
+      this.tr.pzToggle(id, pt);
+    } else if (el && el.t === 'pz') this.tr.operate(id);
+    else this.toast('Переносное заземление накладывается на провод или шину.', 'warn');
+  },
+  pick3D(id, alt, at) {
+    if (this.tool === 'pz') { this.pzAt(id, null); return; }
+    this.pickEl(id, alt || this.tool === 'check', at);
+  },
+  pickWire3D(wid, alt) {
+    if (this.tool === 'pz' && !alt) { this.tr.pzToggle(wid); return; }
+    if (alt || this.tool === 'check') this.tr.check(wid);
+  },
+  pickEl(id, check, at) {
+    const el = this.scheme.els.find(e => e.id === id) || this.tr.elOf(id);
     if (!el) return;
     if (check) { this.tr.check(id); return; }
-    if (isSwitchable(el)) this.tr.operate(id);
-    else if (TYPES[el.t].cls === 'source') this.tr.toggleSource(id);
-    else { const sub = elSubtitle(el); this.toast(`${el.name}: ${TYPES[el.t].title.toLowerCase()}${sub ? ', ' + sub : ''}. Переключаются выключатели, разъединители, автоматы и ЗН.`); }
+    if (isSwitchable(el)) {
+      const acts = this.tr.actions(id);
+      if (acts.length > 1) { if (at && at.menu3d) at.menu3d(acts); else this.showActMenu(id, acts, at); return; }
+      this.tr.operate(id);
+    } else if (TYPES[el.t].cls === 'source') this.tr.toggleSource(id);
+    else { const sub = elSubtitle(el), g = GLOSSARY[el.t]; this.toast(`${el.name}${sub ? ' (' + sub + ')' : ''}: ${g ? g.what : TYPES[el.t].title} Не переключается.`); }
+  },
+  // Меню аппарата с несколькими действиями (выкатная тележка)
+  showActMenu(id, acts, at) {
+    this.closeActMenu();
+    const stage = document.getElementById('stage'), r = stage.getBoundingClientRect();
+    const m = document.createElement('div');
+    m.className = 'actmenu'; m.id = 'actmenu'; m.setAttribute('role', 'menu');
+    m.innerHTML = `<div class="actmenu-h">${esc(this.tr.nm(id))}</div>` + acts.map((a, i) => `<button class="btn" role="menuitem" data-i="${i}">${esc(a.label)}</button>`).join('');
+    stage.appendChild(m);
+    const x = at && at.cx != null ? at.cx - r.left : r.width / 2, y = at && at.cy != null ? at.cy - r.top : r.height / 2;
+    m.style.left = clamp(x + 8, 8, Math.max(8, r.width - m.offsetWidth - 8)) + 'px';
+    m.style.top = clamp(y + 8, 8, Math.max(8, r.height - m.offsetHeight - 8)) + 'px';
+    m.addEventListener('click', e => {
+      const b = e.target.closest('[data-i]');
+      if (!b) return;
+      const a = acts[+b.dataset.i];
+      this.closeActMenu();
+      this.tr.operate(id, a.pos ? { pos: a.pos } : undefined);
+    });
+    const f = m.querySelector('button');
+    if (f) f.focus();
+    this._menuOff = e => { if (!m.contains(e.target)) this.closeActMenu(); };
+    setTimeout(() => document.addEventListener('pointerdown', this._menuOff, true), 0);
+  },
+  closeActMenu() {
+    const m = document.getElementById('actmenu');
+    if (m) m.remove();
+    if (this._menuOff) { document.removeEventListener('pointerdown', this._menuOff, true); this._menuOff = null; }
   },
   startTask(task) {
     if (!task) return;
@@ -142,6 +200,7 @@ const app = Object.assign({
   },
   onTrainer(type, d) {
     if (type === 'state') {
+      this.closeActMenu();
       if (this.mode !== 'edit') this.view.render();
       if (this.v3 && this.v3.ready) this.v3.update();
       this.updateAlarmsBtn();
@@ -157,7 +216,7 @@ const app = Object.assign({
         if (d.tripped && d.tripped.length) setTimeout(() => this.toast('Сработала защита: ' + d.tripped.map(t => this.tr.tripText(t)).join('; ') + '.', 'warn'), 700);
         if (this.v3) this.v3.banner(d.viol.text, 'err');
       } else if (d.viol) { this.toast(d.viol.text, 'warn'); Sound.play('disc'); if (this.v3) this.v3.banner(d.viol.text, 'warn'); }
-      else if (d.ok) { const el = this.scheme.els.find(e => e.id === d.id); Sound.play(el && TYPES[el.t].sw === 'breaker' ? 'breaker' : 'disc'); }
+      else if (d.ok) { const el = this.tr.elOf(d.id); Sound.play(el && TYPES[el.t].sw === 'breaker' && !d.pos ? 'breaker' : 'disc'); }
       this.renderTaskStats(); this.renderRec();
       return;
     }
@@ -202,21 +261,24 @@ const app = Object.assign({
     this.commit();
   },
   addWire(a, b, vf) { this.history(); makeWire(this.scheme, a, b, vf); this.commit(); },
+  // После удаления элемента или провода: убрать из заданий ссылки на него (ПЗ ссылается на провод или шину)
   cleanTasks() {
-    const ids = new Set(this.scheme.els.map(e => e.id));
+    const ids = new Set(this.scheme.els.map(e => e.id)), wids = new Set(this.scheme.wires.map(w => w.id));
+    const ok = k => ids.has(k) || (isPzId(k) && (ids.has(k.slice(3)) || wids.has(k.slice(3))));
+    const pick = (o, f) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => f(k)));
     this.scheme.tasks = this.scheme.tasks.map(t => ({
       ...t,
-      init: Object.fromEntries(Object.entries(t.init).filter(([k]) => ids.has(k))),
-      target: Object.fromEntries(Object.entries(t.target).filter(([k]) => ids.has(k))),
-      steps: t.steps.filter(x => ids.has(x.id)), keep: t.keep.filter(k => ids.has(k)),
-    })).filter(t => Object.keys(t.target).length);
+      init: pick(t.init, ok), target: pick(t.target, ok),
+      initPos: pick(t.initPos, k => ids.has(k)), targetPos: pick(t.targetPos, k => ids.has(k)),
+      steps: t.steps.filter(x => ok(x.id) || (x.op === 'check' && wids.has(x.id))), keep: t.keep.filter(k => ids.has(k)),
+    })).filter(t => Object.keys(t.target).length || Object.keys(t.targetPos).length);
   },
   deleteSel() {
     const sel = this.view.sel;
     if (!sel) return;
     this.history();
     if (sel.type === 'el') { this.scheme.els = this.scheme.els.filter(e => e.id !== sel.id); this.cleanTasks(); }
-    else this.scheme.wires = this.scheme.wires.filter(w => w.id !== sel.id);
+    else { this.scheme.wires = this.scheme.wires.filter(w => w.id !== sel.id); this.cleanTasks(); }
     this.view.sel = null;
     this.commit();
   },
@@ -239,6 +301,7 @@ const app = Object.assign({
     this.commit();
   },
   setNormal(on) { const el = this.selEl(); if (!el || !isSwitchable(el)) return; this.history(); el.on = on; this.commit(); },
+  setNormalPos(pos) { const el = this.selEl(); if (!el || !TYPES[el.t].cart) return; this.history(); el.pos = pos; this.commit(); },
   setProp(path, raw) {
     const s = this.scheme;
     if (path === 'title') { this.history(); s.title = String(raw).trim() || 'Схема'; this.commit(); this.fillSchemeSelect(); return; }
@@ -247,6 +310,8 @@ const app = Object.assign({
     if (path === 'name') { const v = String(raw).trim(); if (!v) { this.renderSide(); return; } this.history(); el.name = v; this.commit(); return; }
     if (path.startsWith('p.')) {
       const key = path.slice(2);
+      const meta = (TYPES[el.t].pmeta || []).find(m => m[0] === key);
+      if (meta && meta[2] === 'bool') { this.history(); el.p[key] = raw ? 1 : 0; this.commit(); return; }
       let v = parseFloat(String(raw).replace(',', '.'));
       if (!isFinite(v) || v <= 0) { this.toast('Нужно положительное число.', 'warn'); this.renderSide(); return; }
       if (key === 'len') v = clamp(Math.round(v), 1, 200);
@@ -270,12 +335,12 @@ const app = Object.assign({
     for (const el of s.els) { if (el.t === 'bus') continue; const k = el.x + ',' + el.y; if (pos.has(k)) issues.push(['bad', `${pos.get(k)} и ${el.name} стоят в одной точке.`]); else pos.set(k, el.name); }
     for (const el of s.els) {
       const t = topo.term.get(el.id);
-      if (el.t === 'transformer' && t[0] === t[1]) issues.push(['bad', `${el.name}: обмотки ВН и НН замкнуты проводом.`]);
-      if (TYPES[el.t].cls === 'switch' && t[0] === t[1]) issues.push(['bad', `${el.name} закорочен проводом.`]);
+      if (TYPES[el.t].cls === 'transformer' && new Set(t).size < t.length) issues.push(['bad', `${el.name}: обмотки замкнуты проводом.`]);
+      if ((TYPES[el.t].cls === 'switch' || TYPES[el.t].cls === 'link') && t[0] === t[1]) issues.push(['bad', `${el.name} закорочен проводом.`]);
     }
     const st = compute(s, topo, makeSim(s));
     if ([...st.V.keys()].some(n => st.G.has(n))) issues.push(['bad', 'В нормальном положении напряжение встречается с заземлением — КЗ.']);
-    const dead = s.els.filter(e => TYPES[e.t].cls === 'load' && !st.loads.has(e.id)).map(e => e.name);
+    const dead = s.els.filter(e => TYPES[e.t].consumer && !st.loads.has(e.id)).map(e => e.name);
     if (dead.length) issues.push(['', `В нормальном положении без питания: ${dead.join(', ')}.`]);
     const box = document.getElementById('issues');
     if (box) box.innerHTML = issues.length ? '<ul class="issues">' + issues.map(([c, t]) => `<li class="${c}">${esc(t)}</li>`).join('') + '</ul>' : '<p style="color:var(--ok)">Ошибок не найдено.</p>';
@@ -304,7 +369,7 @@ const app = Object.assign({
     });
     side.addEventListener('change', e => {
       const t = e.target;
-      if (t.dataset.prop) this.setProp(t.dataset.prop, t.value);
+      if (t.dataset.prop) this.setProp(t.dataset.prop, t.type === 'checkbox' ? t.checked : t.value);
       else if (t.dataset.opt) {
         this.tr.opt[t.dataset.opt] = t.checked;
         const names = { interlocks: 'Блокировки', requireCheck: 'Проверка напряжения перед ЗН' };
@@ -345,7 +410,8 @@ const app = Object.assign({
     switch (act) {
       case 'welcome-close': this.welcomeSeen = true; store.set('ts.welcome', '1'); this.renderSide(); break;
       case 'help': this.showHelp(); break;
-      case 'tool-check': this.toggleTool(); break;
+      case 'tool-check': this.toggleTool('check'); break;
+      case 'tool-pz': this.toggleTool('pz'); break;
       case 'ack': if (!tr.ack()) this.toast('Сигналов нет.'); break;
       case 'reset': if (!tr.resetToNormal()) this.toast('Сначала завершите задание.', 'warn'); break;
       case 'task-start': this.startTask(this.scheme.tasks[this.taskIdx]); break;
@@ -362,6 +428,7 @@ const app = Object.assign({
       case 'redo': this.redo(); break;
       case 'normal-on': this.setNormal(true); break;
       case 'normal-off': this.setNormal(false); break;
+      case 'normal-pos': this.setNormalPos(b.dataset.pos); break;
       case 'rotate': this.rotateSel(); break;
       case 'dup': this.duplicateSel(); break;
       case 'del': this.deleteSel(); break;
@@ -419,9 +486,10 @@ const app = Object.assign({
       return;
     }
     if (mod) return;
-    if (e.code === 'KeyV') this.toggleTool();
+    if (e.code === 'KeyV') this.toggleTool('check');
+    else if (e.code === 'KeyP') this.toggleTool('pz');
     else if (e.code === 'KeyK') { if (!this.tr.ack()) this.toast('Сигналов нет.'); }
-    else if (e.key === 'Escape' && this.tool) this.toggleTool();
+    else if (e.key === 'Escape') { if (document.getElementById('actmenu')) this.closeActMenu(); else if (this.tool) this.toggleTool(this.tool); }
   },
   toggleTheme() {
     const root = document.documentElement;

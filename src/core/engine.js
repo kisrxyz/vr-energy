@@ -1,21 +1,47 @@
-import { G, TYPES, ptKey, clamp, portPoints, fmtKv, isSwitchable, newId } from './elements.js';
+import { TYPES, POS, POS_NAME, ptKey, clamp, portPoints, fmtKv, isSwitchable, windings, breaksLoad, isPzId, onWire, newId } from './elements.js';
 
 /* ===== §3. Движок =====
-   Схема → граф: узел = точки, соединённые проводами и шинами; ребро = включённый аппарат или трансформатор.
-   Напряжение идёт от включённых источников по включённым аппаратам, через трансформатор — с пересчётом класса.
-   Земля идёт от включённых ЗН только по аппаратам (через трансформатор не проходит).
+   Схема → граф: узел = точки, соединённые проводами и шинами; ребро = включённый аппарат, элемент цепи (ТТ, реактор,
+   КЛ, ВЛ) или трансформатор. Напряжение идёт от включённых источников по рёбрам, через трансформатор — с пересчётом класса.
+   Земля идёт от включённых ЗН, КЗ и ПЗ только по аппаратам и элементам цепи (через трансформатор не проходит).
 
    ПРАВИЛА (их подтверждает преподаватель):
-   1. ЗН на участок под напряжением → авария (дуга, КЗ).
+   1. ЗН (и ПЗ) на участок под напряжением → авария (дуга, КЗ).
    2. Разъединитель на заземлённый участок под напряжением → авария.
    3. Выключатель на заземлённый участок → КЗ, выключатель отключается защитой.
-   4. Разъединителем отключён ток нагрузки (потребитель потерял питание) → авария.
+   4. Разъединителем отключён ток нагрузки (потребитель или БК потеряли питание) → авария.
    5. Разъединителем включена нагрузка → авария.
-      Разъединителем можно отключать и включать ненагруженные шины и трансформаторы.
-   6. ЗН без проверки отсутствия напряжения указателем → нарушение порядка (если правило включено).
+      Разъединителем можно отключать и включать ненагруженные шины, трансформаторы, ТН и линии.
+   6. ЗН (и ПЗ) без проверки отсутствия напряжения указателем → нарушение порядка (если правило включено).
    7. В задании потребитель из списка «не обесточивать» потерял питание → ошибка «перерыв питания».
    С включёнными блокировками опасные операции 1–5 не выполняются, но считаются попыткой ошибки.
-   При КЗ отключаются ближайшие выключатели, через которые КЗ питается; если таких нет — источник. */
+   При КЗ отключаются ближайшие выключатели (и перегорают предохранители), через которые КЗ питается; если таких нет — источник.
+
+   НОВЫЕ ПРАВИЛА 0.2 (бесспорные, но тоже показать преподавателю):
+   8.  Предохранитель при КЗ за ним перегорает вместо выключателя выше; перегоревший остаётся отключённым до замены.
+       Снимать и ставить предохранитель — как разъединителем: без нагрузки (правила 2, 4, 5); установка на заземлённый
+       участок — КЗ, новый предохранитель перегорает.
+   9.  Выключатель нагрузки отключает и включает ток нагрузки, но не отключает КЗ: КЗ за ним отключает выключатель
+       выше или предохранитель. Включение на заземлённый участок — КЗ (как правило 3).
+   10. Тележку КРУ перемещают только при отключённом выключателе (механическая блокировка). Без блокировок —
+       нарушение порядка, а если при этом рвётся или включается ток нагрузки или земля — авария (правила 2, 4, 5).
+       Тележка разъединителя (СР, ТН) — как разъединитель.
+   11. Рубильник без дугогасительных камер — как разъединитель; с камерами — отключает ток нагрузки.
+   12. Отделитель вручную — как разъединитель; короткозамыкатель на напряжение — искусственное КЗ,
+       отключение со стороны питания. TODO преподаватель: автоматика ОД+КЗ не моделируется.
+   Логика — в Trainer.analyze и Trainer.clearFault. */
+
+// Проводит ли аппарат в состоянии x (тележка — только в рабочем положении)
+function conducts(el, x) {
+  if (!x) return false;
+  return TYPES[el.t].cart ? !!x.on && x.pos === 'work' : !!x.on;
+}
+// Узел переносного заземления: провод или шина
+function pzNode(topo, at) {
+  if (topo.wireNode.has(at)) return topo.wireNode.get(at);
+  const t = topo.term.get(at);
+  return t && t.length === 1 ? t[0] : null;
+}
 
 function buildTopo(s) {
   const parent = new Map();
@@ -39,6 +65,14 @@ function buildTopo(s) {
     portKeys.set(el.id, keys);
   }
   for (const w of s.wires) { const a = ptKey(w.a), b = ptKey(w.b); union(a, b); U(a).wires++; U(b).wires++; }
+  // ПЗ можно поставить на провод в любом месте, не только на конец
+  for (const el of s.els) {
+    if (!TYPES[el.t].onWire) continue;
+    const k = portKeys.get(el.id)[0], u = U(k);
+    if (u.wires || u.bus || u.ports > 1) continue;
+    const p = k.split(',').map(Number), w = s.wires.find(v => onWire(v, p));
+    if (w) { union(k, ptKey(w.a)); u.wires++; u.mid = true; }
+  }
   const nid = new Map();
   let cnt = 0;
   const node = k => { add(k); const r = find(k); if (!nid.has(r)) nid.set(r, 'n' + (cnt++)); return nid.get(r); };
@@ -54,31 +88,36 @@ function buildTopo(s) {
   return { term, nodeEls, busNodes, wireNode, use, node, portKeys };
 }
 
-function makeSim(s, init) {
+function makeSim(s, init, initPos) {
   const st = {}, src = {};
   for (const el of s.els) {
-    if (isSwitchable(el)) st[el.id] = { on: init && el.id in init ? !!init[el.id] : !!el.on, trip: false };
-    else if (TYPES[el.t].cls === 'source') src[el.id] = { on: true, trip: false };
+    if (isSwitchable(el)) {
+      const x = st[el.id] = { on: init && el.id in init ? !!init[el.id] : !!el.on, trip: false };
+      if (TYPES[el.t].cart) x.pos = initPos && POS.includes(initPos[el.id]) ? initPos[el.id] : (el.pos || 'work');
+    } else if (TYPES[el.t].cls === 'source') src[el.id] = { on: true, trip: false };
   }
-  return { st, src, checked: new Set() };
+  // переносные заземления из исходного положения задания
+  if (init) for (const k in init) if (isPzId(k) && init[k]) st[k] = { on: true, trip: false };
+  return { st, src, checked: new Set(), pzPt: {} };
 }
 
-// Состояние сети. ov = {id, on} — «что будет, если переключить этот аппарат».
+// Состояние сети. ov = {id, st} — «что будет, если у аппарата id станет состояние st».
 function compute(s, topo, sim, ov) {
-  const isOn = id => (ov && ov.id === id) ? ov.on : sim.st[id].on;
+  const stOf = id => (ov && ov.id === id) ? ov.st : sim.st[id];
   const adj = new Map();
   const link = (a, e) => { let l = adj.get(a); if (!l) adj.set(a, l = []); l.push(e); };
   for (const el of s.els) {
     const T = TYPES[el.t], tm = topo.term.get(el.id);
-    if (T.cls === 'switch') {
-      if (isOn(el.id) && tm[0] !== tm[1]) {
-        const br = T.sw === 'breaker';
-        link(tm[0], { to: tm[1], id: el.id, k: 'sw', br });
-        link(tm[1], { to: tm[0], id: el.id, k: 'sw', br });
-      }
-    } else if (T.cls === 'transformer' && tm[0] !== tm[1]) {
-      link(tm[0], { to: tm[1], id: el.id, k: 'tr', kv: +el.p.kv2 });
-      link(tm[1], { to: tm[0], id: el.id, k: 'tr', kv: +el.p.kv1 });
+    if (T.cls === 'switch' || T.cls === 'link') {
+      if (tm[0] === tm[1] || (T.cls === 'switch' && !conducts(el, stOf(el.id)))) continue;
+      // br — граница зоны КЗ (отключает КЗ), lb — может разорвать ток нагрузки
+      const e = { id: el.id, k: 'sw', br: !!T.prot, lb: breaksLoad(el) };
+      link(tm[0], Object.assign({ to: tm[1] }, e));
+      link(tm[1], Object.assign({ to: tm[0] }, e));
+    } else if (T.cls === 'transformer') {
+      const kv = windings(el);
+      for (let i = 0; i < tm.length; i++) for (let j = 0; j < tm.length; j++)
+        if (i !== j && tm[i] !== tm[j]) link(tm[i], { to: tm[j], id: el.id, k: 'tr', kv: kv[j] });
     }
   }
   const V = new Map(), src = new Map(), srcNodes = new Set(), q = [];
@@ -100,11 +139,22 @@ function compute(s, topo, sim, ov) {
     }
   }
   const Gd = new Set(), gq = [];
-  for (const el of s.els) if (el.t === 'earth' && isOn(el.id)) { const n = topo.term.get(el.id)[0]; if (!Gd.has(n)) { Gd.add(n); gq.push(n); } }
+  const seed = n => { if (n != null && !Gd.has(n)) { Gd.add(n); gq.push(n); } };
+  for (const el of s.els) if (TYPES[el.t].cls === 'earth') { const x = stOf(el.id); if (x && x.on) seed(topo.term.get(el.id)[0]); }
+  // переносные заземления, наложенные в тренажёре
+  const pz = Object.keys(sim.st).filter(isPzId);
+  if (ov && isPzId(ov.id) && !pz.includes(ov.id)) pz.push(ov.id);
+  for (const k of pz) { const x = stOf(k); if (x && x.on) seed(pzNode(topo, k.slice(3))); }
   for (let i = 0; i < gq.length; i++) for (const e of adj.get(gq[i]) || []) { if (e.k !== 'sw' || Gd.has(e.to)) continue; Gd.add(e.to); gq.push(e.to); }
-  const loads = new Set();
-  for (const el of s.els) if (TYPES[el.t].cls === 'load' && V.has(topo.term.get(el.id)[0])) loads.add(el.id);
-  return { V, G: Gd, loads, adj, src, srcNodes };
+  // loads — потребители под напряжением; cur — всё, что тянет ток нагрузки (потребители и БК)
+  const loads = new Set(), cur = new Set();
+  for (const el of s.els) {
+    const T = TYPES[el.t];
+    if (T.cls !== 'load' || !V.has(topo.term.get(el.id)[0])) continue;
+    cur.add(el.id);
+    if (T.consumer) loads.add(el.id);
+  }
+  return { V, G: Gd, loads, cur, adj, src, srcNodes };
 }
 
 const fmtTime = sec => { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); };
@@ -126,8 +176,9 @@ class Trainer {
     this.run = null; this.rec = null;
     this.reset();
   }
-  reset(init) {
-    this.sim = makeSim(this.s, init);
+  reset(init, initPos) {
+    this.sim = makeSim(this.s, init, initPos);
+    for (const k in this.sim.st) if (isPzId(k)) this.elOf(k);
     this.state = compute(this.s, this.topo, this.sim);
     this.log = [];
     this.emit('state', { reset: true });
@@ -140,7 +191,27 @@ class Trainer {
     this.emit('task', { exit: true });
     return true;
   }
-  nm(id) { const e = this.byId.get(id); return e ? e.name : '?'; }
+  // Элемент схемы или переносное заземление, наложенное в тренажёре (создаётся при первом обращении)
+  elOf(id) {
+    if (this.byId.has(id)) return this.byId.get(id);
+    if (!isPzId(id)) return null;
+    const at = id.slice(3), n = pzNode(this.topo, at);
+    if (n == null) return null;
+    const atEl = this.byId.get(at);
+    let name;
+    if (atEl && atEl.t === 'bus') name = 'ПЗ на ' + atEl.name;
+    else {
+      const ids = (this.topo.nodeEls.get(n) || []).filter(i => TYPES[this.byId.get(i).t].cls !== 'earth');
+      name = ids.length >= 2 ? `ПЗ между ${this.nm(ids[0])} и ${this.nm(ids[1])}` : ids.length ? 'ПЗ у ' + this.nm(ids[0]) : 'ПЗ на проводе';
+    }
+    const el = { id, t: 'pz', name, at, pseudo: true };
+    this.byId.set(id, el);
+    this.topo.term.set(id, [n]);
+    if (!this.topo.nodeEls.has(n)) this.topo.nodeEls.set(n, []);
+    this.topo.nodeEls.get(n).push(id);
+    return el;
+  }
+  nm(id) { const e = this.elOf(id); return e ? e.name : '?'; }
   names(ids) { return ids.map(i => this.nm(i)).join(', '); }
   addLog(level, text, id) {
     const e = { time: new Date().toTimeString().slice(0, 8), level, text, id };
@@ -162,29 +233,80 @@ class Trainer {
   hasAlarms() {
     return Object.values(this.sim.st).some(x => x.trip) || Object.values(this.sim.src).some(x => x.trip);
   }
+  // Переносные заземления, наложенные сейчас
+  pzOn() { return Object.keys(this.sim.st).filter(k => isPzId(k) && this.sim.st[k].on); }
 
-  // ---------- анализ операции: что будет, если переключить ----------
-  analyze(el, next) {
+  // Что можно сделать с аппаратом: для меню в 2D и 3D
+  actions(id) {
+    const el = this.elOf(id);
+    if (!el || !isSwitchable(el)) return [];
+    const T = TYPES[el.t], x = this.sim.st[id] || { on: false };
+    if (T.cart) {
+      const out = [];
+      if (T.sw === 'breaker') out.push({ label: x.on ? 'Отключить выключатель' : 'Включить выключатель' });
+      for (const p of POS) if (p !== x.pos) out.push({ pos: p, label: `Тележку в ${POS_NAME[p]} положение` });
+      return out;
+    }
+    if (x.blown) return [{ label: 'Заменить предохранитель' }];
+    const v = T.verbs || ['включить', 'отключить'];
+    return [{ label: capFirst(x.on ? v[1] : v[0]) }];
+  }
+
+  // ---------- анализ операции: что будет, если у аппарата станет состояние nxt ----------
+  analyze(el, nxt) {
     const T = TYPES[el.t], tm = this.topo.term.get(el.id);
+    const cur = this.sim.st[el.id] || { on: false, trip: false };
     const before = this.state;
-    const after = compute(this.s, this.topo, this.sim, { id: el.id, on: next });
+    const after = compute(this.s, this.topo, this.sim, { id: el.id, st: nxt });
+    const racking = !!T.cart && nxt.pos !== cur.pos;
+    const res = this.analyzeNet(el, T, tm, nxt, racking, before, after);
+    // TODO преподаватель: требовать ли видимый разрыв (разъединитель отключён, тележка в контрольном) перед включением ЗН и ПЗ,
+    // и блокировать ли вкатывание тележки при включённом ЗН в ячейке? Сейчас проверяется только отсутствие напряжения.
+    // Механическая блокировка КРУ: тележка перемещается только при отключённом выключателе
+    if (racking && T.sw === 'breaker' && cur.on) {
+      const block = `Блокировка: тележка ${el.name} не перемещается — выключатель включён. Сначала отключите выключатель.`;
+      if (res.viol) res.viol.block = block;
+      else res.viol = { kind: 'proc', lock: true, text: `Нарушение порядка: тележка ${el.name} перемещена при включённом выключателе.`, block };
+    }
+    return res;
+  }
+  analyzeNet(el, T, tm, nxt, racking, before, after) {
     const conflict = [...after.V.keys()].filter(n => after.G.has(n));
     if (conflict.length) {
-      const earths = this.earthsNear(after, conflict, el.id, next);
+      const earths = this.earthsNear(after, conflict, el.id, nxt.on);
       const en = this.names(earths) || 'заземление';
       // место КЗ — включённые ножи на участке, где встретились напряжение и земля
       const fn = [...new Set(earths.map(i => this.topo.term.get(i)[0]))];
       const faultNodes = fn.length ? fn : conflict;
       if (T.cls === 'earth') {
-        const kv = before.V.get(tm[0]);
+        const kv = this.state.V.get(tm[0]), kvt = kv != null ? ' ' + fmtKv(kv) : '';
+        if (T.ek === 'kz') {
+          // TODO преподаватель: блокировать ли ручное включение КЗ на напряжение и как вести автоматику ОД+КЗ
+          return {
+            viol: { kind: 'kz', text: `КЗ: короткозамыкатель ${el.name} включён на участок под напряжением${kvt}. Искусственное короткое замыкание.`,
+                    block: `Блокировка: ${el.name} не включается — на участке напряжение${kvt}.` },
+            faultNodes };
+        }
         return {
-          viol: { kind: 'accident', text: `Авария: ${el.name} включён на участок под напряжением${kv != null ? ' ' + fmtKv(kv) : ''}. Дуга, короткое замыкание.`,
-                  block: `Блокировка: ${el.name} не включается — на участке есть напряжение${kv != null ? ' ' + fmtKv(kv) : ''}. Отключите выключатель и разъединители, проверьте отсутствие напряжения.` },
+          viol: { kind: 'accident', text: `Авария: ${el.name} ${T.ek === 'pz' ? 'наложено' : 'включён'} на участок под напряжением${kvt}. Дуга, короткое замыкание.`,
+                  block: `Блокировка: ${el.name} не ${T.ek === 'pz' ? 'накладывается' : 'включается'} — на участке есть напряжение${kvt}. Отключите выключатель и разъединители, проверьте отсутствие напряжения.` },
+          faultNodes };
+      }
+      if (racking) {
+        return {
+          viol: { kind: 'accident', text: `Авария: тележка ${el.name} вкачена в рабочее положение на заземлённый участок (${en}). Дуга, короткое замыкание.`,
+                  block: `Блокировка: тележка ${el.name} не вкатывается — участок заземлён (${en}). Сначала отключите заземление.` },
+          faultNodes };
+      }
+      if (T.sw === 'fuse') {
+        return {
+          viol: { kind: 'kz', text: `КЗ: предохранитель ${el.name} установлен на заземлённый участок (${en}).`,
+                  block: `Блокировка: ${el.name} не устанавливается — участок заземлён (${en}). Сначала снимите заземление.` },
           faultNodes };
       }
       if (T.sw === 'disconnector') {
         return {
-          viol: { kind: 'accident', text: `Авария: разъединитель ${el.name} включён на заземлённый участок (${en}). Дуга, короткое замыкание.`,
+          viol: { kind: 'accident', text: `Авария: ${T.title.toLowerCase()} ${el.name} включён на заземлённый участок (${en}). Дуга, короткое замыкание.`,
                   block: `Блокировка: ${el.name} не включается — участок заземлён (${en}). Сначала отключите заземляющие ножи.` },
           faultNodes };
       }
@@ -193,49 +315,49 @@ class Trainer {
                 block: `Блокировка: ${el.name} не включается — в зоне включения заземление (${en}).` },
         faultNodes };
     }
-    if (T.sw === 'disconnector') {
-      if (!next) {
-        const lost = [...before.loads].filter(l => !after.loads.has(l));
-        if (lost.length) {
-          const q = this.seriesBreaker(el.id, before);
-          const side = tm.filter(n => before.V.has(n) && after.V.has(n));
-          return {
-            viol: { kind: 'accident', text: `Авария: разъединителем ${el.name} разорван ток нагрузки (${this.names(lost)}). Электрическая дуга.`,
-                    block: `Блокировка: ${el.name} под нагрузкой. ${q ? 'Сначала отключите выключатель ' + this.nm(q) + '.' : 'Сначала снимите нагрузку выключателем.'}` },
-            faultNodes: side.length ? side : [tm[0]] };
-        }
-      } else {
-        const gained = [...after.loads].filter(l => !before.loads.has(l));
-        if (gained.length) {
-          const q = this.seriesBreaker(el.id, before);
-          const side = tm.filter(n => before.V.has(n));
-          return {
-            viol: { kind: 'accident', text: `Авария: разъединителем ${el.name} включена нагрузка (${this.names(gained)}). Электрическая дуга.`,
-                    block: `Блокировка: нагрузку разъединителем не включают. ${q ? 'Отключите ' + this.nm(q) + ', включите разъединитель, затем выключатель.' : 'Включайте нагрузку выключателем.'}` },
-            faultNodes: side.length ? side : [tm[0]] };
-        }
+    // Ток нагрузки рвёт или включает аппарат без дугогашения: разъединитель, отделитель, рубильник без камер,
+    // предохранитель, разъёмные контакты тележки
+    const noLoadDevice = T.cls === 'switch' && (racking || (!T.cart && !breaksLoad(el) && T.sw !== 'breaker'));
+    if (noLoadDevice) {
+      const what = racking ? `при перемещении тележки ${el.name}` : T.sw === 'fuse' ? `предохранителем ${el.name}` : `${T.by || 'аппаратом'} ${el.name}`;
+      const arcAt = racking ? 'Дуга на разъёмных контактах.' : 'Электрическая дуга.';
+      const lost = [...before.cur].filter(l => !after.cur.has(l));
+      const gained = [...after.cur].filter(l => !before.cur.has(l));
+      if (lost.length || gained.length) {
+        const q = this.seriesBreaker(el.id, before);
+        const opening = lost.length > 0;
+        const side = opening ? tm.filter(n => before.V.has(n) && after.V.has(n)) : tm.filter(n => before.V.has(n));
+        const head = racking ? `тележка ${el.name}` : el.name;
+        return {
+          viol: { kind: 'accident',
+                  text: opening ? `Авария: ${what} разорван ток нагрузки (${this.names(lost)}). ${arcAt}` : `Авария: ${what} включена нагрузка (${this.names(gained)}). ${arcAt}`,
+                  block: opening ? `Блокировка: ${head} под нагрузкой. ${q ? 'Сначала отключите ' + this.nm(q) + '.' : 'Сначала снимите нагрузку выключателем.'}`
+                                 : `Блокировка: нагрузку ${racking ? 'тележкой' : T.sw === 'fuse' ? 'предохранителем' : T.by || 'этим аппаратом'} не включают. ${q ? 'Отключите ' + this.nm(q) + ', затем включайте.' : 'Включайте нагрузку выключателем.'}` },
+          faultNodes: side.length ? side : [tm[0]] };
       }
     }
-    if (T.cls === 'earth' && next && this.needCheck() && !this.sim.checked.has(tm[0])) {
-      return { viol: { kind: 'proc', text: `Нарушение порядка: ${el.name} включён без проверки отсутствия напряжения указателем.` }, faultNodes: [] };
+    if (T.cls === 'earth' && T.ek !== 'kz' && nxt.on && this.needCheck() && !this.sim.checked.has(tm[0])) {
+      return { viol: { kind: 'proc', text: `Нарушение порядка: ${el.name} ${T.ek === 'pz' ? 'наложено' : 'включён'} без проверки отсутствия напряжения указателем.` }, faultNodes: [] };
     }
     return { viol: null, faultNodes: [] };
   }
 
-  // Включённые ЗН, которые заземляют участок с конфликтом
+  // Включённые ЗН, КЗ и ПЗ, которые заземляют участок с конфликтом
   earthsNear(st, nodes, opId, opOn) {
     const seen = new Set(nodes), q = [...nodes], out = [];
     for (let i = 0; i < q.length; i++) for (const e of st.adj.get(q[i]) || []) if (e.k === 'sw' && !seen.has(e.to)) { seen.add(e.to); q.push(e.to); }
+    if (opId != null && isPzId(opId)) this.elOf(opId);
     for (const n of seen) for (const id of this.topo.nodeEls.get(n) || []) {
-      const e = this.byId.get(id);
-      if (e.t !== 'earth') continue;
-      const on = id === opId ? opOn : this.sim.st[id].on;
+      const e = this.elOf(id);
+      if (TYPES[e.t].cls !== 'earth') continue;
+      const x = this.sim.st[id];
+      const on = id === opId ? opOn : !!(x && x.on);
       if (on && !out.includes(id)) out.push(id);
     }
     return out;
   }
 
-  // Выключатель того же присоединения (без выхода на шины)
+  // Аппарат того же присоединения (без выхода на шины, можно через трансформатор), которым можно снять нагрузку
   seriesBreaker(id, st) {
     const start = this.topo.term.get(id).filter(n => !this.topo.busNodes.has(n));
     const seen = new Set(start), q = start.map(n => [n, 0]);
@@ -243,16 +365,17 @@ class Trainer {
       const [n, d] = q[i];
       if (d > 8) continue;
       for (const e of st.adj.get(n) || []) {
-        if (e.id === id || e.k !== 'sw') continue;
-        if (e.br) return e.id;
+        if (e.id === id) continue;
+        if (e.lb) return e.id;
         if (!seen.has(e.to) && !this.topo.busNodes.has(e.to)) { seen.add(e.to); q.push([e.to, d + 1]); }
       }
     }
     return null;
   }
 
-  // Отключение КЗ: зона КЗ — всё, что связано с местом КЗ без выключателей;
-  // отключаются выключатели на границе зоны, через которые она питается.
+  // Отключение КЗ: зона КЗ — всё, что связано с местом КЗ без выключателей и предохранителей;
+  // отключаются выключатели и перегорают предохранители на границе зоны, через которые она питается.
+  // Выключатель нагрузки ток КЗ не отключает — зона проходит через него.
   clearFault(F) {
     const st = compute(this.s, this.topo, this.sim);
     const zone = new Set(F), q = [...F];
@@ -262,10 +385,15 @@ class Trainer {
     }
     const tripped = [];
     for (const el of this.s.els) {
-      if (TYPES[el.t].sw !== 'breaker' || !this.sim.st[el.id].on) continue;
+      const T = TYPES[el.t], x = this.sim.st[el.id];
+      if (!T.prot || !conducts(el, x)) continue;
       const [a, b] = this.topo.term.get(el.id), ia = zone.has(a), ib = zone.has(b);
       if (ia === ib) continue;
-      if (this.fedFrom(st, ia ? b : a, zone, el.id)) { this.sim.st[el.id].on = false; this.sim.st[el.id].trip = true; tripped.push(el.id); }
+      if (this.fedFrom(st, ia ? b : a, zone, el.id)) {
+        x.on = false; x.trip = true;
+        if (T.sw === 'fuse') x.blown = true;
+        tripped.push(el.id);
+      }
     }
     for (const el of this.s.els) {
       if (TYPES[el.t].cls !== 'source') continue;
@@ -286,8 +414,9 @@ class Trainer {
     return false;
   }
   tripText(id) {
-    const e = this.byId.get(id);
-    return TYPES[e.t].cls === 'source' ? `отключение со стороны «${e.name}»` : `отключился ${e.name}`;
+    const e = this.byId.get(id), T = TYPES[e.t];
+    if (T.cls === 'source') return `отключение со стороны «${e.name}»`;
+    return T.sw === 'fuse' ? `перегорел предохранитель ${e.name}` : `отключился ${e.name}`;
   }
   // Если после изменения где-то напряжение встретилось с землёй — отключить КЗ
   settle() {
@@ -301,23 +430,37 @@ class Trainer {
   }
 
   // ---------- операции ----------
-  operate(id) {
-    const el = this.byId.get(id);
+  // act: не задан — включить/отключить (у тележки — выключатель); { pos } — переместить тележку
+  operate(id, act) {
+    const el = this.elOf(id);
     if (!el || !isSwitchable(el)) return null;
-    const next = !this.sim.st[id].on;
-    const a = this.analyze(el, next);
+    const T = TYPES[el.t], cur = this.sim.st[id] || { on: false, trip: false };
+    const nxt = Object.assign({}, cur, { trip: false });
+    let pos = null;
+    if (act && act.pos) {
+      if (!T.cart || !POS.includes(act.pos) || act.pos === cur.pos) return null;
+      pos = act.pos;
+    } else if (T.cart && T.sw !== 'breaker') pos = cur.pos === 'work' ? 'test' : 'work';  // тележка разъединителя
+    if (pos) nxt.pos = pos;
+    else { nxt.on = !cur.on; nxt.blown = false; }
+    const a = this.analyze(el, nxt);
     const severe = !!a.viol && (a.viol.kind === 'accident' || a.viol.kind === 'kz');
-    if (severe && this.opt.interlocks) {
+    if ((severe || (a.viol && a.viol.lock)) && this.opt.interlocks) {
       this.addLog('warn', a.viol.block, id);
       this.note('blocked', a.viol.block, id);
       this.emit('op', { id, blocked: true, text: a.viol.block });
       return { blocked: true, text: a.viol.block };
     }
     const before = this.state;
-    this.sim.st[id].on = next;
-    this.sim.st[id].trip = false;
-    this.addLog('info', `${next ? 'Включён' : 'Отключён'} ${el.name}.`, id);
-    this.record({ op: next ? 'on' : 'off', id });
+    this.sim.st[id] = nxt;
+    if (pos) {
+      this.addLog('info', `Тележка ${el.name} переведена в ${POS_NAME[pos]} положение.`, id);
+      this.record({ op: 'pos', id, pos });
+    } else {
+      const did = T.did || ['Включён', 'Отключён'];
+      this.addLog('info', cur.blown ? `Заменён предохранитель ${el.name}.` : `${nxt.on ? did[0] : did[1]} ${el.name}${T.cart && cur.pos !== 'work' ? ` (тележка в ${POS_NAME[cur.pos]} положении)` : ''}.`, id);
+      this.record({ op: nxt.on ? 'on' : 'off', id });
+    }
     let tripped = [];
     if (severe) {
       this.addLog('err', a.viol.text, id);
@@ -331,12 +474,20 @@ class Trainer {
     this.state = compute(this.s, this.topo, this.sim);
     tripped = tripped.concat(this.settle());
     this.afterChange(before);
-    const res = { ok: true, id, on: next, viol: a.viol, tripped, text: a.viol ? a.viol.text : null };
+    const res = { ok: true, id, on: nxt.on, pos: nxt.pos, viol: a.viol, tripped, text: a.viol ? a.viol.text : null };
     if (severe) this.emit('fx', { kind: a.viol.kind, id, tripped });
     this.emit('op', res);
     this.emit('state', {});
     this.checkDone();
     return res;
+  }
+  // Наложить или снять переносное заземление на провод или шину (pt — точка на схеме для рисунка)
+  pzToggle(target, pt) {
+    const id = 'pz:' + target;
+    const el = this.elOf(id);
+    if (!el) return null;
+    if (pt && !(this.sim.st[id] && this.sim.st[id].on)) this.sim.pzPt[id] = pt;
+    return this.operate(id);
   }
   afterChange(before) {
     const lost = [...before.loads].filter(l => !this.state.loads.has(l));
@@ -372,7 +523,8 @@ class Trainer {
     return ss.on;
   }
 
-  // Квитирование: снять мигание отключившихся аппаратов, вернуть питание от системы (АПВ на том конце)
+  // Квитирование: снять мигание отключившихся аппаратов, вернуть питание от системы (АПВ на том конце).
+  // Перегоревший предохранитель остаётся отключённым — его заменяют.
   ack() {
     let n = 0;
     for (const id in this.sim.st) if (this.sim.st[id].trip) { this.sim.st[id].trip = false; n++; }
@@ -403,7 +555,7 @@ class Trainer {
   placeOf(n) {
     const ids = this.topo.nodeEls.get(n) || [];
     const by = t => ids.find(i => this.byId.get(i).t === t);
-    return by('earth') || by('bus') || ids[0] || null;
+    return by('earth') || by('pz') || by('bus') || ids[0] || null;
   }
   check(target) {
     const nodes = this.nodesOf(target);
@@ -431,7 +583,8 @@ class Trainer {
   startTask(task) {
     this.rec = null;
     this.run = null;
-    this.sim = makeSim(this.s, task.init);
+    this.sim = makeSim(this.s, task.init, task.initPos);
+    for (const k in this.sim.st) if (isPzId(k)) this.elOf(k);
     this.state = compute(this.s, this.topo, this.sim);
     this.log = [];
     this.run = { task, t0: Date.now(), ops: [], errors: [], hints: 0, done: false };
@@ -444,7 +597,8 @@ class Trainer {
   checkDone() {
     const r = this.run;
     if (!r || r.done) return;
-    const ok = Object.entries(r.task.target).every(([id, on]) => this.sim.st[id] && this.sim.st[id].on === on);
+    const ok = Object.entries(r.task.target).every(([id, on]) => !!(this.sim.st[id] && this.sim.st[id].on) === on) &&
+      Object.entries(r.task.targetPos || {}).every(([id, p]) => this.sim.st[id] && this.sim.st[id].pos === p);
     if (ok && !Object.values(this.sim.src).some(x => x.trip)) this.finish(true);
   }
   finish(completed) {
@@ -471,20 +625,24 @@ class Trainer {
     return { score, verdict, tone, acc, blk, sup, prc, extra, refOps, myOps, hints: r.hints, secs: Math.round(((r.t1 || Date.now()) - r.t0) / 1000) };
   }
   stepText(st) {
-    const n = this.nm(st.id);
-    return st.op === 'on' ? `включить ${n}` : st.op === 'off' ? `отключить ${n}` : `проверить отсутствие напряжения у ${n}`;
+    const n = this.nm(st.id), el = this.elOf(st.id), T = el ? TYPES[el.t] : {};
+    if (st.op === 'pos') return `перевести тележку ${n} в ${POS_NAME[st.pos]} положение`;
+    if (st.op === 'check') return `проверить отсутствие напряжения у ${n}`;
+    const v = T.verbs || ['включить', 'отключить'];
+    return `${st.op === 'on' ? v[0] : v[1]} ${n}`;
   }
   nextStep() {
     const r = this.run;
     if (!r || r.done) return null;
     for (const st of r.task.steps) {
+      const x = this.sim.st[st.id];
       if (st.op === 'check') {
-        const n = this.topo.term.get(st.id)[0];
-        const earthOn = this.sim.st[st.id] && this.sim.st[st.id].on;
-        if (!earthOn && !this.sim.checked.has(n)) return st;
+        const t = this.topo.term.get(st.id), n = t ? t[0] : this.topo.wireNode.get(st.id);
+        if (!(x && x.on) && !this.sim.checked.has(n)) return st;
         continue;
       }
-      if (this.sim.st[st.id] && this.sim.st[st.id].on !== (st.op === 'on')) return st;
+      if (st.op === 'pos') { if (x && x.pos !== st.pos) return st; continue; }
+      if (!!(x && x.on) !== (st.op === 'on')) return st;
     }
     return null;
   }
@@ -499,7 +657,11 @@ class Trainer {
   }
 
   // ---------- запись эталона (режим инструктора) ----------
-  snapshot() { const o = {}; for (const id in this.sim.st) o[id] = this.sim.st[id].on; return o; }
+  snapshot() {
+    const o = {}, pos = {};
+    for (const id in this.sim.st) { o[id] = this.sim.st[id].on; if (this.sim.st[id].pos) pos[id] = this.sim.st[id].pos; }
+    return { st: o, pos };
+  }
   startRec() {
     this.run = null;
     this.rec = { init: this.snapshot(), steps: [], errors: 0, powered: new Set(this.state.loads), lost: new Set() };
@@ -509,11 +671,12 @@ class Trainer {
   saveRec(title, desc) {
     const r = this.rec;
     if (!r) return null;
-    const fin = this.snapshot(), target = {};
-    for (const id in fin) if (fin[id] !== r.init[id]) target[id] = fin[id];
-    if (!Object.keys(target).length) return { error: 'В записи нет переключений: положение аппаратов не изменилось.' };
+    const fin = this.snapshot(), target = {}, targetPos = {};
+    for (const id in fin.st) if (fin.st[id] !== !!r.init.st[id]) target[id] = fin.st[id];
+    for (const id in fin.pos) if (fin.pos[id] !== r.init.pos[id]) targetPos[id] = fin.pos[id];
+    if (!Object.keys(target).length && !Object.keys(targetPos).length) return { error: 'В записи нет переключений: положение аппаратов не изменилось.' };
     const task = {
-      id: newId(this.s, 'task'), title: title || 'Новое задание', desc: desc || '', init: r.init, target,
+      id: newId(this.s, 'task'), title: title || 'Новое задание', desc: desc || '', init: r.init.st, target, initPos: r.init.pos, targetPos,
       steps: r.steps.slice(), keep: [...r.powered].filter(l => !r.lost.has(l)), requireCheck: r.steps.some(x => x.op === 'check'),
     };
     this.s.tasks.push(task);
@@ -525,4 +688,4 @@ class Trainer {
   cancelRec() { this.rec = null; this.addLog('info', 'Запись отменена.'); this.emit('rec', { cancel: true }); }
 }
 
-export { buildTopo, makeSim, compute, fmtTime, capFirst, Trainer };
+export { buildTopo, makeSim, compute, conducts, pzNode, fmtTime, capFirst, Trainer };

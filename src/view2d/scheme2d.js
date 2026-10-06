@@ -1,35 +1,94 @@
-import { G, TYPES, BOX, rot, ptKey, clamp, esc, portPoints, bbox, vClass, fmtNum, fmtKv, isSwitchable, wireRoute } from '../core/elements.js';
+import { G, TYPES, BOX, POS_NAME, rot, ptKey, clamp, esc, portPoints, bbox, vClass, fmtNum, fmtKv, isSwitchable, wireRoute } from '../core/elements.js';
 import { buildTopo } from '../core/engine.js';
 
 /* ===== §4. 2D: схема и редактор ===== */
-const CVAR = { 'c-edit': '--edit', 'c-dead': '--dead', 'c-gnd': '--gnd', 'c-v220': '--v220', 'c-v110': '--v110', 'c-v35': '--v35', 'c-v10': '--v10', 'c-v6': '--v6', 'c-v04': '--v04', 'c-vlow': '--vlow' };
+const CVAR = { 'c-fault': '--fault', 'c-edit': '--edit', 'c-dead': '--dead', 'c-gnd': '--gnd', 'c-v220': '--v220', 'c-v110': '--v110', 'c-v35': '--v35', 'c-v10': '--v10', 'c-v6': '--v6', 'c-v04': '--v04', 'c-vlow': '--vlow' };
 const colorVar = c => `var(${CVAR[c] || '--edit'})`;
 
-// Символ элемента в клетках, до поворота. c: p0/p1 — цвет у точек подключения, st — класс состояния, open — отключён
+// Символ элемента в клетках, до поворота. c: p0/p1/p2 — цвет у точек подключения, st — класс состояния, open — отключён,
+// pos — положение тележки, blown — предохранитель перегорел. Символы — по логике ГОСТ 2.721, 2.723, 2.727, 2.755 (упрощённо).
+const blade = (c, len = 0.5, ox = 0.57, oy = -0.32) =>
+  `<line class="blade ${c.st}" x1="0" y1="${len}" x2="${c.open ? ox : 0}" y2="${c.open ? oy : -len}"/><circle class="pivot ${c.st}" cx="0" cy="${len}" r="0.11"/>`;
+const leads = (c, y0 = 0.5, y1 = 1) =>
+  `<line class="ld ${c.p0}" x1="0" y1="-${y1}" x2="0" y2="-${y0}"/><line class="ld ${c.p1}" x1="0" y1="${y0}" x2="0" y2="${y1}"/>`;
+// Тележка КРУ: неподвижные разъёмные контакты (шевроны) и подвижная часть, которая отходит в контрольном и ремонтном положении
+function cartSVG(c, inner) {
+  const d = c.pos && c.pos !== 'work' ? 0.32 : 0;
+  const tc = c.pos && c.pos !== 'work' ? (c.p0 === 'c-edit' ? 'c-edit' : 'c-dead') : null;
+  const t0 = tc || c.p0, t1 = tc || c.p1;
+  const out = c.pos === 'repair' ? ' cart-out' : '';
+  return `<line class="ld ${c.p0}" x1="0" y1="-2" x2="0" y2="-1.42"/><line class="ld ${c.p1}" x1="0" y1="1.42" x2="0" y2="2"/>` +
+    `<path class="ld ${c.p0}" d="M-0.32 -1.16L0 -1.42L0.32 -1.16"/><path class="ld ${c.p1}" d="M-0.32 1.16L0 1.42L0.32 1.16"/>` +
+    `<g class="cartg${out}"><path class="ld ${t0}" d="M-0.32 ${-0.86 + d}L0 ${-1.12 + d}L0.32 ${-0.86 + d}M0 ${-1.12 + d}V-0.46"/>` +
+    `<path class="ld ${t1}" d="M-0.32 ${0.86 - d}L0 ${1.12 - d}L0.32 ${0.86 - d}M0 ${1.12 - d}V0.46"/>${inner}</g>`;
+}
 function symbolSVG(el, c) {
   const r = el.r || 0;
   switch (el.t) {
     case 'breaker':
       return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.5"/><line class="ld ${c.p1}" x1="0" y1="0.5" x2="0" y2="1"/>` +
         `<rect class="dev ${c.st}" x="-0.5" y="-0.5" width="1" height="1" rx="0.08"/>`;
+    case 'cart':
+      return cartSVG(c, `<rect class="dev ${c.st}" x="-0.46" y="-0.46" width="0.92" height="0.92" rx="0.08"/>`);
+    case 'cartdisc':
+      return cartSVG(c, `<rect class="dev hollow ${c.pos && c.pos !== 'work' ? 's-off' : 's-on'}" x="-0.16" y="-0.46" width="0.32" height="0.92" rx="0.06"/>`);
     case 'acb':
       return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.45"/><line class="ld ${c.p1}" x1="0" y1="0.45" x2="0" y2="1"/>` +
         `<rect class="dev ${c.st}" x="-0.42" y="-0.45" width="0.84" height="0.9" rx="0.32"/>`;
-    case 'disconnector': {
-      const bx = c.open ? 0.57 : 0, by = c.open ? -0.32 : -0.5;
-      return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.5"/><line class="ld ${c.p0}" x1="-0.24" y1="-0.5" x2="0.24" y2="-0.5"/>` +
-        `<line class="ld ${c.p1}" x1="0" y1="0.5" x2="0" y2="1"/><line class="blade ${c.st}" x1="0" y1="0.5" x2="${bx}" y2="${by}"/>` +
-        `<circle class="pivot ${c.st}" cx="0" cy="0.5" r="0.11"/>`;
+    case 'disconnector':
+      return leads(c) + `<line class="ld ${c.p0}" x1="-0.24" y1="-0.5" x2="0.24" y2="-0.5"/>` + blade(c);
+    case 'loadbreak':
+      return leads(c, 0.5, 1) + `<circle class="ld ${c.p0}" cx="0" cy="-0.38" r="0.12" style="fill:var(--canvas)"/>` + blade(c);
+    case 'od':
+      return leads(c) + `<line class="ld ${c.p0}" x1="-0.24" y1="-0.5" x2="0.24" y2="-0.5"/><path class="ld ${c.p0}" d="M-0.2 -0.66A0.2 0.2 0 0 1 0.2 -0.66"/>` + blade(c);
+    case 'knife': {
+      const ex = c.open ? 0.57 : 0, ey = c.open ? -0.32 : -0.5, k = c.open ? [0.49, 0.87] : [1, 0];
+      return leads(c) + `<path class="ld ${c.p0}" d="M-0.2 -0.66V-0.5H0.2V-0.66"/>` + blade(c) +
+        `<line class="blade ${c.st}" x1="${ex - 0.2 * k[0]}" y1="${ey - 0.2 * k[1]}" x2="${ex + 0.2 * k[0]}" y2="${ey + 0.2 * k[1]}"/>` +
+        (el.p && +el.p.arc ? `<rect class="gnd-sym" x="-0.42" y="-0.86" width="0.3" height="0.24" rx="0.04"/>` : '');
     }
-    case 'earth': {
+    case 'earth':
+    case 'kz': {
       const bx = c.open ? 0.52 : 0, by = c.open ? -0.17 : -0.35;
       return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.35"/><line class="ld ${c.p0}" x1="-0.22" y1="-0.35" x2="0.22" y2="-0.35"/>` +
         `<line class="blade ${c.st}" x1="0" y1="0.45" x2="${bx}" y2="${by}"/><circle class="pivot ${c.st}" cx="0" cy="0.45" r="0.1"/>` +
-        `<path class="gnd-sym" d="M0 0.45V0.78M-0.42 0.78H0.42M-0.27 0.95H0.27M-0.12 1.12H0.12"/>`;
+        `<path class="gnd-sym" d="M0 0.45V0.78M-0.42 0.78H0.42M-0.27 0.95H0.27M-0.12 1.12H0.12"/>` +
+        (el.t === 'kz' ? `<path class="gnd-fill" d="M-0.5 0.1L-0.22 0.1L-0.36 0.34Z"/>` : '');
+    }
+    case 'fuse': {
+      const inner = c.blown ? `<path class="ld c-fault" d="M0 -0.55V-0.12M-0.12 -0.12L0.12 0.12M0 0.12V0.55"/>` : c.open ? '' : `<line class="ld ${c.p0}" x1="0" y1="-0.55" x2="0" y2="0.55"/>`;
+      return leads(c, 0.55, 1) + `<rect class="fuse ${c.st}${c.open && !c.blown ? ' removed' : ''}" x="-0.22" y="-0.55" width="0.44" height="1.1" rx="0.06"/>` + inner;
     }
     case 'transformer':
       return `<line class="ld ${c.p0}" x1="0" y1="-2" x2="0" y2="-1.3"/><circle class="tr-c ${c.p0}" cx="0" cy="-0.55" r="0.75"/>` +
         `<circle class="tr-c ${c.p1}" cx="0" cy="0.55" r="0.75"/><line class="ld ${c.p1}" x1="0" y1="1.3" x2="0" y2="2"/>`;
+    case 'tsn':
+      return `<line class="ld ${c.p0}" x1="0" y1="-2" x2="0" y2="-1.05"/><circle class="tr-c ${c.p0}" cx="0" cy="-0.45" r="0.6"/>` +
+        `<circle class="tr-c ${c.p1}" cx="0" cy="0.45" r="0.6"/><line class="ld ${c.p1}" x1="0" y1="1.05" x2="0" y2="2"/>`;
+    case 'tr3':
+      return `<line class="ld ${c.p0}" x1="0" y1="-2" x2="0" y2="-1.2"/><circle class="tr-c ${c.p0}" cx="0" cy="-0.55" r="0.65"/>` +
+        `<circle class="tr-c ${c.p1}" cx="-0.5" cy="0.3" r="0.65"/><circle class="tr-c ${c.p2}" cx="0.5" cy="0.3" r="0.65"/>` +
+        `<path class="ld ${c.p1}" d="M-0.92 0.78L-1 1.1V2"/><path class="ld ${c.p2}" d="M0.92 0.78L1 1.1V2"/>`;
+    case 'reactor':
+      return `<path class="ld ${c.p0}" d="M0 -1V0H-0.4"/><path class="ld ${c.p1}" d="M-0.4 0A0.4 0.4 0 1 1 0 0.4V1"/>`;
+    case 'ct':
+      return leads(c, 0, 1) + `<circle class="tr-c ${c.p0}" cx="0" cy="0" r="0.32"/><path class="gnd-sym" d="M0.32 -0.16H0.5M0.32 0.16H0.5"/>`;
+    case 'vt':
+      return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.4"/><circle class="tr-c ${c.p0}" cx="0" cy="-0.06" r="0.34"/>` +
+        `<circle class="tr-c c-edit" cx="0" cy="0.44" r="0.34"/>`;
+    case 'arrester':
+      return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.5"/><rect class="tr-c ${c.p0}" x="-0.2" y="-0.5" width="0.4" height="0.86" rx="0.04"/>` +
+        `<path class="gnd-sym" d="M-0.13 0.2L0.13 -0.2L0.13 -0.06M0 0.36V0.66M-0.36 0.66H0.36M-0.23 0.82H0.23M-0.1 0.98H0.1"/>`;
+    case 'capacitor':
+      return `<line class="ld ${c.p0}" x1="0" y1="-1" x2="0" y2="-0.1"/><path class="cap ${c.p0}" d="M-0.42 -0.1H0.42M-0.42 0.14H0.42"/>` +
+        `<line class="ld ${c.p0}" x1="0" y1="0.14" x2="0" y2="0.5"/><path class="gnd-sym" d="M-0.18 0.5L0 0.72L0.18 0.5"/>`;
+    case 'pz':
+      return `<path class="pzlead ${c.st}${c.open ? ' removed' : ''}" d="M0 0L0.16 0.16L-0.16 0.32L0.16 0.48L-0.16 0.64L0 0.78"/>` +
+        `<circle class="pivot ${c.st}" cx="0" cy="0" r="0.13"/><path class="gnd-sym" d="M-0.36 0.8H0.36M-0.23 0.96H0.23M-0.1 1.12H0.1"/>`;
+    case 'ohl':
+      return leads(c, 0, 2) + `<path class="gnd-sym" d="M-0.34 0.42L0 -0.38L0.34 0.42M-0.4 -0.14H0.4"/>`;
+    case 'cable':
+      return leads(c, 0, 2) + `<path class="gnd-fill" d="M-0.24 -1.5H0.24L0 -1.1ZM-0.24 1.5H0.24L0 1.1Z"/>`;
     case 'source':
       return `<circle class="tr-c ${c.p0}" cx="0" cy="-0.5" r="0.75"/><path class="srcwave ${c.p0}" d="M-0.42 -0.5c0.14 -0.42 0.28 -0.42 0.42 0s0.28 0.42 0.42 0"/>` +
         `<line class="ld ${c.p0}" x1="0" y1="0.25" x2="0" y2="1"/>`;
@@ -46,25 +105,72 @@ function symbolSVG(el, c) {
   }
   return '';
 }
+// Цвета символа в редакторе (нормальное положение)
+function editColors(T, el) {
+  const open = el ? !el.on : T.normal === false;
+  return { p0: 'c-edit', p1: 'c-edit', p2: 'c-edit', st: open ? 's-off' : 's-on', open, f0: colorVar('c-edit'), pos: el ? el.pos : (T.cart ? 'work' : undefined) };
+}
 function symbolIcon(t) {
   const T = TYPES[t];
   const el = { t, r: 0, x: 0, y: 0, p: Object.assign({}, T.props || {}) };
   if (t === 'bus') el.p.len = 2;
-  const open = T.normal === false;
-  const c = { p0: 'c-edit', p1: 'c-edit', st: open ? 's-off' : 's-on', open, f0: colorVar('c-edit') };
-  const vb = t === 'bus' ? '-0.5 -1.5 3 3' : t === 'transformer' ? '-2.2 -2.2 4.4 4.4' : '-1.5 -1.5 3 3';
+  const c = editColors(T);
+  let vb = '-0.5 -1.5 3 3';
+  if (t !== 'bus') {
+    const [x0, y0, x1, y1] = BOX[t], sz = Math.max(x1 - x0, y1 - y0, 2.4) + 0.5;
+    vb = `${(x0 + x1) / 2 - sz / 2} ${(y0 + y1) / 2 - sz / 2} ${sz} ${sz}`;
+  }
   return `<svg viewBox="${vb}" aria-hidden="true">${symbolSVG(el, c)}</svg>`;
 }
 function elSubtitle(el) {
-  const p = el.p;
+  const p = el.p, mva = m => m < 1 ? fmtNum(m * 1000) + ' кВА' : fmtNum(m) + ' МВА';
   switch (el.t) {
     case 'source': case 'gen': return fmtKv(p.kv);
-    case 'transformer': return `${fmtNum(p.kv1)}/${fmtNum(p.kv2)} кВ · ${p.mva < 1 ? fmtNum(p.mva * 1000) + ' кВА' : fmtNum(p.mva) + ' МВА'}`;
+    case 'transformer': case 'tsn': return `${fmtNum(p.kv1)}/${fmtNum(p.kv2)} кВ · ${mva(p.mva)}`;
+    case 'tr3': return `${[p.kv1, ...[p.kv2, p.kv3].sort((a, b) => b - a)].map(fmtNum).join('/')} кВ · ${mva(p.mva)}`;
     case 'load': case 'motor': return fmtNum(p.kw) + ' кВт';
+    case 'capacitor': return fmtNum(p.kvar) + ' квар';
+    case 'ohl': case 'cable': return fmtNum(p.km) + ' км';
+    case 'knife': return +p.arc ? 'с дугогасительными камерами' : '';
   }
   return '';
 }
 const hitBox = el => el.t === 'bus' ? [0, -0.4, el.p.len, 0.4] : BOX[el.t];
+// Точка провода, ближайшая к точке схемы p (узел сетки на трассе провода)
+function nearestOnWire(w, p) {
+  const r = wireRoute(w);
+  let best = null, bd = Infinity;
+  for (let i = 0; i < r.length - 1; i++) {
+    const [a, b] = [r[i], r[i + 1]];
+    const q = a[0] === b[0] ? [a[0], clamp(Math.round(p[1]), Math.min(a[1], b[1]), Math.max(a[1], b[1]))]
+                            : [clamp(Math.round(p[0]), Math.min(a[0], b[0]), Math.max(a[0], b[0])), a[1]];
+    const dd = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (dd < bd) { bd = dd; best = q; }
+  }
+  return best;
+}
+// Середина провода по длине — место ПЗ по умолчанию
+function wireMid(w) {
+  const r = wireRoute(w);
+  let L = 0;
+  for (let i = 0; i < r.length - 1; i++) L += Math.abs(r[i + 1][0] - r[i][0]) + Math.abs(r[i + 1][1] - r[i][1]);
+  let h = Math.round(L / 2);
+  for (let i = 0; i < r.length - 1; i++) {
+    const a = r[i], b = r[i + 1], l = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
+    if (h <= l) return [a[0] + Math.sign(b[0] - a[0]) * h, a[1] + Math.sign(b[1] - a[1]) * h];
+    h -= l;
+  }
+  return r[0];
+}
+// Вертикален ли провод в точке p (чтобы ПЗ висело вбок, а не вдоль провода)
+function wireVerticalAt(w, p) {
+  const r = wireRoute(w);
+  for (let i = 0; i < r.length - 1; i++) {
+    const [a, b] = [r[i], r[i + 1]];
+    if (a[0] === b[0] && p[0] === a[0] && p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1]) && a[1] !== b[1]) return true;
+  }
+  return false;
+}
 
 class Scheme2D {
   constructor(app, svg) {
@@ -133,20 +239,20 @@ class Scheme2D {
     let he = '', hl = '', ho = '';
     for (const el of s.els) {
       const tm = topo.term.get(el.id);
-      const c = { p0: cls(tm[0]), p1: cls(tm[1] != null ? tm[1] : tm[0]) };
+      const c = { p0: cls(tm[0]), p1: cls(tm[1] != null ? tm[1] : tm[0]), p2: cls(tm[2] != null ? tm[2] : tm[0]) };
       c.f0 = colorVar(c.p0);
-      let hot = false;
+      let hot = false, x = null;
       if (isSwitchable(el)) {
-        const on = edit ? el.on : tr.sim.st[el.id].on;
-        const trip = !edit && tr.sim.st[el.id].trip;
-        c.open = !on; c.st = (on ? 's-on' : 's-off') + (trip ? ' trip' : '');
+        x = edit ? { on: el.on, pos: el.pos } : tr.sim.st[el.id];
+        c.open = !x.on; c.st = (x.on ? 's-on' : 's-off') + (x.trip ? ' trip' : '');
+        c.pos = x.pos; c.blown = !!x.blown;
         hot = !edit;
       } else if (TYPES[el.t].cls === 'source') hot = !edit;
       if (!edit && app.tool === 'check') hot = true;
       const hb = hitBox(el);
       he += `<g class="el${hot ? ' hot' : ''}" data-el="${el.id}" transform="translate(${el.x} ${el.y}) rotate(${el.r * 90})">` +
         `<rect class="hit" x="${hb[0] - 0.15}" y="${hb[1] - 0.15}" width="${hb[2] - hb[0] + 0.3}" height="${hb[3] - hb[1] + 0.3}" rx="0.2"/>${symbolSVG(el, c)}</g>`;
-      hl += this.labelSVG(el, edit ? null : st, topo);
+      hl += this.labelSVG(el, edit ? null : st, topo, x);
       if (edit) {
         if (this.sel && this.sel.type === 'el' && this.sel.id === el.id) {
           const b = bbox(el);
@@ -171,12 +277,31 @@ class Scheme2D {
         }
       }
     }
+    // Переносные заземления, наложенные в тренажёре
+    if (!edit) for (const id of tr.pzOn()) {
+      const pz = this.pzPlace(id);
+      if (!pz) continue;
+      const x = tr.sim.st[id], c = { st: 's-on' + (x.trip ? ' trip' : ''), open: false };
+      he += `<g class="el hot pzx" data-el="${id}" transform="translate(${pz.p[0]} ${pz.p[1]}) rotate(${pz.r * 90})"><rect class="hit" x="-0.6" y="-0.3" width="1.2" height="1.6" rx="0.2"/>${symbolSVG({ t: 'pz' }, c)}</g>`;
+      hl += `<text class="lbl2 pzl" x="${pz.p[0] + (pz.r ? 1.45 : 0.55)}" y="${pz.p[1] + (pz.r ? -0.25 : 1.1)}">ПЗ</text>`;
+    }
     this.le.innerHTML = he;
     this.ll.innerHTML = hl;
     this.lo.innerHTML = ho;
     this.overlayExtra();
   }
-  labelSVG(el, st, topo) {
+  // Где рисовать ПЗ, наложенное в тренажёре: точка щелчка или середина провода (шины)
+  pzPlace(id) {
+    const tr = this.app.tr, at = id.slice(3), s = this.app.scheme;
+    const w = s.wires.find(v => v.id === at);
+    let p = tr.sim.pzPt[id];
+    if (w) { if (!p) p = wireMid(w); return { p, r: wireVerticalAt(w, p) ? 3 : 0 }; }
+    const bus = s.els.find(e => e.id === at);
+    if (!bus) return null;
+    if (!p) { const q = rot([Math.round(bus.p.len / 2), 0], bus.r); p = [bus.x + q[0], bus.y + q[1]]; }
+    return { p, r: bus.r % 2 ? 3 : 0 };
+  }
+  labelSVG(el, st, topo, sx) {
     const b = bbox(el);
     if (el.t === 'bus') {
       let t = el.name;
@@ -185,9 +310,13 @@ class Scheme2D {
       return horiz ? `<text class="lbl busl" x="${b[0] + 0.35}" y="${b[1] - 0.22}">${esc(t)}</text>`
                    : `<text class="lbl busl" x="${b[2] + 0.25}" y="${b[1] + 0.7}">${esc(t)}</text>`;
     }
-    const sub = elSubtitle(el);
+    let sub = elSubtitle(el);
+    // В тренажёре: показания ТН, положение тележки, перегоревший предохранитель
+    if (st && el.t === 'vt') { const kv = st.V.get(topo.term.get(el.id)[0]); sub = kv != null ? 'U = ' + fmtKv(kv) : 'U = 0'; }
+    if (sx && sx.pos && sx.pos !== 'work') sub = 'тележка: ' + POS_NAME[sx.pos];
+    if (sx && sx.blown) sub = 'перегорел — заменить';
     const lines = [[el.name, 'lbl']];
-    if (sub) lines.push([sub, 'lbl2']);
+    if (sub) lines.push([sub, sx && sx.blown ? 'lbl2 bad' : 'lbl2']);
     let x, y, anchor;
     if (el.r % 2 === 0) { x = b[2] + 0.3; const cy = (b[1] + b[3]) / 2; y = lines.length > 1 ? cy - 0.14 : cy + 0.25; anchor = 'start'; }
     else { x = (b[0] + b[2]) / 2; y = b[1] - 0.3 - (lines.length - 1) * 0.7; anchor = 'middle'; }
@@ -203,8 +332,7 @@ class Scheme2D {
     if (this.placing && this.ghostAt) {
       const T = TYPES[this.placing];
       const el = { t: this.placing, x: this.ghostAt[0], y: this.ghostAt[1], r: 0, p: Object.assign({}, T.props || {}) };
-      const open = T.normal === false;
-      const c = { p0: 'c-edit', p1: 'c-edit', st: open ? 's-off' : 's-on', open, f0: colorVar('c-edit') };
+      const c = editColors(T);
       h += `<g class="ghost" transform="translate(${el.x} ${el.y})">${symbolSVG(el, c)}</g>`;
     }
     let g = this.lo.querySelector('#ovx');
@@ -288,7 +416,11 @@ class Scheme2D {
     this.down = { x: e.clientX, y: e.clientY, moved: false };
     const pan = extra => Object.assign({ kind: 'pan', x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty }, extra || {});
     if (e.button === 1 || e.button === 2) { this.drag = pan(); return; }
-    if (!edit) { this.drag = pan({ click: elG ? { el: elG.dataset.el } : wG ? { w: wG.dataset.w } : null }); return; }
+    if (!edit) {
+      const at = { cx: e.clientX, cy: e.clientY, p };
+      this.drag = pan({ click: elG ? Object.assign({ el: elG.dataset.el }, at) : wG ? Object.assign({ w: wG.dataset.w }, at) : null });
+      return;
+    }
     if (this.placing) { app.placeAt(this.placing, g, e.shiftKey); this.drag = null; return; }
     if (we) { const [wid, end] = we.split(':'); app.history(); this.drag = { kind: 'wend', wid, end }; return; }
     if (bh) { app.history(); this.drag = { kind: 'bus', id: bh }; return; }
@@ -378,4 +510,4 @@ class Scheme2D {
   }
 }
 
-export { CVAR, colorVar, symbolSVG, symbolIcon, elSubtitle, hitBox, Scheme2D };
+export { CVAR, colorVar, symbolSVG, symbolIcon, editColors, elSubtitle, hitBox, nearestOnWire, wireMid, Scheme2D };

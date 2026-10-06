@@ -1,6 +1,8 @@
-import { APP_VER, TYPES, PALETTE, esc, vClass, V_CLASSES, isSwitchable } from '../core/elements.js';
+import { APP_VER, CATS, TYPES, PALETTE, POS, POS_NAME, esc, vClass, V_CLASSES, isSwitchable, windings, searchTypes } from '../core/elements.js';
 import { fmtTime, capFirst } from '../core/engine.js';
+import { GLOSSARY } from '../core/glossary.js';
 import { symbolIcon } from '../view2d/scheme2d.js';
+import { store } from './store.js';
 
 /* ===== §5. Панели и окна ===== */
 const Panels = {
@@ -20,20 +22,114 @@ const Panels = {
   },
 
   // ---------- палитра ----------
+  // Категории сворачиваются (на компьютере), на телефоне — лента: строка категорий и ряд элементов выбранной.
+  // Поиск — по названию, обозначению (Q, QS, ЗН, ТН…) и синонимам. Элемент ставится щелчком по полю или перетаскиванием.
   buildPalette() {
     const pal = document.getElementById('palette');
-    pal.innerHTML = '<div class="pal-h">Элементы</div>' + PALETTE.map(t =>
-      `<button class="pal-item" data-type="${t}" aria-pressed="false" title="${esc(TYPES[t].title)}">${symbolIcon(t)}<span class="txt"><span class="nm">${esc(TYPES[t].title)}</span><span class="cd">${esc(TYPES[t].code)}</span></span></button>`).join('') +
-      '<p class="pal-note">Выберите элемент и щёлкните по полю. Shift — поставить несколько.</p>';
-    pal.addEventListener('click', e => {
-      const b = e.target.closest('.pal-item');
-      if (!b) return;
-      const t = b.dataset.type;
-      const next = this.view.placing === t ? null : t;
-      this.view.setPlacing(next);
-      this.paletteState(next);
-      if (next) this.toast(`${TYPES[t].title}: щёлкните по полю, чтобы поставить.`);
+    let closed = [];
+    try { closed = JSON.parse(store.get('ts.palClosed') || '[]'); } catch (e) { closed = []; }
+    this.palClosed = new Set(Array.isArray(closed) ? closed : []);
+    this.palCat = CATS[0][0];
+    const item = t => `<button class="pal-item" data-type="${t}" aria-pressed="false" title="${esc(TYPES[t].title + (GLOSSARY[t] ? '. ' + GLOSSARY[t].what : ''))}">${symbolIcon(t)}` +
+      `<span class="txt"><span class="nm">${esc(TYPES[t].title)}</span><span class="cd">${esc([TYPES[t].code, TYPES[t].gost].filter((v, i, a) => v && a.indexOf(v) === i).join(' · '))}</span></span></button>`;
+    pal.innerHTML = `<div class="pal-top"><input class="inp pal-search" id="palSearch" type="search" autocomplete="off" spellcheck="false" placeholder="Поиск: QS, ТН, рубильник…" aria-label="Поиск элемента"></div>
+      <div class="pal-cats" role="tablist" aria-label="Категории">${CATS.map(([k, t]) => `<button class="pal-chip" role="tab" data-cat="${k}" aria-selected="${k === this.palCat}">${esc(t)}</button>`).join('')}</div>
+      <div class="pal-list">${CATS.map(([k, t]) => {
+        const ts = PALETTE.filter(x => TYPES[x].cat === k);
+        const open = !this.palClosed.has(k);
+        return `<section class="pal-cat${k === this.palCat ? ' active' : ''}" data-cat="${k}"><button class="pal-cat-h" data-cat="${k}" aria-expanded="${open}"><span>${esc(t)}</span><span class="n">${ts.length}</span></button>
+          <div class="pal-items"${open ? '' : ' hidden'}>${ts.map(item).join('')}</div></section>`;
+      }).join('')}<p class="pal-empty" hidden>Ничего не найдено.</p></div>
+      <p class="pal-note">Щёлкните элемент, затем поле — или перетащите на поле. Shift — поставить несколько.</p>`;
+    const search = pal.querySelector('#palSearch');
+    search.addEventListener('input', () => this.filterPalette(search.value));
+    search.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { search.value = ''; this.filterPalette(''); search.blur(); }
+      if (e.key === 'Enter') { const b = pal.querySelector('.pal-item:not([hidden])'); if (b) this.paletteClick(b.dataset.type); }
     });
+    pal.addEventListener('click', e => {
+      const h = e.target.closest('.pal-cat-h');
+      if (h) { this.togglePalCat(h.dataset.cat); return; }
+      const c = e.target.closest('.pal-chip');
+      if (c) { this.setPalCat(c.dataset.cat); return; }
+      const b = e.target.closest('.pal-item');
+      if (!b || this.palDragged) return;
+      this.paletteClick(b.dataset.type);
+    });
+    this.bindPaletteDrag(pal);
+  },
+  paletteClick(t) {
+    const next = this.view.placing === t ? null : t;
+    this.view.setPlacing(next);
+    this.paletteState(next);
+    if (next) this.toast(`${TYPES[t].title}: щёлкните по полю, чтобы поставить.`);
+  },
+  togglePalCat(k) {
+    const sec = document.querySelector(`.pal-cat[data-cat="${k}"]`);
+    if (!sec) return;
+    const h = sec.querySelector('.pal-cat-h'), box = sec.querySelector('.pal-items');
+    const open = h.getAttribute('aria-expanded') !== 'true';
+    h.setAttribute('aria-expanded', String(open)); box.hidden = !open;
+    if (open) this.palClosed.delete(k); else this.palClosed.add(k);
+    store.set('ts.palClosed', JSON.stringify([...this.palClosed]));
+  },
+  setPalCat(k) {
+    this.palCat = k;
+    for (const c of document.querySelectorAll('.pal-chip')) c.setAttribute('aria-selected', String(c.dataset.cat === k));
+    for (const sec of document.querySelectorAll('.pal-cat')) sec.classList.toggle('active', sec.dataset.cat === k);
+  },
+  filterPalette(q) {
+    const pal = document.getElementById('palette'), hit = new Set(searchTypes(q)), on = !!q.trim();
+    pal.classList.toggle('searching', on);
+    for (const b of pal.querySelectorAll('.pal-item')) b.hidden = !hit.has(b.dataset.type);
+    for (const sec of pal.querySelectorAll('.pal-cat')) {
+      const all = [...sec.querySelectorAll('.pal-item')], shown = all.filter(b => !b.hidden).length, any = shown > 0;
+      sec.hidden = on && !any;
+      sec.querySelector('.n').textContent = on ? shown : all.length;
+      const box = sec.querySelector('.pal-items');
+      box.hidden = on ? !any : this.palClosed.has(sec.dataset.cat);
+    }
+    pal.querySelector('.pal-empty').hidden = !on || hit.size > 0;
+  },
+  // Перетаскивание из палитры на поле (мышь и касание): тень элемента едет за пальцем по сетке
+  bindPaletteDrag(pal) {
+    const svg = document.getElementById('sch');
+    let d = null;
+    const overSvg = e => { const r = svg.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom; };
+    pal.addEventListener('pointerdown', e => {
+      const b = e.target.closest('.pal-item');
+      if (!b || e.button > 0) return;
+      this.palDragged = false;
+      d = { t: b.dataset.type, x: e.clientX, y: e.clientY, id: e.pointerId, b, on: false };
+    });
+    const move = e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (!d.on) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 8) return;
+        d.on = true;
+        try { d.b.setPointerCapture(e.pointerId); } catch (_) { /* без захвата */ }
+        document.body.classList.add('pal-dragging');
+        this.view.setPlacing(d.t); this.paletteState(d.t);
+      }
+      if (overSvg(e)) { const p = this.view.toWorld(e.clientX, e.clientY); this.view.ghostAt = [Math.round(p[0]), Math.round(p[1])]; }
+      else this.view.ghostAt = null;
+      this.view.overlayExtra();
+    };
+    const up = e => {
+      if (!d || e.pointerId !== d.id) return;
+      const was = d; d = null;
+      document.body.classList.remove('pal-dragging');
+      if (!was.on) return;
+      this.palDragged = true;
+      setTimeout(() => { this.palDragged = false; }, 0);
+      if (e.type === 'pointerup' && overSvg(e)) {
+        const p = this.view.toWorld(e.clientX, e.clientY);
+        this.placeAt(was.t, [Math.round(p[0]), Math.round(p[1])], false);
+      } else { this.view.setPlacing(null); this.paletteState(null); }
+    };
+    pal.addEventListener('pointermove', move);
+    pal.addEventListener('pointerup', up);
+    pal.addEventListener('pointercancel', up);
   },
   paletteState(t) {
     for (const b of document.querySelectorAll('.pal-item')) b.setAttribute('aria-pressed', String(b.dataset.type === t));
@@ -52,7 +148,7 @@ const Panels = {
     const present = new Set();
     for (const el of this.scheme.els) {
       if (TYPES[el.t].cls === 'source') present.add(vClass(+el.p.kv));
-      if (el.t === 'transformer') { present.add(vClass(+el.p.kv1)); present.add(vClass(+el.p.kv2)); }
+      if (TYPES[el.t].cls === 'transformer') for (const kv of windings(el)) present.add(vClass(kv));
     }
     box.innerHTML = V_CLASSES.filter(([c]) => present.has(c)).map(([c, t]) => `<span><i style="background:var(--${c})"></i>${t}</span>`).join('') +
       '<span><i style="background:var(--dead)"></i>без напряжения</span>' +
@@ -62,8 +158,8 @@ const Panels = {
   renderStatus() {
     const st = document.getElementById('status');
     const k = s => `<kbd>${s}</kbd>`;
-    if (this.mode === 'edit') st.innerHTML = `Элемент: выберите в палитре и щёлкните по полю · Провод: тяните от точки подключения · ${k('R')} повернуть · ${k('Del')} удалить · ${k('Ctrl+Z')} отменить · ${k('Ctrl+D')} копия · двойной щелчок по проводу — излом`;
-    else if (this.mode === 'train') st.innerHTML = `Щелчок по аппарату — переключить · ${k('V')} указатель напряжения · ${k('K')} квитировать · колесо — масштаб, перетаскивание — сдвиг`;
+    if (this.mode === 'edit') st.innerHTML = `Элемент: выберите в палитре и щёлкните по полю или перетащите · Провод: тяните от точки подключения · ${k('R')} повернуть · ${k('Del')} удалить · ${k('Ctrl+Z')} отменить · ${k('Ctrl+D')} копия · двойной щелчок по проводу — излом`;
+    else if (this.mode === 'train') st.innerHTML = `Щелчок по аппарату — переключить (у тележки КРУ — меню) · ${k('V')} указатель напряжения · ${k('P')} переносное заземление · ${k('K')} квитировать · колесо — масштаб`;
     else st.innerHTML = 'Мышь: левая кнопка — повернуть, правая — сдвинуть, колесо — приблизить, щелчок по аппарату — переключить · В шлеме: курок — операция или телепорт, боковая кнопка — указатель напряжения, стики — ходьба и поворот';
   },
 
@@ -76,6 +172,14 @@ const Panels = {
     this.renderRec();
     this.renderLog();
   },
+  // «Подробнее» об элементе: что это, зачем, как переключают, как ведёт себя в тренажёре
+  moreHTML(t, open) {
+    const g = GLOSSARY[t];
+    if (!g) return '';
+    return `<details class="more"${open ? ' open' : ''}><summary>Подробнее</summary><p>${esc(g.what)} ${esc(g.why)}</p>` +
+      `<p><b>Переключения.</b> ${esc(g.ops)}</p><p><b>В тренажёре.</b> ${esc(g.sim)}</p>` +
+      (g.ask ? `<p class="ask"><b>Уточняется у преподавателя.</b> ${esc(g.ask)}</p>` : '') + '</details>';
+  },
   editSideHTML() {
     const s = this.scheme, sel = this.view.sel;
     let prop = '<h3>Выбрано</h3><p>Выберите элемент на схеме или возьмите новый из палитры слева.</p>';
@@ -84,13 +188,20 @@ const Panels = {
       if (el) {
         const T = TYPES[el.t], p = el.p;
         const num = (key, label, step) => `<div class="field"><label for="pp-${key}">${label}</label><input class="inp mono" type="number" step="${step}" min="0" id="pp-${key}" data-prop="p.${key}" value="${esc(p[key])}"></div>`;
+        const bool = (key, label) => `<label class="switch"><span>${label}</span><input type="checkbox" data-prop="p.${key}" ${+p[key] ? 'checked' : ''}></label>`;
         let f = `<div class="field"><label for="pp-name">Обозначение</label><input class="inp mono" id="pp-name" data-prop="name" value="${esc(el.name)}" maxlength="40"></div>`;
-        if (el.t === 'source' || el.t === 'gen') f += num('kv', 'Напряжение, кВ', '0.1');
-        if (el.t === 'transformer') f += `<div class="row">${num('kv1', 'ВН, кВ', '0.1')}${num('kv2', 'НН, кВ', '0.1')}${num('mva', 'Мощность, МВА', '0.01')}</div>`;
-        if (el.t === 'load' || el.t === 'motor') f += num('kw', 'Мощность, кВт', '1');
-        if (el.t === 'bus') f += num('len', 'Длина, клеток', '1');
-        if (isSwitchable(el)) f += `<div class="field"><label>Нормальное положение</label><div class="seg"><button class="v-on" data-act="normal-on" aria-pressed="${el.on}">Включён</button><button class="v-off" data-act="normal-off" aria-pressed="${!el.on}">Отключён</button></div></div>`;
+        const meta = T.pmeta || [], nums = meta.filter(m => m[2] !== 'bool');
+        if (nums.length) f += (nums.length > 1 ? '<div class="row">' : '') + nums.map(m => num(m[0], m[1], m[2])).join('') + (nums.length > 1 ? '</div>' : '');
+        f += meta.filter(m => m[2] === 'bool').map(m => bool(m[0], m[1])).join('');
+        if (el.t === 'tr3') f += '<p>Выводы слева и справа можно поменять напряжениями — так рисуют второй трансформатор зеркально.</p>';
+        const seg = (label, html) => `<div class="field"><label>${label}</label><div class="seg">${html}</div></div>`;
+        if (isSwitchable(el) && !(T.cart && T.sw !== 'breaker')) {
+          const w = T.did || ['Включён', 'Отключён'];
+          f += seg(T.cart ? 'Нормальное положение выключателя' : 'Нормальное положение', `<button class="v-on" data-act="normal-on" aria-pressed="${el.on}">${w[0]}</button><button class="v-off" data-act="normal-off" aria-pressed="${!el.on}">${w[1]}</button>`);
+        }
+        if (T.cart) f += seg('Нормальное положение тележки', POS.map(q => `<button data-act="normal-pos" data-pos="${q}" aria-pressed="${el.pos === q}">${capFirst(POS_NAME[q])}</button>`).join(''));
         f += '<div class="row"><button class="btn" data-act="rotate">Повернуть</button><button class="btn" data-act="dup">Копия</button><button class="btn danger" data-act="del">Удалить</button></div>';
+        f += this.moreHTML(el.t);
         prop = `<h3>${esc(T.title)} <span class="chip">${esc(T.code)}</span></h3>${f}`;
       }
     } else if (sel && sel.type === 'wire') {
@@ -121,6 +232,7 @@ const Panels = {
     return `${welcome}<div class="sec" id="taskSec"></div>
       <div class="sec"><h3>Инструменты</h3>
         <div class="row"><button class="btn" data-act="tool-check" aria-pressed="${this.tool === 'check'}">Указатель напряжения</button>
+        <button class="btn" data-act="tool-pz" aria-pressed="${this.tool === 'pz'}" title="Наложить или снять переносное заземление на провод или шину">Переносное заземление</button>
         <button class="btn" data-act="ack" id="ackBtn" ${this.tr.hasAlarms() ? '' : 'disabled'}>Квитировать</button>
         <button class="btn" data-act="reset">Нормальный режим</button></div>
         <label class="switch"><span>Блокировки<small>Не дают выполнить опасную операцию</small></span><input type="checkbox" data-opt="interlocks" ${o.interlocks ? 'checked' : ''}></label>
@@ -289,7 +401,7 @@ const Panels = {
       <li><b>Тренажёр</b> — переключения по щелчку. Цвет показывает напряжение, землю и положение аппаратов. Задания оцениваются, в конце — отчёт.</li>
       <li><b>3D и VR</b> — та же схема в объёме: щелчок мышью или луч контроллера переключает аппараты.</li></ul></div>
       <div><b>VR в шлеме Meta Quest</b><ol class="issues"><li>Выложите файл index.html на GitHub Pages (нужна ссылка https).</li><li>Откройте ссылку в браузере шлема, вкладка «3D и VR», кнопка «Войти в VR».</li>
-      <li>Курок — переключить аппарат или переместиться в точку на земле. Боковая кнопка — указатель напряжения. Левый стик — ходьба, правый — поворот.</li>
+      <li>Курок — переключить аппарат или переместиться в точку на земле; у тележки КРУ рядом появится меню. Боковая кнопка — указатель напряжения. Левый стик — ходьба, правый — поворот.</li>
       <li>Щит с заданием стоит перед вами: его кнопки нажимаются лучом.</li></ol></div>
       <div><b>Правила логики (проверить с преподавателем)</b><ol class="issues">
       <li>Заземляющий нож на участок под напряжением — авария: дуга, КЗ.</li>
@@ -299,9 +411,17 @@ const Panels = {
       <li>Перед включением ЗН нужна проверка отсутствия напряжения указателем (правило включается в настройках).</li>
       <li>В задании нельзя обесточивать потребителей, которые в эталоне питание не теряли.</li>
       <li>При КЗ отключаются ближайшие к месту КЗ выключатели, через которые КЗ питается; если их нет — отключение со стороны энергосистемы.</li>
-      <li>Блокировки не дают выполнить опасную операцию; попытка считается ошибкой.</li></ol></div>
+      <li>Блокировки не дают выполнить опасную операцию; попытка считается ошибкой.</li></ol>
+      <p style="margin:6px 0 2px;font-size:13px"><b>Новые элементы (версия 0.2)</b></p><ol class="issues" start="9">
+      <li>Предохранитель при КЗ перегорает вместо выключателя выше и остаётся отключённым до замены. Снимать и ставить — без нагрузки.</li>
+      <li>Выключатель нагрузки отключает ток нагрузки, но не ток КЗ: КЗ за ним отключает выключатель выше или предохранитель.</li>
+      <li>Тележку КРУ перемещают только при отключённом выключателе. Рабочее положение — цепь собрана, контрольное и ремонтное — видимый разрыв.</li>
+      <li>Рубильник без дугогасительных камер — как разъединитель; с камерами — отключает ток нагрузки.</li>
+      <li>Переносное заземление накладывается на любой провод или шину (инструмент «Переносное заземление», клавиша P); правила — как у ЗН.</li>
+      <li>Отделитель вручную — как разъединитель; короткозамыкатель на напряжение — искусственное КЗ.</li></ol></div>
+      <div><b>Элементы</b>${CATS.map(([k, t]) => `<details class="more"><summary>${esc(t)}</summary>${PALETTE.filter(x => TYPES[x].cat === k).map(x => `<p><b>${esc(TYPES[x].title)}</b> (${esc(TYPES[x].code)}). ${esc(GLOSSARY[x].what)} ${esc(GLOSSARY[x].sim)}</p>`).join('')}</details>`).join('')}</div>
       <div><b>Цвета</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Цвета классов напряжения условные и настраиваются под стандарт предприятия. Красный аппарат — включён, зелёный — отключён. Мигает — отключился защитой, нужно квитировать.</p></div>
-      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: R — повернуть, Del — удалить, Ctrl+Z / Ctrl+Y — отменить и вернуть, Ctrl+D — копия, Esc — отмена. Тренажёр: V — указатель напряжения, K — квитировать.</p></div>
+      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: R — повернуть, Del — удалить, Ctrl+Z / Ctrl+Y — отменить и вернуть, Ctrl+D — копия, Esc — отмена. Тренажёр: V — указатель напряжения, P — переносное заземление, K — квитировать, Esc — закрыть меню.</p></div>
       <p style="color:var(--muted);font-size:12px">Демо-бета ${APP_VER}. Схемы хранятся в этом браузере; для переноса сохраните файл.</p>`,
       [{ label: 'Понятно', primary: true, act: () => this.closeModal() }]);
   },

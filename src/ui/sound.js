@@ -36,6 +36,12 @@ const Sound = {
       else if (kind === 'checklive') { for (let i = 0; i < 4; i++) this.tone(1800, 1800, 0.05, 0.14, 'square', i * 0.09); }
       else if (kind === 'ok') { this.tone(660, 660, 0.12, 0.2); this.tone(880, 880, 0.18, 0.2, 'sine', 0.12); }
       else if (kind === 'fail') { this.tone(330, 220, 0.4, 0.22, 'triangle'); }
+      // VR-полигон: взять предмет, повесить плакат, надеть СИЗ, щёлкнуть замком, коснуться указателем без напряжения
+      else if (kind === 'grab') { this.noise(0.06, 900, 1.2, 0.12); }
+      else if (kind === 'hang') { this.noise(0.12, 3200, 0.9, 0.12); this.tone(420, 380, 0.05, 0.08, 'triangle', 0.06); }
+      else if (kind === 'wear') { this.noise(0.28, 1400, 0.6, 0.1); }
+      else if (kind === 'lock') { this.tone(1900, 1500, 0.04, 0.14, 'square'); this.tone(1300, 1100, 0.05, 0.12, 'square', 0.07); }
+      else if (kind === 'touch') { this.tone(240, 200, 0.05, 0.08, 'triangle'); }
     } catch (e) { /* звук не обязателен */ }
   },
 };

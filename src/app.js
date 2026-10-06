@@ -1,15 +1,19 @@
-import { APP_VER, TYPES, ptKey, clamp, esc, portPoints, bbox, isSwitchable, isPzId, emptyScheme, makeEl, makeWire, normalizeScheme } from './core/elements.js';
+import { APP_VER, TYPES, ptKey, clamp, esc, portPoints, bbox, isSwitchable, isPzId, emptyScheme, makeEl, makeWire, FIELD_OPS, normalizeScheme } from './core/elements.js';
 import { GLOSSARY } from './core/glossary.js';
 import { SAMPLES } from './core/samples.js';
 import { buildTopo, makeSim, compute, Trainer } from './core/engine.js';
+import { Permit } from './core/permit.js';
 import { elSubtitle, nearestOnWire, Scheme2D } from './view2d/scheme2d.js';
 import { Panels } from './ui/panels.js';
 import { store } from './ui/store.js';
+import { makeLibrary } from './ui/myschemes.js';
 import { Diag } from './ui/diag.js';
 import { Sound } from './ui/sound.js';
 import { View3D } from './view3d/view3d.js';
 
-/* ===== Приложение: режимы, правка схемы, связка движка с 2D, 3D и панелями ===== */
+/* ===== Приложение: режимы, правка схемы, связка движка с 2D, 3D и панелями =====
+   source — откуда схема: ключ готовой схемы (SAMPLES) или 'my:<id>' — запись в «Моих схемах» (src/ui/myschemes.js).
+   Готовые схемы не меняются: первая правка создаёт копию в «Моих схемах». */
 const app = Object.assign({
   scheme: null, mode: 'train', tool: null, source: 'ps110', schemeVersion: 0, taskIdx: 0,
   tr: new Trainer(), view: null, v3: null, undoStack: [], redoStack: [], welcomeSeen: false, modalActions: [],
@@ -20,6 +24,10 @@ const app = Object.assign({
     this.welcomeSeen = store.get('ts.welcome') === '1';
     const th = store.get('ts.theme');
     if (th === 'dark' || th === 'light') document.documentElement.dataset.theme = th;
+    this.lib = makeLibrary(store);
+    const moved = this.lib.migrate();
+    // VR-полигон: СИЗ, плакаты, замок, порядок мероприятий — дополнение движка (до остальных слушателей)
+    this.permit = this.tr.use(new Permit());
     this.view = new Scheme2D(this, document.getElementById('sch'));
     this.buildPalette();
     this.bindUI();
@@ -28,22 +36,34 @@ const app = Object.assign({
     try { hash = (location.hash || '').slice(1); } catch (e) { hash = ''; }
     this.setScheme(SAMPLES[0].make(), 'ps110');
     this.setMode(['edit', 'train', '3d'].includes(hash) ? hash : 'train', true);
+    if (moved) this.toast('«Моя схема» перенесена в список «Мои схемы» (кнопка «Схемы»).', 'ok');
     setInterval(() => this.tick(), 1000);
   },
   userGesture() { Sound.init(); },
 
   // ---------- схемы ----------
+  isMine() { return this.source.startsWith('my:'); },
+  myId() { return this.isMine() ? this.source.slice(3) : null; },
   fillSchemeSelect() {
     const sel = document.getElementById('schemeSel');
-    const hasMy = !!store.get('ts.my') || this.source === 'my';
-    sel.innerHTML = SAMPLES.map(s => `<option value="${s.key}">${esc(s.title)}</option>`).join('') +
-      (hasMy ? `<option value="my">Моя схема${this.source === 'my' && this.scheme ? ': ' + esc(this.scheme.title) : ''}</option>` : '');
+    const opt = (v, t) => `<option value="${esc(v)}">${esc(t)}</option>`, my = this.lib.list();
+    sel.innerHTML = `<optgroup label="Готовые схемы">${SAMPLES.filter(s => !s.poly).map(s => opt(s.key, s.title)).join('')}</optgroup>` +
+      `<optgroup label="VR-полигон">${SAMPLES.filter(s => s.poly).map(s => opt(s.key, s.title)).join('')}</optgroup>` +
+      (my.length ? `<optgroup label="Мои схемы">${my.map(x => opt('my:' + x.id, x.title)).join('')}</optgroup>` : '');
     sel.value = this.source;
   },
   chooseScheme(v) {
-    if (v === 'my') { const s = this.loadSaved(); if (s) this.setScheme(s, 'my'); else this.toast('Сохранённой схемы нет.', 'warn'); return; }
+    if (v.startsWith('my:')) {
+      const s = this.lib.load(v.slice(3));
+      if (s) this.setScheme(s, v);
+      else { this.toast('Схема не открылась: запись в браузере повреждена.', 'warn'); this.fillSchemeSelect(); }
+      return;
+    }
     const smp = SAMPLES.find(x => x.key === v);
-    if (smp) this.setScheme(smp.make(), v);
+    if (!smp) return;
+    this.setScheme(smp.make(), v);
+    // полигон сделан для 3D и VR: из тренажёра сразу туда
+    if (smp.poly && this.mode === 'train') this.setMode('3d');
   },
   setScheme(s, source) {
     this.scheme = s; this.source = source; this.schemeVersion++;
@@ -51,31 +71,49 @@ const app = Object.assign({
     this.view.sel = null; this.view.setPlacing(null); this.paletteState(null);
     this.tr.load(s);
     this.fillSchemeSelect();
-    this.view.render(); this.renderSide(); this.renderLegend();
+    this.view.render(); this.renderSide(); this.renderLegend(); this.renderStatus();
     requestAnimationFrame(() => this.view.fit());
     if (this.mode === '3d') this.show3D();
   },
-  loadSaved() {
-    const j = store.get('ts.my');
-    if (!j) return null;
-    try { return normalizeScheme(JSON.parse(j)); } catch (e) { return null; }
+  autosave() {
+    if (this.isMine() && !this.lib.save(this.myId(), this.scheme)) this.storeWarn();
   },
-  autosave() { store.set('ts.my', JSON.stringify(this.scheme)); },
+  storeWarn() {
+    const now = Date.now();
+    if (now - (this._storeWarnT || 0) < 30000) return;
+    this._storeWarnT = now;
+    this.toast('Не удалось сохранить в браузере: хранилище переполнено или запрещено. Скачайте схему в файл: «Схемы» → «Скачать файл».', 'warn');
+  },
+  // Первая правка готовой схемы: копия в «Моих схемах», дальше правки идут в неё
   markMine() {
-    if (this.source === 'my') return;
-    this.source = 'my';
+    if (this.isMine()) return;
+    const base = this.scheme.title;
+    this.scheme.title = `${base} (копия)`;
+    const id = this.lib.add(this.scheme);
+    if (!id) { this.scheme.title = base; this.storeWarn(); return; }
+    // «Отменить» не должно возвращать копии название готовой схемы
+    this.undoStack = this.undoStack.map(j => { try { const o = JSON.parse(j); o.title = this.scheme.title; return JSON.stringify(o); } catch (e) { return j; } });
+    this.source = 'my:' + id;
     this.fillSchemeSelect();
-    this.toast('Изменения сохраняются в этом браузере как «Моя схема».');
+    this.toast(`Готовая схема не меняется: правки сохраняются в копию «${this.scheme.title}» (кнопка «Схемы»).`);
   },
   openJson(text) {
     let s;
     try { s = normalizeScheme(JSON.parse(text)); }
     catch (e) { this.toast('Не получилось открыть: ' + (e.message || 'файл повреждён') + '.', 'warn'); return false; }
-    this.setScheme(s, 'my');
-    this.autosave();
-    this.fillSchemeSelect();
-    this.toast(`Открыта схема «${s.title}».`, 'ok');
+    const id = this.lib.add(s);
+    if (!id) this.storeWarn();
+    this.setScheme(s, id ? 'my:' + id : 'file');
+    this.toast(`Открыта схема «${s.title}»${id ? ' — она в «Моих схемах»' : ''}.`, 'ok');
     return true;
+  },
+  newScheme() {
+    const s = emptyScheme('Новая схема'), id = this.lib.add(s);
+    if (!id) { this.storeWarn(); return; }
+    this.setScheme(s, 'my:' + id);
+    this.closeModal();
+    this.setMode('edit');
+    this.toast('Пустая схема в «Моих схемах». Возьмите элементы из палитры слева.');
   },
 
   // ---------- режимы ----------
@@ -225,7 +263,8 @@ const app = Object.assign({
     if (type === 'check') {
       this.toast(d.text, d.live ? 'warn' : 'ok');
       this.view.checkMark(d.target, d.live);
-      Sound.play(d.live ? 'checklive' : 'check');
+      // указатель в полигоне звучит и светит, только если напряжение есть; без напряжения — лёгкий щелчок касания
+      Sound.play(d.live ? 'checklive' : this.mode === '3d' && this.scheme.room ? 'touch' : 'check');
       if (this.v3 && this.v3.ready) this.v3.checkFx(d);
       this.renderTaskStats(); this.renderRec();
       return;
@@ -237,7 +276,13 @@ const app = Object.assign({
       return;
     }
     if (type === 'hint') { this.showHint(d.text); if (this.v3) this.v3.banner(d.text, 'info'); return; }
-    if (type === 'rec') { this.renderRec(); this.renderTask(); if (d.saved) { this.markMine(); this.autosave(); } }
+    if (type === 'rec') { this.renderRec(); this.renderTask(); if (d.saved) { this.markMine(); this.autosave(); } return; }
+    // VR-полигон: предметы, плакаты, мероприятия; warn — нарушение (без СИЗ, не по порядку, не на месте)
+    if (type === 'field') {
+      if (d.warn) { this.toast(d.warn, 'warn'); Sound.play('blocked'); if (this.v3) this.v3.banner(d.warn, 'warn'); }
+      this.renderMeasures(); this.renderTaskStats();
+      if (this.v3 && this.v3.ready) this.v3.onField();
+    }
   },
 
   // ---------- правка схемы ----------
@@ -267,12 +312,14 @@ const app = Object.assign({
     const ids = new Set(this.scheme.els.map(e => e.id)), wids = new Set(this.scheme.wires.map(w => w.id));
     const ok = k => ids.has(k) || (isPzId(k) && (ids.has(k.slice(3)) || wids.has(k.slice(3))));
     const pick = (o, f) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => f(k)));
-    this.scheme.tasks = this.scheme.tasks.map(t => ({
+    // шаги и мероприятия VR-полигона без аппаратов схемы (СИЗ, плакаты, замок) остаются
+    const okMeasure = m => (m.id == null || ids.has(m.id)) && (m.wire == null || wids.has(m.wire));
+    this.scheme.tasks = this.scheme.tasks.map(t => Object.assign({
       ...t,
       init: pick(t.init, ok), target: pick(t.target, ok),
       initPos: pick(t.initPos, k => ids.has(k)), targetPos: pick(t.targetPos, k => ids.has(k)),
-      steps: t.steps.filter(x => ok(x.id) || (x.op === 'check' && wids.has(x.id))), keep: t.keep.filter(k => ids.has(k)),
-    })).filter(t => Object.keys(t.target).length || Object.keys(t.targetPos).length);
+      steps: t.steps.filter(x => FIELD_OPS.includes(x.op) || ok(x.id) || (x.op === 'check' && wids.has(x.id))), keep: t.keep.filter(k => ids.has(k)),
+    }, t.measures ? { measures: t.measures.filter(okMeasure) } : {})).filter(t => Object.keys(t.target).length || Object.keys(t.targetPos).length);
   },
   deleteSel() {
     const sel = this.view.sel;
@@ -352,7 +399,7 @@ const app = Object.assign({
   bindUI() {
     for (const b of document.querySelectorAll('.tab')) b.addEventListener('click', () => this.setMode(b.dataset.mode));
     document.getElementById('schemeSel').addEventListener('change', e => this.chooseScheme(e.target.value));
-    document.getElementById('btnFile').addEventListener('click', () => this.showFile());
+    document.getElementById('btnFile').addEventListener('click', () => this.showSchemes());
     document.getElementById('btnHelp').addEventListener('click', () => this.showHelp());
     document.getElementById('btnTheme').addEventListener('click', () => this.toggleTheme());
     const snd = document.getElementById('btnSound');
@@ -371,7 +418,12 @@ const app = Object.assign({
     side.addEventListener('change', e => {
       const t = e.target;
       if (t.dataset.prop) this.setProp(t.dataset.prop, t.type === 'checkbox' ? t.checked : t.value);
-      else if (t.dataset.opt) {
+      else if (t.dataset.opt === 'guide') {
+        // подсказка «следующее мероприятие» на щите и в панели (VR-полигон)
+        this.permit.guide = t.checked;
+        this.tr.emit('field', {});
+        this.toast(`Подсказки мероприятий: ${t.checked ? 'включены' : 'выключены'}.`);
+      } else if (t.dataset.opt) {
         this.tr.opt[t.dataset.opt] = t.checked;
         const names = { interlocks: 'Блокировки', requireCheck: 'Проверка напряжения перед ЗН' };
         this.toast(`${names[t.dataset.opt]}: ${t.checked ? 'включено' : 'выключено'}.`);
@@ -411,6 +463,7 @@ const app = Object.assign({
     switch (act) {
       case 'welcome-close': this.welcomeSeen = true; store.set('ts.welcome', '1'); this.renderSide(); break;
       case 'help': this.showHelp(); break;
+      case 'go3d': this.setMode('3d'); break;
       case 'tool-check': this.toggleTool('check'); break;
       case 'tool-pz': this.toggleTool('pz'); break;
       case 'ack': if (!tr.ack()) this.toast('Сигналов нет.'); break;
@@ -459,12 +512,35 @@ const app = Object.assign({
     if (m === 'download') { this.saveFile((this.scheme.title || 'schema').replace(/[\\/:*?"<>|«»]+/g, '').trim() + '.json', this.fileJson, 'application/json'); return; }
     if (m === 'open-file') { document.getElementById('fileInput').click(); return; }
     if (m === 'open-paste') { const t = document.getElementById('pasteJson').value; if (t.trim() && this.openJson(t)) this.closeModal(); return; }
-    if (m === 'new') {
-      this.setScheme(emptyScheme('Новая схема'), 'my');
-      this.autosave(); this.fillSchemeSelect(); this.closeModal();
-      this.setMode('edit');
-      this.toast('Пустая схема. Возьмите элементы из палитры слева.');
+    if (m === 'new') { this.newScheme(); return; }
+    // «Мои схемы»: открыть, дублировать, переименовать, удалить (с подтверждением в этом же окне)
+    const id = b && b.dataset ? b.dataset.id : null, row = id && this.lib.list().find(x => x.id === id);
+    if (m === 'sch-open' && row) { this.closeModal(); this.chooseScheme('my:' + id); return; }
+    if (m === 'sch-dup' && row) {
+      const n = this.lib.duplicate(id);
+      if (n) this.toast(`Создана копия «${row.title} (копия)».`, 'ok'); else this.storeWarn();
+      this.fillSchemeSelect(); this.showSchemes();
+      return;
     }
+    if (m === 'sch-ren' && row) { this.showSchemes({ ren: id }); return; }
+    if (m === 'sch-ren-ok' && row) {
+      const inp = document.getElementById('schRen'), v = inp ? inp.value.trim() : '';
+      if (!v) { this.toast('Название не может быть пустым.', 'warn'); return; }
+      if (!this.lib.rename(id, v)) { this.storeWarn(); return; }
+      if (this.myId() === id) { this.scheme.title = v.slice(0, 80); this.renderSide(); if (this.v3 && this.v3.ready) this.v3.drawBoard(); }
+      this.fillSchemeSelect(); this.showSchemes();
+      this.toast(`Схема переименована: «${v.slice(0, 80)}».`, 'ok');
+      return;
+    }
+    if (m === 'sch-del' && row) { this.showSchemes({ del: id }); return; }
+    if (m === 'sch-del-ok' && row) {
+      this.lib.remove(id);
+      if (this.myId() === id) this.setScheme(SAMPLES[0].make(), SAMPLES[0].key);
+      this.fillSchemeSelect(); this.showSchemes();
+      this.toast(`Схема «${row.title}» удалена.`);
+      return;
+    }
+    if (m === 'sch-ren-no' || m === 'sch-del-no') this.showSchemes();
   },
   // Сохранение файла: в окне Claude — через разрешённое сохранение, на своём сайте — обычной загрузкой
   async saveFile(filename, text, type) {
@@ -503,11 +579,18 @@ const app = Object.assign({
       return;
     }
     if (mod) return;
+    // в 3D-полигоне указатель и ПЗ — предметы в руках, а WASD, E, Q — ходьба и действия (src/view3d/walk.js)
+    const poly3d = this.mode === '3d' && this.scheme.room;
+    if (poly3d && (e.code === 'KeyV' || e.code === 'KeyP')) return;
     if (e.code === 'KeyV') this.toggleTool('check');
     else if (e.code === 'KeyP') this.toggleTool('pz');
     else if (e.code === 'KeyK') { if (!this.tr.ack()) this.toast('Сигналов нет.'); }
     else if (e.code === 'KeyF' && this.mode === '3d' && this.v3 && this.v3.ready) this.v3.toggleDebug();
-    else if (e.key === 'Escape') { if (document.getElementById('actmenu')) this.closeActMenu(); else if (this.tool) this.toggleTool(this.tool); }
+    else if (e.key === 'Escape') {
+      if (document.getElementById('actmenu')) this.closeActMenu();
+      else if (this.v3 && this.v3.menu3d) this.v3.closeMenu3D();
+      else if (this.tool) this.toggleTool(this.tool);
+    }
   },
   toggleTheme() {
     const root = document.documentElement;

@@ -1,4 +1,4 @@
-import { isSwitchable, emptyScheme, newId, makeEl, makeWire } from './elements.js';
+import { TYPES, isSwitchable, emptyScheme, newId, makeEl, makeWire } from './elements.js';
 
 /* ===== §2. Готовые схемы и задания =====
    Схемы собираются кодом, чтобы координаты было легко поправить.
@@ -11,10 +11,17 @@ function defTask(s, d) {
   const init = {};
   for (const e of s.els) if (isSwitchable(e)) init[e.id] = e.on;
   for (const [n, on] of Object.entries(d.init || {})) init[id(n)] = on;
-  const steps = d.steps.map(([op, n]) => ({ op, id: id(n) }));
-  const target = {};
-  for (const st of steps) if (st.op !== 'check') target[st.id] = st.op === 'on';
-  return { id: newId(s, 'task'), title: d.title, desc: d.desc, init, target, steps, keep: (d.keep || []).map(id), requireCheck: steps.some(x => x.op === 'check') };
+  const initPos = {};
+  for (const e of s.els) if (TYPES[e.t].cart) initPos[e.id] = e.pos;
+  // шаг: [op, имя] или ['pos', имя, положение]; переносное заземление — имя 'pz:' + id провода
+  const ref = n => n.startsWith('pz:') ? n : id(n);
+  const steps = d.steps.map(([op, n, pos]) => op === 'pos' ? { op, id: ref(n), pos } : { op, id: ref(n) });
+  const target = {}, targetPos = {};
+  for (const st of steps) {
+    if (st.op === 'pos') targetPos[st.id] = st.pos;
+    else if (st.op !== 'check') target[st.id] = st.op === 'on';
+  }
+  return { id: newId(s, 'task'), title: d.title, desc: d.desc, init, target, initPos, targetPos, steps, keep: (d.keep || []).map(id), requireCheck: steps.some(x => x.op === 'check') };
 }
 
 // ПС 110/10 кВ: два ввода 110 кВ, два трансформатора, две секции 10 кВ с секционным выключателем
@@ -124,9 +131,142 @@ function sampleTP() {
   return s;
 }
 
+// ПС 110/35/10 кВ: два трёхобмоточных трансформатора, ОРУ-35 кВ с секционным выключателем,
+// КРУ-10 кВ на выкатных тележках, ТН и ТСН на каждой секции.
+// Т1 нарисован зеркально: левый вывод — 10 кВ, правый — 35 кВ (у трансформатора важны напряжения обмоток, а не сторона).
+function sampleSubstation35() {
+  const s = emptyScheme('ПС 110/35/10 кВ «Степная»');
+  const E = (t, x, y, name, o = {}) => makeEl(s, t, x, y, Object.assign({ name }, o));
+  const W = (a, b, vf) => makeWire(s, a, b, vf);
+  const B35 = 39, B10 = 62;
+  const side = (t, at, dx, name, o) => { E(t, at[0] + dx, at[1] + 1, name, o); W(at, [at[0] + dx, at[1]], false); };
+
+  // ОРУ-110: ВЛ — ЛР — В — ТТ — ТР — (ЗН, ОПН) — трансформатор
+  function inlet110(x, i, src, line, km, kv2, kv3) {
+    E('source', x, 1, src, { p: { kv: 110 } });                         // (x,2)
+    E('ohl', x, 5, line, { p: { km } }); W([x, 2], [x, 3]);              // (x,3)-(x,7)
+    E('disconnector', x, 9, `ЛР-110 Т${i}`); W([x, 7], [x, 8]);          // (x,8)-(x,10)
+    E('breaker', x, 12, `В-110 Т${i}`); W([x, 10], [x, 11]);             // (x,11)-(x,13)
+    E('ct', x, 15, `ТТ-110 Т${i}`); W([x, 13], [x, 14]);                 // (x,14)-(x,16)
+    E('disconnector', x, 18, `ТР-110 Т${i}`); W([x, 16], [x, 17]);       // (x,17)-(x,19)
+    W([x, 19], [x, 20]);
+    side('earth', [x, 20], 2, `ЗН-110 Т${i}`);
+    side('arrester', [x, 20], -6, `ОПН-110 Т${i}`);
+    W([x, 20], [x, 22]);
+    E('tr3', x, 24, `Т${i}`, { p: { kv1: 110, kv2, kv3, mva: 40 } });  // (x,22), (x-1,26), (x+1,26)
+  }
+  // ОРУ-35: от вывода трансформатора — ЗН — ТР — В — ШР — шина (вертикаль x)
+  function in35(x, i, from) {
+    W(from, [x, 26]); W([x, 26], [x, 27]);
+    side('earth', [x, 27], 2, `ЗН-35 Т${i}`);
+    W([x, 27], [x, 30]);
+    E('disconnector', x, 31, `ТР-35 Т${i}`);                             // (x,30)-(x,32)
+    E('breaker', x, 34, `В-35 Т${i}`); W([x, 32], [x, 33]);              // (x,33)-(x,35)
+    E('disconnector', x, 37, `ШР-35 Т${i}`); W([x, 35], [x, 36]);        // (x,36)-(x,38)
+    W([x, 38], [x, B35]);
+  }
+  function feeder35(x, n, load) {
+    W([x, B35], [x, 40]);
+    E('disconnector', x, 41, `ШР-35 Л-${n}`);                           // (x,40)-(x,42)
+    E('breaker', x, 44, `В-35 Л-${n}`); W([x, 42], [x, 43]);             // (x,43)-(x,45)
+    E('disconnector', x, 47, `ЛР-35 Л-${n}`); W([x, 45], [x, 46]);       // (x,46)-(x,48)
+    W([x, 48], [x, 49]);
+    side('earth', [x, 49], 2, `ЗН-35 Л-${n}`);
+    W([x, 49], [x, 51]);
+    E('ohl', x, 53, `ВЛ-35 Л-${n}`, { p: { km: 9 } });                  // (x,51)-(x,55)
+    W([x, 55], [x, 56]);
+    E('load', x, 57, load, { p: { kw: 6000 } });                         // (x,56)
+  }
+  // Ввод 10 кВ в КРУ: провод от трансформатора — ЗН — тележка ввода — секция
+  function in10(x, i, edx) {
+    W([x, 26], [x, 54]);
+    side('earth', [x, 54], edx, `ЗН-10 Т${i}`);
+    W([x, 54], [x, 57]);
+    E('cart', x, 59, `В-10 Т${i}`);                                      // (x,57)-(x,61)
+    W([x, 61], [x, B10]);
+  }
+  // Ячейка КРУ с кабельной линией: тележка — ТТ — ЗН — КЛ — РВ на ТП — потребитель
+  function cell(x, n, load, t = 'load', kw = 900) {
+    W([x, B10], [x, 63]);
+    E('cart', x, 65, `В-10 Л-${n}`);                                     // (x,63)-(x,67)
+    E('ct', x, 69, `ТТ Л-${n}`); W([x, 67], [x, 68]);                    // (x,68)-(x,70)
+    W([x, 70], [x, 71]);
+    side('earth', [x, 71], 2, `ЗН Л-${n}`);
+    E('cable', x, 74, `КЛ-10 Л-${n}`, { p: { km: 1.8 } }); W([x, 71], [x, 72]); // (x,72)-(x,76)
+    const end = W([x, 76], [x, 77]);                                       // конец КЛ у ТП: место для ПЗ
+    E('disconnector', x, 78, `РВ Л-${n}`);                               // (x,77)-(x,79)
+    W([x, 79], [x, 80]);
+    E(t, x, 81, load, { p: { kw } });                                    // (x,80)
+    return end;
+  }
+  function vtCell(x, sec) {
+    W([x, B10], [x, 63]);
+    E('cartdisc', x, 65, `ТН-${sec} тележка`);                           // (x,63)-(x,67)
+    E('fuse', x, 69, `FU ТН-${sec}`); W([x, 67], [x, 68]);               // (x,68)-(x,70)
+    E('vt', x, 72, `ТН-10 ${sec}`); W([x, 70], [x, 71]);                 // (x,71)
+  }
+  function tsnCell(x, i) {
+    W([x, B10], [x, 63]);
+    E('cartdisc', x, 65, `ТСН-${i} тележка`);                            // (x,63)-(x,67)
+    E('fuse', x, 69, `FU ТСН-${i}`); W([x, 67], [x, 68]);                // (x,68)-(x,70)
+    E('tsn', x, 73, `ТСН-${i}`); W([x, 70], [x, 71]);                    // (x,71)-(x,75)
+    E('acb', x, 77, `QF СН-${i}`); W([x, 75], [x, 76]);                  // (x,76)-(x,78)
+    E('load', x, 80, `Собственные нужды ${i}`, { p: { kw: 40 } }); W([x, 78], [x, 79]); // (x,79)
+  }
+  function arresterCell(x, sec) { W([x, B10], [x, 63]); E('arrester', x, 64, `ОПН-10 ${sec}`); }
+
+  inlet110(14, 1, 'ПС «Центральная» 110 кВ', 'ВЛ-110 «Центр»', 24, 10, 35);
+  inlet110(66, 2, 'ПС «Западная» 110 кВ', 'ВЛ-110 «Запад»', 31, 35, 10);
+  // 35 кВ: от Т1 — правый вывод (15,26), от Т2 — левый вывод (65,26)
+  in35(18, 1, [15, 26]);
+  in35(60, 2, [65, 26]);
+  E('bus', 16, B35, '1СШ-35', { p: { len: 18 } });   // x 16..34
+  E('bus', 44, B35, '2СШ-35', { p: { len: 20 } });   // x 44..64
+  E('disconnector', 36, B35, 'СР-35-1', { r: 1 });   // (37,y)-(35,y)
+  E('breaker', 39, B35, 'СВ-35', { r: 1, on: false });
+  E('disconnector', 42, B35, 'СР-35-2', { r: 1 });
+  W([34, B35], [35, B35]); W([37, B35], [38, B35]); W([40, B35], [41, B35]); W([43, B35], [44, B35]);
+  feeder35(26, 1, 'ПС «Аул» 35 кВ');
+  feeder35(54, 2, 'ПС «Ферма» 35 кВ');
+  // КРУ-10 кВ: от Т1 — левый вывод (13,26), от Т2 — правый вывод (67,26)
+  in10(13, 1, -2);
+  in10(67, 2, 2);
+  E('bus', 2, B10, '1С-10', { p: { len: 34 } });    // x 2..36
+  E('bus', 46, B10, '2С-10', { p: { len: 34 } });   // x 46..80
+  E('cart', 39, B10, 'СВ-10', { r: 1, on: false });  // (41,y)-(37,y)
+  E('cartdisc', 43, B10, 'СР-10', { r: 1 });         // (45,y)-(41,y)
+  W([36, B10], [37, B10]); W([45, B10], [46, B10]);
+  vtCell(4, '1С'); tsnCell(12, 1);
+  const kl1 = cell(20, 1, 'ТП-1 «Школа»', 'load', 400);
+  cell(28, 3, 'ТП-3 «Насосная»', 'motor', 630);
+  arresterCell(34, '1С');
+  arresterCell(48, '2С');
+  cell(54, 2, 'ТП-2 «Больница»', 'load', 500);
+  cell(62, 4, 'ТП-4 «Мкр. Самал»', 'load', 1100);
+  tsnCell(70, 2); vtCell(78, '2С');
+
+  const all = s.els.filter(e => TYPES[e.t].consumer).map(e => e.name);
+  s.tasks.push(defTask(s, {
+    title: 'Вывод в ремонт кабельной линии КЛ-10 Л-1',
+    desc: 'Отключите выключатель В-10 Л-1 и выкатите тележку в контрольное положение, отключите РВ Л-1 на ТП-1. Проверьте отсутствие напряжения, включите ЗН Л-1 в ячейке КРУ и наложите переносное заземление на конце кабеля у РВ Л-1. Остальные потребители не должны терять питание.',
+    steps: [['off', 'В-10 Л-1'], ['pos', 'В-10 Л-1', 'test'], ['off', 'РВ Л-1'], ['check', 'ЗН Л-1'], ['on', 'ЗН Л-1'], ['check', 'РВ Л-1'], ['on', 'pz:' + kl1.id]],
+    keep: all.filter(n => n !== 'ТП-1 «Школа»'),
+  }));
+  s.tasks.push(defTask(s, {
+    title: 'Вывод в ремонт трансформатора Т1 без перерыва питания',
+    desc: 'Переведите нагрузку 1С-10 и 1СШ-35 на Т2 секционными выключателями. Отключите Т1 со стороны 10 кВ (тележку ввода — в контрольное положение), 35 кВ и 110 кВ, проверьте отсутствие напряжения и заземлите Т1 со всех трёх сторон. Ни один потребитель не должен потерять питание.',
+    steps: [['on', 'СВ-10'], ['on', 'СВ-35'], ['off', 'В-10 Т1'], ['pos', 'В-10 Т1', 'test'],
+            ['off', 'В-35 Т1'], ['off', 'ТР-35 Т1'], ['off', 'ШР-35 Т1'], ['off', 'В-110 Т1'], ['off', 'ТР-110 Т1'],
+            ['check', 'ЗН-110 Т1'], ['on', 'ЗН-110 Т1'], ['check', 'ЗН-35 Т1'], ['on', 'ЗН-35 Т1'], ['check', 'ЗН-10 Т1'], ['on', 'ЗН-10 Т1']],
+    keep: all,
+  }));
+  return s;
+}
+
 const SAMPLES = [
   { key: 'ps110', title: 'ПС 110/10 кВ «Учебная»', make: sampleSubstation },
   { key: 'tp10', title: 'ТП 10/0,4 кВ «Цех»', make: sampleTP },
+  { key: 'ps35', title: 'ПС 110/35/10 кВ «Степная»', make: sampleSubstation35 },
 ];
 
-export { defTask, sampleSubstation, sampleTP, SAMPLES };
+export { defTask, sampleSubstation, sampleTP, sampleSubstation35, SAMPLES };

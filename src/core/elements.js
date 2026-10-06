@@ -1,23 +1,110 @@
 /* ===== §1. Библиотека элементов ===== */
 const G = 20;          // пикселей в одной клетке сетки при масштабе 1
-const APP_VER = '0.1';
+const APP_VER = '0.2';
 
-// Типы элементов. ports — точки подключения в клетках относительно центра (до поворота).
-// cls: source — источник, bus — шина, switch — коммутационный аппарат, earth — заземляющий нож,
-//      transformer — трансформатор, load — потребитель.
+// Категории палитры (порядок = порядок в палитре)
+const CATS = [
+  ['src', 'Источники'],
+  ['line', 'Шины и линии'],
+  ['sw', 'Коммутационные аппараты'],
+  ['tr', 'Трансформаторы'],
+  ['prot', 'Защита и измерения'],
+  ['load', 'Потребители'],
+];
+
+/* Типы элементов.
+   ports — точки подключения в клетках относительно центра (до поворота).
+   cls: source — источник, bus — шина, switch — коммутационный аппарат, earth — заземление (ЗН, КЗ, ПЗ),
+        transformer — трансформатор (обмотки wnd), link — элемент цепи без коммутации (ТТ, реактор, КЛ, ВЛ),
+        passive — присоединение без тока (ТН, ОПН), load — присоединение с током нагрузки.
+   Для switch: sw — вид аппарата; lb — отключает и включает ток нагрузки; prot — отключает КЗ (граница зоны КЗ);
+               cart — аппарат на выкатной тележке (положения work / test / repair); by — «чем» (для текста ошибки).
+   Для earth: ek — earth (ЗН), kz (короткозамыкатель), pz (переносное заземление).
+   Для load: consumer — потребитель (контроль перерыва питания); у БК тока нагрузки хватает для дуги, но это не потребитель.
+   code — обозначение для имён; gost — буквенный код по ГОСТ 2.710; syn — синонимы для поиска в палитре.
+   verbs/did — глаголы для бланка и журнала, если не «включить/отключить».
+   pmeta — свойства для правки: [ключ, подпись, шаг] или [ключ, подпись, 'bool'].
+   TODO преподаватель: — вопросы собраны в docs/questions-for-teacher.md. */
 const TYPES = {
-  source:       { title: 'Энергосистема',   code: 'С',  ports: [[0, 1]],           cls: 'source',      props: { kv: 110 } },
-  gen:          { title: 'Генератор',       code: 'G',  ports: [[0, 1]],           cls: 'source',      props: { kv: 10.5, mw: 12 } },
-  bus:          { title: 'Шина',            code: 'СШ', ports: null,               cls: 'bus',         props: { len: 8 } },
-  breaker:      { title: 'Выключатель',     code: 'Q',  ports: [[0, -1], [0, 1]],  cls: 'switch', sw: 'breaker',      normal: true },
-  acb:          { title: 'Автомат 0,4 кВ',  code: 'QF', ports: [[0, -1], [0, 1]],  cls: 'switch', sw: 'breaker',      normal: true },
-  disconnector: { title: 'Разъединитель',   code: 'QS', ports: [[0, -1], [0, 1]],  cls: 'switch', sw: 'disconnector', normal: true },
-  earth:        { title: 'Заземляющий нож', code: 'ЗН', ports: [[0, -1]],          cls: 'earth',       normal: false },
-  transformer:  { title: 'Трансформатор',   code: 'T',  ports: [[0, -2], [0, 2]],  cls: 'transformer', props: { kv1: 110, kv2: 10, mva: 25 } },
-  load:         { title: 'Нагрузка',        code: 'Н',  ports: [[0, -1]],          cls: 'load',        props: { kw: 800 } },
-  motor:        { title: 'Двигатель',       code: 'M',  ports: [[0, -1]],          cls: 'load',        props: { kw: 250 } },
+  source:       { title: 'Энергосистема', code: 'С', gost: 'GS', cat: 'src', ports: [[0, 1]], cls: 'source', props: { kv: 110 },
+                  pmeta: [['kv', 'Напряжение, кВ', 0.1]], syn: ['система', 'сеть', 'питание', 'ввод', 'источник', 'подстанция'] },
+  gen:          { title: 'Генератор', code: 'G', gost: 'G', cat: 'src', ports: [[0, 1]], cls: 'source', props: { kv: 10.5, mw: 12 },
+                  pmeta: [['kv', 'Напряжение, кВ', 0.1]], syn: ['дизель', 'ДГУ', 'ДЭС', 'резервное питание'] },
+
+  bus:          { title: 'Шина', code: 'СШ', gost: 'WB', cat: 'line', ports: null, cls: 'bus', props: { len: 8 },
+                  pmeta: [['len', 'Длина, клеток', 1]], syn: ['сборные шины', 'секция', 'система шин', 'СШ', 'шинный мост'] },
+  // TODO преподаватель: ограничивать ли отключение ненагруженной ВЛ и КЛ разъединителем по длине (зарядный ток)? Сейчас — можно всегда.
+  ohl:          { title: 'Воздушная линия', code: 'ВЛ', gost: 'W', cat: 'line', ports: [[0, -2], [0, 2]], cls: 'link', props: { km: 12 },
+                  pmeta: [['km', 'Длина, км', 0.1]], syn: ['ВЛ', 'линия', 'провод', 'опора', 'воздушка'] },
+  cable:        { title: 'Кабельная линия', code: 'КЛ', gost: 'W', cat: 'line', ports: [[0, -2], [0, 2]], cls: 'link', props: { km: 1.2 },
+                  pmeta: [['km', 'Длина, км', 0.1]], syn: ['КЛ', 'кабель', 'муфта', 'ААБл', 'АСБ'] },
+
+  breaker:      { title: 'Выключатель', code: 'Q', gost: 'Q', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'breaker', lb: true, prot: true, normal: true,
+                  syn: ['выключатель', 'масляный', 'вакуумный', 'элегазовый', 'ВМП', 'ВВ', 'МВ'] },
+  cart:         { title: 'Выкатной выключатель', code: 'Q', gost: 'Q', cat: 'sw', ports: [[0, -2], [0, 2]], cls: 'switch', sw: 'breaker', cart: true, lb: true, prot: true, normal: true,
+                  syn: ['КРУ', 'тележка', 'выкатной', 'выкатная тележка', 'ячейка КРУ', 'рабочее положение', 'контрольное положение', 'ремонтное положение'] },
+  disconnector: { title: 'Разъединитель', code: 'QS', gost: 'QS', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'disconnector', by: 'разъединителем', normal: true,
+                  syn: ['ШР', 'ЛР', 'ТР', 'СР', 'РЛНД', 'РНД', 'РВ', 'разъединитель ТН', 'видимый разрыв'] },
+  cartdisc:     { title: 'Выкатной разъединитель', code: 'QS', gost: 'QS', cat: 'sw', ports: [[0, -2], [0, 2]], cls: 'switch', sw: 'disconnector', cart: true, by: 'тележкой', normal: true,
+                  syn: ['КРУ', 'тележка', 'тележка СР', 'тележка ТН', 'секционный разъединитель', 'выкатной'] },
+  loadbreak:    { title: 'Выключатель нагрузки', code: 'ВН', gost: 'QW', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'loadbreak', lb: true, normal: true,
+                  syn: ['ВН', 'ВНА', 'ВНП', 'КСО', 'выключатель нагрузки'] },
+  // TODO преподаватель: какие токи разрешено отключать отделителем вручную (намагничивания Т)? Сейчас — как разъединитель.
+  od:           { title: 'Отделитель', code: 'ОД', gost: 'QR', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'disconnector', by: 'отделителем', normal: true,
+                  syn: ['ОД', 'отделитель', 'упрощённая схема'] },
+  // TODO преподаватель: какой рубильник ставить по умолчанию на щитах 0,4 кВ — с камерами или без? Сейчас — без (как разъединитель).
+  knife:        { title: 'Рубильник 0,4 кВ', code: 'Р', gost: 'QS', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'disconnector', by: 'рубильником', normal: true,
+                  props: { arc: 0 }, pmeta: [['arc', 'С дугогасительными камерами', 'bool']], syn: ['рубильник', 'РПС', 'щит 0,4', 'ЩО'] },
+  acb:          { title: 'Автомат 0,4 кВ', code: 'QF', gost: 'QF', cat: 'sw', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'breaker', lb: true, prot: true, normal: true,
+                  syn: ['автомат', 'автоматический выключатель', 'ВА', 'щит 0,4'] },
+  earth:        { title: 'Заземляющий нож', code: 'ЗН', gost: 'QSG', cat: 'sw', ports: [[0, -1]], cls: 'earth', ek: 'earth', normal: false,
+                  syn: ['ЗН', 'заземлитель', 'заземление', 'земля', 'QSG'] },
+  // TODO преподаватель: разрешать ли ручное включение КЗ и показывать ли цикл «защита → КЗ → отключение линии → ОД в паузу → АПВ»?
+  kz:           { title: 'Короткозамыкатель', code: 'КЗ', gost: 'QK', cat: 'sw', ports: [[0, -1]], cls: 'earth', ek: 'kz', normal: false,
+                  syn: ['КЗ', 'короткозамыкатель', 'отделитель', 'упрощённая схема'] },
+
+  transformer:  { title: 'Трансформатор', code: 'T', gost: 'T', cat: 'tr', ports: [[0, -2], [0, 2]], cls: 'transformer', wnd: ['kv1', 'kv2'], props: { kv1: 110, kv2: 10, mva: 25 },
+                  pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'НН, кВ', 0.1], ['mva', 'Мощность, МВА', 0.01]], syn: ['силовой', 'двухобмоточный', 'ТМ', 'ТДН', 'ТРДН', 'ТП'] },
+  tr3:          { title: 'Трёхобмоточный трансформатор', code: 'T', gost: 'T', cat: 'tr', ports: [[0, -2], [-1, 2], [1, 2]], cls: 'transformer', wnd: ['kv1', 'kv2', 'kv3'], props: { kv1: 110, kv2: 35, kv3: 10, mva: 40 },
+                  pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'Вывод слева, кВ', 0.1], ['kv3', 'Вывод справа, кВ', 0.1], ['mva', 'Мощность, МВА', 0.01]], syn: ['трёхобмоточный', 'трехобмоточный', 'ТДТН', '110/35/10'] },
+  tsn:          { title: 'ТСН', code: 'ТСН', gost: 'T', cat: 'tr', ports: [[0, -2], [0, 2]], cls: 'transformer', wnd: ['kv1', 'kv2'], props: { kv1: 10, kv2: 0.4, mva: 0.063 },
+                  pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'НН, кВ', 0.1], ['mva', 'Мощность, МВА', 0.001]], syn: ['трансформатор собственных нужд', 'собственные нужды', 'СН', 'ТМ-63'] },
+  // TODO преподаватель: нужны ли дугогасящий (ДГР) и шунтирующий реакторы и какие операции с ними разрешены? Сейчас — токоограничивающий, без коммутации.
+  reactor:      { title: 'Реактор', code: 'LR', gost: 'LR', cat: 'tr', ports: [[0, -1], [0, 1]], cls: 'link',
+                  syn: ['реактор', 'токоограничивающий', 'РБ', 'РБА', 'Р'] },
+
+  // TODO преподаватель: требовать ли перед отключением разъединителя (тележки) ТН отключение автоматов вторичных цепей и перевод цепей напряжения?
+  vt:           { title: 'Трансформатор напряжения', code: 'ТН', gost: 'TV', cat: 'prot', ports: [[0, -1]], cls: 'passive',
+                  syn: ['ТН', 'НАМИ', 'НТМИ', 'ЗНОЛ', 'НКФ', 'измерение напряжения'] },
+  ct:           { title: 'Трансформатор тока', code: 'ТТ', gost: 'TA', cat: 'prot', ports: [[0, -1], [0, 1]], cls: 'link',
+                  syn: ['ТТ', 'ТОЛ', 'ТФЗМ', 'ТПЛ', 'измерение тока'] },
+  arrester:     { title: 'ОПН', code: 'ОПН', gost: 'FV', cat: 'prot', ports: [[0, -1]], cls: 'passive',
+                  syn: ['ограничитель перенапряжений', 'разрядник', 'РВ', 'перенапряжения', 'грозозащита'] },
+  fuse:         { title: 'Предохранитель', code: 'FU', gost: 'FU', cat: 'prot', ports: [[0, -1], [0, 1]], cls: 'switch', sw: 'fuse', prot: true, normal: true,
+                  verbs: ['установить', 'снять'], did: ['Установлен', 'Снят'],
+                  syn: ['ПР', 'плавкая вставка', 'ПК', 'ПКТ', 'ПКН', 'ПН-2', 'ППН'] },
+  pz:           { title: 'Переносное заземление', code: 'ПЗ', gost: '', cat: 'prot', ports: [[0, 0]], cls: 'earth', ek: 'pz', onWire: true, normal: false,
+                  verbs: ['наложить', 'снять'], did: ['Наложено', 'Снято'], syn: ['ПЗ', 'переносное', 'закоротка', 'заземление'] },
+
+  load:         { title: 'Нагрузка', code: 'Н', gost: '', cat: 'load', ports: [[0, -1]], cls: 'load', consumer: true, props: { kw: 800 },
+                  pmeta: [['kw', 'Мощность, кВт', 1]], syn: ['потребитель', 'фидер', 'цех', 'посёлок'] },
+  motor:        { title: 'Двигатель', code: 'M', gost: 'M', cat: 'load', ports: [[0, -1]], cls: 'load', consumer: true, props: { kw: 250 },
+                  pmeta: [['kw', 'Мощность, кВт', 1]], syn: ['двигатель', 'мотор', 'насос', 'электродвигатель'] },
+  // TODO преподаватель: требовать ли паузу 1 мин перед повторным включением БК и разряд перед заземлением?
+  capacitor:    { title: 'Конденсаторная батарея', code: 'БК', gost: 'C', cat: 'load', ports: [[0, -1]], cls: 'load', consumer: false, props: { kvar: 450 },
+                  pmeta: [['kvar', 'Мощность, квар', 1]], syn: ['БК', 'конденсатор', 'компенсация', 'КРМ', 'УКРМ', 'косинусная'] },
 };
-const PALETTE = ['source', 'gen', 'bus', 'breaker', 'acb', 'disconnector', 'earth', 'transformer', 'load', 'motor'];
+// Порядок в палитре внутри категорий
+const PALETTE = ['source', 'gen',
+  'bus', 'ohl', 'cable',
+  'breaker', 'cart', 'disconnector', 'cartdisc', 'loadbreak', 'od', 'earth', 'kz', 'knife', 'acb',
+  'transformer', 'tr3', 'tsn', 'reactor',
+  'vt', 'ct', 'arrester', 'fuse', 'pz',
+  'load', 'motor', 'capacitor'];
+
+// Положения выкатной тележки
+const POS = ['work', 'test', 'repair'];
+const POS_NAME = { work: 'рабочее', test: 'контрольное', repair: 'ремонтное' };
 
 // Габарит символа в клетках (до поворота): [x0, y0, x1, y1]
 const BOX = {
@@ -25,6 +112,11 @@ const BOX = {
   breaker: [-0.6, -1, 0.6, 1], acb: [-0.55, -1, 0.55, 1], disconnector: [-0.6, -1, 0.7, 1],
   earth: [-0.6, -1, 0.75, 1.25], transformer: [-0.95, -2, 0.95, 2],
   load: [-0.55, -1, 0.55, 0.95], motor: [-0.75, -1, 0.75, 1.25],
+  ohl: [-0.5, -2, 0.5, 2], cable: [-0.45, -2, 0.45, 2],
+  cart: [-0.6, -2, 0.6, 2], cartdisc: [-0.5, -2, 0.5, 2], loadbreak: [-0.6, -1, 0.7, 1], od: [-0.6, -1, 0.7, 1], knife: [-0.6, -1, 0.75, 1],
+  kz: [-0.6, -1, 0.75, 1.25], tr3: [-1.25, -2, 1.25, 2], tsn: [-0.75, -2, 0.75, 2], reactor: [-0.6, -1, 0.6, 1],
+  vt: [-0.6, -1, 0.6, 1.05], ct: [-0.45, -1, 0.45, 1], arrester: [-0.45, -1, 0.45, 1.25], fuse: [-0.35, -1, 0.35, 1],
+  pz: [-0.5, -0.15, 0.5, 1.4], capacitor: [-0.55, -1, 0.55, 0.85],
 };
 
 // Поворот точки на r × 90° по часовой (ось y экрана смотрит вниз)
@@ -78,6 +170,33 @@ const fmtNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
 const fmtKv = kv => fmtNum(kv) + ' кВ';
 
 function isSwitchable(el) { const c = TYPES[el.t].cls; return c === 'switch' || c === 'earth'; }
+// Напряжения обмоток трансформатора по порядку выводов
+function windings(el) { return (TYPES[el.t].wnd || []).map(k => +el.p[k]); }
+// Аппарат может отключать и включать ток нагрузки (рубильник — только с дугогасительными камерами)
+function breaksLoad(el) { const T = TYPES[el.t]; return !!T.lb || (el.t === 'knife' && !!(el.p && +el.p.arc)); }
+// Переносное заземление, наложенное в тренажёре: id = 'pz:' + id провода или шины
+const isPzId = id => typeof id === 'string' && id.startsWith('pz:');
+
+// Поиск по палитре: название, обозначения, синонимы (без регистра, ё = е).
+// Порядок: точное обозначение (ТН, QS) → целое слово → начало слова → часть слова; при равенстве — порядок палитры.
+const normText = s => String(s).toLowerCase().replace(/ё/g, 'е');
+function searchScore(t, w) {
+  const T = TYPES[t];
+  if ([T.code, T.gost].some(c => c && normText(c) === w)) return 4;
+  const hay = normText([T.title, T.code, T.gost, ...(T.syn || [])].join(' '));
+  const words = hay.split(/[^a-zа-я0-9,]+/).filter(Boolean);
+  if (words.includes(w)) return 3;
+  if (words.some(x => x.startsWith(w))) return 2;
+  return hay.includes(w) ? 1 : 0;
+}
+function searchTypes(q) {
+  const words = normText(q).trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return PALETTE.slice();
+  return PALETTE.map((t, i) => {
+    const sc = words.map(w => searchScore(t, w));
+    return { t, i, score: sc.every(x => x > 0) ? sc.reduce((a, b) => a + b, 0) : 0 };
+  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.i - b.i).map(x => x.t);
+}
 
 // ---------- схема: создание, имена, провода ----------
 function emptyScheme(title) { return { v: 1, title: title || 'Новая схема', els: [], wires: [], tasks: [], seq: 1 }; }
@@ -92,6 +211,7 @@ function makeEl(s, t, x, y, o = {}) {
   const T = TYPES[t];
   const el = { id: newId(s, 'e'), t, x, y, r: o.r || 0, name: o.name || nextName(s, t), p: Object.assign({}, T.props || {}, o.p || {}) };
   if (T.cls === 'switch' || T.cls === 'earth') el.on = o.on != null ? !!o.on : T.normal;
+  if (T.cart) el.pos = POS.includes(o.pos) ? o.pos : 'work';
   s.els.push(el);
   return el;
 }
@@ -106,6 +226,16 @@ function wireRoute(w) {
   if (ax === bx || ay === by) return [w.a, w.b];
   return w.vf ? [w.a, [ax, by], w.b] : [w.a, [bx, ay], w.b];
 }
+// Лежит ли точка на проводе (не только на концах)
+function onWire(w, p) {
+  const r = wireRoute(w);
+  for (let i = 0; i < r.length - 1; i++) {
+    const [a, b] = [r[i], r[i + 1]];
+    if (a[0] === b[0] && p[0] === a[0] && p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1])) return true;
+    if (a[1] === b[1] && p[1] === a[1] && p[0] >= Math.min(a[0], b[0]) && p[0] <= Math.max(a[0], b[0])) return true;
+  }
+  return false;
+}
 // Проверка и починка файла схемы
 function normalizeScheme(s) {
   if (!s || typeof s !== 'object' || !Array.isArray(s.els) || !Array.isArray(s.wires)) throw new Error('Это не файл схемы тренажёра');
@@ -116,6 +246,7 @@ function normalizeScheme(s) {
     const T = TYPES[e.t];
     const el = { id: String(e.id), t: e.t, x: Math.round(+e.x || 0), y: Math.round(+e.y || 0), r: ((+e.r || 0) % 4 + 4) % 4, name: String(e.name || T.code), p: Object.assign({}, T.props || {}, e.p || {}) };
     if (T.cls === 'switch' || T.cls === 'earth') el.on = e.on != null ? !!e.on : T.normal;
+    if (T.cart) el.pos = POS.includes(e.pos) ? e.pos : 'work';
     if (el.t === 'bus') el.p.len = clamp(Math.round(+el.p.len || 4), 1, 200);
     bump(el.id);
     return el;
@@ -124,14 +255,21 @@ function normalizeScheme(s) {
     bump(w.id);
     return { id: String(w.id), a: [Math.round(+w.a[0]), Math.round(+w.a[1])], b: [Math.round(+w.b[0]), Math.round(+w.b[1])], vf: w.vf !== false };
   });
-  const ids = new Set(s.els.map(e => e.id));
+  const ids = new Set(s.els.map(e => e.id)), wids = new Set(s.wires.map(w => w.id));
+  const carts = new Set(s.els.filter(e => TYPES[e.t].cart).map(e => e.id));
+  // ссылка задания: аппарат схемы или переносное заземление на проводе или шине
+  const ok = k => ids.has(k) || (isPzId(k) && (wids.has(k.slice(3)) || ids.has(k.slice(3))));
+  const okPos = ([k, v]) => carts.has(k) && POS.includes(v);
   s.tasks = s.tasks.filter(t => t && t.target && t.steps).map(t => {
     bump(t.id);
     return {
       id: String(t.id || 'task' + (++maxN)), title: String(t.title || 'Задание'), desc: String(t.desc || ''),
-      init: Object.fromEntries(Object.entries(t.init || {}).filter(([k]) => ids.has(k))),
-      target: Object.fromEntries(Object.entries(t.target).filter(([k]) => ids.has(k))),
-      steps: t.steps.filter(x => x && ids.has(x.id) && ['on', 'off', 'check'].includes(x.op)),
+      init: Object.fromEntries(Object.entries(t.init || {}).filter(([k]) => ok(k))),
+      target: Object.fromEntries(Object.entries(t.target).filter(([k]) => ok(k))),
+      initPos: Object.fromEntries(Object.entries(t.initPos || {}).filter(okPos)),
+      targetPos: Object.fromEntries(Object.entries(t.targetPos || {}).filter(okPos)),
+      steps: t.steps.filter(x => x && (ok(x.id) || (x.op === 'check' && wids.has(x.id))) && (['on', 'off', 'check'].includes(x.op) || (x.op === 'pos' && carts.has(x.id) && POS.includes(x.pos))))
+        .map(x => x.op === 'pos' ? { op: 'pos', id: x.id, pos: x.pos } : { op: x.op, id: x.id }),
       keep: (t.keep || []).filter(k => ids.has(k)), requireCheck: !!t.requireCheck,
     };
   });
@@ -139,4 +277,4 @@ function normalizeScheme(s) {
   return s;
 }
 
-export { G, APP_VER, TYPES, PALETTE, BOX, rot, ptKey, clamp, esc, portPoints, bbox, vClass, V_CLASSES, fmtNum, fmtKv, isSwitchable, emptyScheme, cloneScheme, newId, nameFor, nextName, makeEl, makeWire, wireRoute, normalizeScheme };
+export { G, APP_VER, CATS, TYPES, PALETTE, POS, POS_NAME, BOX, rot, ptKey, clamp, esc, portPoints, bbox, vClass, V_CLASSES, fmtNum, fmtKv, isSwitchable, windings, breaksLoad, isPzId, normText, searchTypes, emptyScheme, cloneScheme, newId, nameFor, nextName, makeEl, makeWire, wireRoute, onWire, normalizeScheme };

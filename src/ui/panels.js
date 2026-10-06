@@ -3,6 +3,7 @@ import { fmtTime, capFirst } from '../core/engine.js';
 import { GLOSSARY } from '../core/glossary.js';
 import { symbolIcon } from '../view2d/scheme2d.js';
 import { store } from './store.js';
+import { Diag } from './diag.js';
 
 /* ===== §5. Панели и окна ===== */
 const Panels = {
@@ -394,14 +395,31 @@ const Panels = {
       <div class="field"><b>Новая схема</b><p style="margin:0;color:var(--muted);font-size:13px">Пустая схема заменит «Мою схему» в этом браузере. Нужное сохраните в файл заранее.</p>
       <div class="row"><button class="btn" data-m="new">Создать пустую схему</button></div></div>`);
   },
+  // Отчёт VR-теста и журнал ошибок: в начале справки, чтобы после теста в шлеме их было легко найти
+  vrTestHTML() {
+    const d = Diag.data(), errs = Diag.errors(), last = d.sessions[d.sessions.length - 1], st = last && Diag.stats(last.fps);
+    const sum = d.sessions.length
+      ? `Сессий VR: ${d.sessions.length}. Последняя: ${Math.floor(last.secs / 60)} мин ${last.secs % 60} с${st ? `, FPS средний ${st.avg}, минимальный ${st.min}` : ''}. Отметок: ${d.marks.length}. Ошибок: ${errs.length}.`
+      : `В VR ещё не входили. Отметок: ${d.marks.length}. Ошибок: ${errs.length}.`;
+    const errList = errs.length
+      ? '<ul class="issues">' + errs.slice(-5).reverse().map(e => `<li class="bad"><span class="mono">${esc(e.time)}</span> ${esc(e.where)}: ${esc(e.msg)}${e.n > 1 ? ` (×${e.n})` : ''}</li>`).join('') + '</ul>' + (errs.length > 5 ? `<p class="desc" style="margin:0;color:var(--muted);font-size:12px">Показаны 5 последних из ${errs.length}; «Скопировать» берёт все.</p>` : '')
+      : '<p style="margin:4px 0 0;color:var(--muted);font-size:13px">Ошибок нет.</p>';
+    return `<div class="vrtest"><b>Отчёт VR-теста</b>
+        <p style="margin:4px 0 6px;font-size:13px">${esc(sum)}</p>
+        <div class="row"><button class="btn primary" data-m="vr-copy">Скопировать отчёт</button><button class="btn" data-m="vr-dl">Скачать .txt</button><button class="btn danger" data-m="vr-clear">Очистить запись</button></div>
+        <details class="more"><summary>Показать текст отчёта</summary><textarea class="inp mono" rows="10" readonly style="margin:0 0 8px;font-size:11.5px">${esc(Diag.report(APP_VER))}</textarea></details></div>
+      <div><b>Журнал ошибок</b>${errList}
+        <div class="row" style="margin-top:6px"><button class="btn" data-m="err-copy">Скопировать</button><button class="btn danger" data-m="err-clear">Очистить журнал</button></div></div>`;
+  },
   showHelp() {
-    this.openModal('Как пользоваться', `
+    this.openModal('Как пользоваться', `${this.vrTestHTML()}
       <div><b>Три режима</b><ul class="issues"><li><b>Редактор</b> — собрать схему из элементов: палитра слева, провода тянутся от точек подключения.</li>
       <li><b>Тренажёр</b> — переключения по щелчку. Цвет показывает напряжение, землю и положение аппаратов. Задания оцениваются, в конце — отчёт.</li>
       <li><b>3D и VR</b> — та же схема в объёме: щелчок мышью или луч контроллера переключает аппараты.</li></ul></div>
-      <div><b>VR в шлеме Meta Quest</b><ol class="issues"><li>Выложите файл index.html на GitHub Pages (нужна ссылка https).</li><li>Откройте ссылку в браузере шлема, вкладка «3D и VR», кнопка «Войти в VR».</li>
+      <div><b>VR в шлеме Meta Quest</b><ol class="issues"><li>Откройте https://kisrxyz.github.io/vr-energy в браузере шлема, вкладка «3D и VR», кнопка «Войти в VR».</li>
       <li>Курок — переключить аппарат или переместиться в точку на земле; у тележки КРУ рядом появится меню. Боковая кнопка — указатель напряжения. Левый стик — ходьба, правый — поворот.</li>
-      <li>Щит с заданием стоит перед вами: его кнопки нажимаются лучом.</li></ol></div>
+      <li>Щит с заданием стоит перед вами: его кнопки нажимаются лучом. «Отметка» (или кнопка A / X) запоминает момент для отчёта теста, «Отладка» — FPS и устройство, «Обучение» — подсказка по управлению.</li>
+      <li>После теста: выйдите из VR, нажмите «?» → «Отчёт VR-теста» → «Скопировать отчёт».</li></ol></div>
       <div><b>Правила логики (проверить с преподавателем)</b><ol class="issues">
       <li>Заземляющий нож на участок под напряжением — авария: дуга, КЗ.</li>
       <li>Разъединитель на заземлённый участок под напряжением — авария.</li>

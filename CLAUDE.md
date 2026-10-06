@@ -24,6 +24,7 @@
 - `src/view3d/models/<тип>.js` — построитель 3D-модели каждого типа; интерфейс и реестр — `models/index.js`, фигуры — `models/kit.js`
 - `src/ui/panels.js` — боковая панель, журнал, окна (отчёт, файл, справка)
 - `src/ui/sound.js`, `src/ui/store.js` — звук и localStorage
+- `src/ui/diag.js` — журнал ошибок и запись VR-теста (FPS, отметки, отчёт для справки)
 - `src/app.js` — режимы, правка схемы, связка движка с видами; `src/main.js` — вход
 - `tests/engine.test.js` — сценарии: эталонные задания, типовые ошибки, новые элементы, полнота библиотеки
 - `docs/elements-review.md` — сверка библиотеки с типовыми ПС, РП, ТП; `docs/questions-for-teacher.md` — открытые вопросы по правилам

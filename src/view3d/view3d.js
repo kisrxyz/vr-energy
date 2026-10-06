@@ -1,6 +1,8 @@
 import { TYPES, clamp, bbox, vClass, wireRoute, isPzId } from '../core/elements.js';
 import { fmtTime } from '../core/engine.js';
 import { Sound } from '../ui/sound.js';
+import { Diag } from '../ui/diag.js';
+import { store } from '../ui/store.js';
 import { MODELS, S3, H3, makeKit } from './models/index.js';
 import { wireMid } from '../view2d/scheme2d.js';
 
@@ -17,6 +19,7 @@ async function loadThree() {
   if (!THREE) THREE = await import('three');
   return THREE;
 }
+const RAY = { idle: 0x1f45ff, hot: 0xffd23f };
 const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d };
 function rr(x, X, Y, W, H, R) {
   x.beginPath();
@@ -87,6 +90,7 @@ class View3D {
     this.orbit = { target: new T.Vector3(), r: 60, th: 0.42, ph: 0.98 };
     this.bindPointer();
     this.setupXR();
+    Diag.on(t => { if (t === 'error') { this.drawBoard(); if (this.dbg && this.dbg.m.visible) this.drawDebug(); } });
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.host);
     this.ready = true;
@@ -361,12 +365,13 @@ class View3D {
     for (const d of this.dev.values()) if (d.labelPos) list.push(d);
     this.labelMesh = null;
     if (!list.length) return;
-    const font = '600 40px "JetBrains Mono", ui-monospace, monospace', LH = 60, AW = 2048;
+    // атлас в 1,5 раза плотнее прежнего (60 px вместо 40) — подписи чётче в шлеме; размер в сцене тот же
+    const font = '600 60px "JetBrains Mono", ui-monospace, monospace', LH = 90, AW = 2048;
     const c = document.createElement('canvas'), x = c.getContext('2d');
     x.font = font;
     let cx = 0, cy = 0;
     const boxes = list.map(d => {
-      const w = Math.min(AW, Math.ceil(x.measureText(d.el.name).width) + 32);
+      const w = Math.min(AW, Math.ceil(x.measureText(d.el.name).width) + 48);
       if (cx + w > AW) { cx = 0; cy += LH; }
       const b = { x: cx, y: cy, w };
       cx += w + 2;
@@ -376,8 +381,8 @@ class View3D {
     x.font = font; x.textBaseline = 'middle';
     list.forEach((d, i) => {
       const b = boxes[i];
-      x.fillStyle = 'rgba(14,20,18,0.82)'; rr(x, b.x, b.y, b.w, LH, 12); x.fill();
-      x.fillStyle = '#ffffff'; x.fillText(d.el.name, b.x + 16, b.y + 32);
+      x.fillStyle = 'rgba(14,20,18,0.82)'; rr(x, b.x, b.y, b.w, LH, 18); x.fill();
+      x.fillStyle = '#ffffff'; x.fillText(d.el.name, b.x + 24, b.y + 48);
     });
     const tex = new T.CanvasTexture(c);
     tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 4;
@@ -487,7 +492,13 @@ class View3D {
     this.setLamps(true);
     this.drawBoard();
   }
+  // Кадр: ошибка в шаге или отрисовке уходит в журнал, сессия VR продолжается
   loop(time) {
+    try { this.step(time); } catch (e) { this.xrError(this.renderer.xr.isPresenting ? 'VR-кадр' : '3D-кадр', e); }
+    try { this.renderer.render(this.scene, this.camera); } catch (e) { this.xrError('отрисовка', e); }
+    this.perfTick(performance.now());
+  }
+  step(time) {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const blink = Math.floor(time / 350) % 2 === 0;
     let trips = false;
@@ -519,7 +530,6 @@ class View3D {
     if (this.labelMesh) this.labelMesh.material.uniforms.far.value = xr ? 32 : 0;
     if (xr) this.xrFrame(dt);
     if (this.menu3d && performance.now() > this.menu3d.until) this.closeMenu3D();
-    this.renderer.render(this.scene, this.camera);
   }
 
   // ---------- камера и мышь ----------
@@ -670,20 +680,160 @@ class View3D {
     this.camera.updateProjectionMatrix();
   }
 
+  // ---------- подготовка к тесту в шлеме: замеры, отладка, отметки, обучение ----------
+  // Ошибка внутри кадра или обработчика XR: в журнал (без повторов каждый кадр), сессия продолжается
+  xrError(where, e) {
+    const msg = String(e && e.message ? e.message : e), now = performance.now();
+    if (this._errMsg === msg && now - this._errT < 3000) return;
+    this._errMsg = msg; this._errT = now;
+    Diag.addError(where, e);
+  }
+  // Раз в секунду: FPS, вызовы отрисовки, ввод — в запись теста и на панель отладки
+  perfTick(now) {
+    const p = this.perf || (this.perf = { t0: now, frames: 0, fps: 0, hist: [] });
+    p.frames++;
+    if (now - p.t0 < 1000) return;
+    p.fps = p.frames * 1000 / (now - p.t0);
+    p.t0 = now; p.frames = 0;
+    p.hist.push(Math.round(p.fps)); if (p.hist.length > 10) p.hist.shift();
+    const inf = this.renderer.info.render;
+    p.calls = inf.calls; p.tris = inf.triangles;
+    if (this.renderer.xr.isPresenting) Diag.sessionTick({ fps: p.fps, calls: p.calls, tris: p.tris, ref: this.refInfo, inputs: this.inputList() });
+    if (this.dbg && this.dbg.m.visible) this.drawDebug();
+  }
+  // Что подключено: «левый: oculus-touch-v3, контроллер»
+  inputList() {
+    const s = this.renderer.xr.getSession && this.renderer.xr.getSession();
+    if (!s || !s.inputSources) return [];
+    const side = { left: 'левый', right: 'правый', none: 'без стороны' };
+    return [...s.inputSources].map(i => `${side[i.handedness] || i.handedness}: ${(i.profiles && i.profiles[0]) || '?'}, ${i.hand ? 'руки' : i.gamepad ? 'контроллер' : i.targetRayMode}`);
+  }
+  mkPanel(w, h, pw, ph) {
+    const T = THREE, c = document.createElement('canvas'); c.width = w; c.height = h;
+    const t = new T.CanvasTexture(c); t.colorSpace = T.SRGBColorSpace;
+    const m = new T.Mesh(new T.PlaneGeometry(pw, ph), new T.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, toneMapped: false }));
+    m.renderOrder = 12; m.visible = false;
+    return { c, t, m };
+  }
+  // Панель отладки у левого края взгляда. В шлеме — кнопка «Отладка» на щите, на компьютере в 3D — клавиша F.
+  toggleDebug(on) {
+    if (!this.ready) return;
+    if (!this.dbg) { this.dbg = this.mkPanel(640, 560, 0.4, 0.35); this.dbg.m.position.set(-0.36, 0.1, -0.9); this.camera.add(this.dbg.m); }
+    this.dbg.m.visible = on == null ? !this.dbg.m.visible : on;
+    if (this.dbg.m.visible) this.drawDebug();
+    this.drawBoard();
+  }
+  drawDebug() {
+    const { c, t } = this.dbg, x = c.getContext('2d'), p = this.perf || {}, xr = this.renderer.xr, s = xr.getSession && xr.getSession();
+    const F = (w, sz) => `${w} ${sz}px "JetBrains Mono", ui-monospace, monospace`;
+    x.clearRect(0, 0, c.width, c.height);
+    x.fillStyle = 'rgba(8,12,10,0.88)'; rr(x, 0, 0, c.width, c.height, 20); x.fill();
+    let y = 44;
+    const line = (text, color = '#e8efe9', size = 24, w = 500) => { x.font = F(w, size); x.fillStyle = color; x.fillText(this.fit(x, text, c.width - 40), 20, y); y += size + 10; };
+    const fps = Math.round(p.fps || 0), minFps = p.hist && p.hist.length ? Math.min(...p.hist) : 0;
+    line(`FPS ${fps}  (мин. за 10 с: ${minFps})`, fps >= 68 ? '#5ee08f' : fps >= 50 ? '#f5b544' : '#ff6b7d', 34, 600);
+    line(`Отрисовка: ${p.calls || 0} вызовов${xr.isPresenting ? ' (оба глаза)' : ''}, ${Math.round((p.tris || 0) / 1000)} тыс. треуг.`);
+    if (xr.isPresenting) { x.font = F(500, 22); x.fillStyle = '#e8efe9'; this.wrap(x, `VR: ${this.refInfo || '?'}`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 30; }); }
+    else line('VR: не запущен (3D на экране)');
+    const ins = this.inputList();
+    if (!ins.length) line('Ввод: нет', '#93a69e');
+    for (const i of ins.slice(0, 3)) line('· ' + i, '#c6d3cd', 22);
+    const cp = this.camera.getWorldPosition(this.tmp.v2);
+    line(`Где стою: x ${cp.x.toFixed(1)} м, z ${cp.z.toFixed(1)} м, глаза ${cp.y.toFixed(2)} м`, '#c6d3cd', 22);
+    const d = Diag.data();
+    line(`Отметок: ${d.marks.length} · ошибок в журнале: ${Diag.errors().length}`, '#c6d3cd', 22);
+    x.font = F(400, 18); x.fillStyle = '#93a69e';
+    this.wrap(x, navigator.userAgent, c.width - 40, 3).forEach(l => { x.fillText(l, 20, y); y += 24; });
+    const e = Diag.pageErrors ? Diag.lastError() : null;
+    if (e) { y += 4; x.font = F(600, 20); x.fillStyle = '#ff6b7d'; this.wrap(x, `Ошибка: ${e.where}: ${e.msg}`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 26; }); }
+    t.needsUpdate = true;
+  }
+  // Что сейчас перед глазами: аппарат, провод, щит, земля
+  gazeLabel() {
+    const cam = this.camera, o = this.tmp.v.setFromMatrixPosition(cam.matrixWorld), dir = this.tmp.dir;
+    cam.getWorldDirection(dir);
+    this.ray.ray.origin.copy(o); this.ray.ray.direction.copy(dir); this.ray.far = 120;
+    const h = this.ray.intersectObjects(this.pickables, false)[0];
+    if (!h) return { label: 'небо, вдаль', board: false };
+    const u = h.object.userData, dist = ` (${h.distance.toFixed(1)} м)`;
+    if (u.dev) return { label: this.app.tr.nm(u.dev) + dist, board: false };
+    if (u.wire) return { label: 'провод' + dist, board: false };
+    if (u.board) return { label: 'щит с заданием' + dist, board: true };
+    if (u.menu) return { label: 'меню тележки' + dist, board: false };
+    return { label: 'земля' + dist, board: false };
+  }
+  // Отметка: время, FPS, где стою, на что смотрю, состояние задания — в запись теста
+  addMark(from) {
+    let g = this.gazeLabel();
+    // со щита взгляд всегда на щите — берём то, на что смотрели до этого
+    if (g.board && this.lastGaze && performance.now() - this.lastGaze.t < 15000) g = { label: this.lastGaze.label + ` — ${Math.round((performance.now() - this.lastGaze.t) / 1000)} с назад` };
+    const cp = this.camera.getWorldPosition(new THREE.Vector3());
+    let near = null, nd = 8;
+    for (const d of this.dev.values()) { const p = d.group.getWorldPosition(this.tmp.v2), dd = Math.hypot(p.x - cp.x, p.z - cp.z); if (dd < nd) { nd = dd; near = d; } }
+    const tr = this.app.tr, run = tr.run;
+    const m = Diag.addMark({
+      fps: Math.round((this.perf && this.perf.fps) || 0), look: g.label, via: from,
+      where: `x ${cp.x.toFixed(1)}, z ${cp.z.toFixed(1)} м${near ? ', рядом ' + near.el.name : ''}`,
+      task: run ? `задание «${run.task.title}»${run.done ? ' завершено' : `: операций ${run.ops.length}, ошибок ${run.errors.length}`}` : 'свободный режим',
+    });
+    this.banner(`Отметка ${m.n} сохранена: ${m.look}`, 'info');
+    if (this.dbg && this.dbg.m.visible) this.drawDebug();
+  }
+  // Короткое обучение перед лицом: при первом входе в VR и по кнопке «Обучение» на щите; закрывается курком
+  showTutor(on = true) {
+    if (!this.tutor) { this.tutor = this.mkPanel(1024, 600, 1.0, 0.586); this.tutor.m.position.set(0, -0.05, -1.25); this.camera.add(this.tutor.m); }
+    this.tutor.m.visible = on;
+    if (!on) return;
+    const { c, t } = this.tutor, x = c.getContext('2d'), F = (w, sz) => `${w} ${sz}px "Golos Text", system-ui, sans-serif`;
+    x.clearRect(0, 0, c.width, c.height);
+    x.fillStyle = 'rgba(16,24,21,0.94)'; rr(x, 0, 0, c.width, c.height, 28); x.fill();
+    x.fillStyle = '#3b4fd1'; rr(x, 0, 0, c.width, 10, 4); x.fill();
+    x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText('Как управлять', 44, 82);
+    const steps = [
+      ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход в эту точку.'],
+      ['2', 'Боковая кнопка — указатель', 'Наведите луч и нажмите боковую кнопку (под средним пальцем) — проверка напряжения.'],
+      ['3', 'Стики', 'Левый стик — ходьба, правый — поворот. Кнопка A или X — отметка для отчёта теста.'],
+    ];
+    let y = 150;
+    for (const [n, h, d] of steps) {
+      x.fillStyle = '#3b4fd1'; x.beginPath(); x.arc(72, y - 4, 26, 0, Math.PI * 2); x.fill();
+      x.fillStyle = '#ffffff'; x.font = F(700, 30); x.textAlign = 'center'; x.fillText(n, 72, y + 7); x.textAlign = 'left';
+      x.font = F(600, 32); x.fillText(h, 120, y + 6);
+      x.font = F(400, 26); x.fillStyle = '#c6d3cd';
+      this.wrap(x, d, c.width - 160, 2).forEach((l, i) => x.fillText(l, 120, y + 46 + i * 32));
+      y += 140;
+    }
+    x.fillStyle = '#ffd23f'; x.font = F(600, 30); x.textAlign = 'center';
+    x.fillText('Нажмите курок, чтобы начать', c.width / 2, c.height - 30); x.textAlign = 'left';
+    t.needsUpdate = true;
+  }
+  // Руки без контроллеров: луч и щипок работают не полностью — честно просим взять контроллеры
+  checkHands() {
+    const s = this.renderer.xr.getSession && this.renderer.xr.getSession();
+    const src = s && s.inputSources ? [...s.inputSources] : [];
+    const hands = src.length > 0 && src.every(i => i.hand);
+    if (hands === !!this.handsOnly) return;
+    this.handsOnly = hands;
+    if (hands) this.banner('Возьмите контроллеры: управление руками в тренажёре не поддерживается.', 'warn');
+    this.drawBoard();
+  }
+
   // ---------- щит с заданием ----------
   makeBoard() {
     const T = THREE;
     if (!this.boardCanvas) {
+      // рисуем в координатах 1024×720, текстура в 1,5 раза плотнее — чтобы читалось в шлеме с 2–3 м
       this.boardCanvas = document.createElement('canvas');
-      this.boardCanvas.width = 1024; this.boardCanvas.height = 640;
+      this.boardW = 1024; this.boardH = 720; this.boardK = 1.5;
+      this.boardCanvas.width = this.boardW * this.boardK; this.boardCanvas.height = this.boardH * this.boardK;
       this.boardTex = new T.CanvasTexture(this.boardCanvas);
       this.boardTex.colorSpace = T.SRGBColorSpace;
       this.boardTex.anisotropy = 4;
     }
     const g = new T.Group();
-    const panel = new T.Mesh(new T.PlaneGeometry(3.2, 2.0), new T.MeshBasicMaterial({ map: this.boardTex, toneMapped: false }));
-    panel.position.y = 2.2; panel.userData.board = true; g.add(panel);
-    g.add(this.box(3.32, 2.12, 0.08, this.M.dark, 0, 2.2, -0.05));
+    const panel = new T.Mesh(new T.PlaneGeometry(3.2, 2.25), new T.MeshBasicMaterial({ map: this.boardTex, toneMapped: false }));
+    panel.position.y = 2.25; panel.userData.board = true; g.add(panel);
+    g.add(this.box(3.32, 2.37, 0.08, this.M.dark, 0, 2.25, -0.05));
     for (const x of [-1.35, 1.35]) g.add(this.box(0.1, 1.2, 0.1, this.M.galv, x, 0.6, -0.05));
     g.position.set(-4.4, 0, this.bounds.hz - 1.4);
     g.rotation.y = 0.5;
@@ -710,8 +860,9 @@ class View3D {
   }
   drawBoard() {
     if (!this.boardCanvas) return;
-    const c = this.boardCanvas, x = c.getContext('2d'), app = this.app, tr = app.tr, W = c.width, H = c.height;
+    const c = this.boardCanvas, x = c.getContext('2d'), app = this.app, tr = app.tr, W = this.boardW, H = this.boardH;
     const F = (w, s) => `${w} ${s}px "Golos Text", system-ui, sans-serif`;
+    x.setTransform(this.boardK, 0, 0, this.boardK, 0, 0);
     x.textAlign = 'left'; x.textBaseline = 'alphabetic';
     x.fillStyle = '#14201b'; x.fillRect(0, 0, W, H);
     x.fillStyle = '#3b4fd1'; x.fillRect(0, 0, W, 8);
@@ -777,12 +928,33 @@ class View3D {
       this.boardBtns.push({ act, x: bx, y: by, w, h: bh });
       bx += w + gap;
     }
+    // служебный ряд для теста: слева последняя ошибка (красным), справа отметка, отладка, обучение
+    const sy = by - 62, sh = 50, sw = 150;
+    const util = [['mark', 'Отметка'], ['debug', 'Отладка'], ['tutor', 'Обучение']];
+    util.forEach(([act, label], i) => {
+      const ux = W - 32 - (util.length - i) * (sw + 10) + 10, lit = act === 'debug' && this.dbg && this.dbg.m.visible;
+      x.fillStyle = lit ? '#3b4fd1' : '#1d2a25'; rr(x, ux, sy, sw, sh, 10); x.fill();
+      x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
+      x.fillStyle = '#dfe8e3'; x.font = F(600, 22); x.textAlign = 'center'; x.fillText(label, ux + sw / 2, sy + 33); x.textAlign = 'left';
+      this.boardBtns.push({ act, x: ux, y: sy, w: sw, h: sh });
+    });
+    const err = Diag.pageErrors ? Diag.lastError() : null;
+    if (err) {
+      x.fillStyle = '#ff6b7d'; x.font = F(600, 20);
+      this.wrap(x, `Ошибка: ${err.where}: ${err.msg}`, W - 64 - util.length * (sw + 10) - 10, 2).forEach((l, i) => x.fillText(l, 32, sy + 20 + i * 24));
+    }
+    if (this.handsOnly) {
+      x.fillStyle = 'rgba(165,92,0,0.96)'; rr(x, 32, 300, W - 64, 120, 16); x.fill();
+      x.fillStyle = '#ffffff'; x.font = F(600, 36); x.fillText('Возьмите контроллеры', 56, 350);
+      x.font = F(400, 24); x.fillText('Управление руками в тренажёре не поддерживается: нужны курок и стики.', 56, 392);
+    }
+    x.setTransform(1, 0, 0, 1, 0, 0);
     this.boardTex.needsUpdate = true;
     if (this.wrist && this.renderer && this.renderer.xr.isPresenting) this.drawWrist();
   }
   boardClick(uv) {
     if (!uv || !this.boardBtns) return;
-    const px = uv.x * this.boardCanvas.width, py = (1 - uv.y) * this.boardCanvas.height;
+    const px = uv.x * this.boardW, py = (1 - uv.y) * this.boardH;
     const b = this.boardBtns.find(q => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
     if (b) this.boardAction(b.act);
   }
@@ -800,6 +972,9 @@ class View3D {
     else if (act === 'lock') { tr.opt.interlocks = !tr.opt.interlocks; app.toast(`Блокировки: ${tr.opt.interlocks ? 'включены' : 'выключены'}.`); }
     else if (act === 'exit') tr.exitTask();
     else if (act === 'pz') app.toggleTool('pz');
+    else if (act === 'mark') this.addMark('щит');
+    else if (act === 'debug') this.toggleDebug();
+    else if (act === 'tutor') this.showTutor(true);
     app.renderSide();
     this.drawBoard();
   }
@@ -894,9 +1069,17 @@ class View3D {
     if (this.renderer.xr.isPresenting) { const s = this.renderer.xr.getSession(); if (s) await s.end(); return; }
     if (!navigator.xr) { this.app.toast('В этом браузере нет WebXR. Откройте ссылку в браузере шлема Quest.', 'warn'); return; }
     try {
-      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] });
+      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
+      this.refType = 'local-floor';
       this.renderer.xr.setReferenceSpaceType('local-floor');
-      await this.renderer.xr.setSession(session);
+      try { await this.renderer.xr.setSession(session); }
+      catch (e) {
+        // без пола в шлеме — обычное локальное пространство (рост тогда не учитывается)
+        Diag.addError('вход в VR: local-floor', e);
+        this.refType = 'local (local-floor не дали)';
+        this.renderer.xr.setReferenceSpaceType('local');
+        await this.renderer.xr.setSession(session);
+      }
     } catch (e) {
       console.error(e);
       this.app.toast('Не удалось войти в VR: ' + (e && e.message ? e.message : e) + '. Откройте страницу по https-ссылке в браузере шлема.', 'warn');
@@ -905,19 +1088,20 @@ class View3D {
   setupXR() {
     const T = THREE, r = this.renderer;
     this.ctrls = [];
-    const lineGeo = new T.BufferGeometry().setFromPoints([new T.Vector3(0, 0, 0), new T.Vector3(0, 0, -1)]);
+    // Луч — тонкая полоса насыщенного синего: видна и на светлом небе, и на земле; над аппаратом — жёлтая
+    const lineGeo = new T.BoxGeometry(0.007, 0.007, 1).translate(0, 0, -0.5);
     for (let i = 0; i < 2; i++) {
       const c = r.xr.getController(i);
-      const line = new T.Line(lineGeo, new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }));
+      const line = new T.Mesh(lineGeo, new T.MeshBasicMaterial({ color: RAY.idle, transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false }));
       line.scale.z = 6; line.visible = false; c.add(line);
-      const dot = new T.Mesh(this.geo.sphere, new T.MeshBasicMaterial({ color: 0xffffff }));
-      dot.scale.setScalar(0.035); dot.visible = false;
+      const dot = new T.Mesh(this.geo.sphere, new T.MeshBasicMaterial({ color: RAY.idle, toneMapped: false }));
+      dot.scale.setScalar(0.045); dot.visible = false;
       this.scene.add(dot);
       const info = { i, c, line, dot, hand: null, src: null, turned: false };
-      c.addEventListener('connected', e => { info.src = e.data; info.hand = e.data.handedness; if (info.hand === 'left') this.attachWrist(info); });
-      c.addEventListener('disconnected', () => { info.src = null; line.visible = false; dot.visible = false; });
-      c.addEventListener('selectstart', () => this.xrSelect(info));
-      c.addEventListener('squeezestart', () => this.xrSqueeze(info));
+      c.addEventListener('connected', e => { info.src = e.data; info.hand = e.data.handedness; if (info.hand === 'left' && !e.data.hand) this.attachWrist(info); this.checkHands(); });
+      c.addEventListener('disconnected', () => { info.src = null; line.visible = false; dot.visible = false; this.checkHands(); });
+      c.addEventListener('selectstart', () => { try { this.xrSelect(info); } catch (e) { this.xrError('курок', e); } });
+      c.addEventListener('squeezestart', () => { try { this.xrSqueeze(info); } catch (e) { this.xrError('боковая кнопка', e); } });
       this.rig.add(c);
       const grip = r.xr.getControllerGrip(i);
       grip.add(this.box(0.04, 0.035, 0.12, this.M.ctrl, 0, 0, 0.02));
@@ -951,7 +1135,9 @@ class View3D {
     const e = tr.log[0];
     x.fillStyle = !e ? '#c6d3cd' : e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#eef4f1';
     x.font = '600 26px "Golos Text", system-ui, sans-serif';
-    this.wrap(x, e ? e.text : 'Событий пока нет', c.width - 40, 5).forEach((l, i) => x.fillText(l, 20, 80 + i * 34));
+    this.wrap(x, e ? e.text : 'Событий пока нет', c.width - 40, 3).forEach((l, i) => x.fillText(l, 20, 80 + i * 34));
+    const err = Diag.pageErrors ? Diag.lastError() : null;
+    if (err) { x.fillStyle = '#ff6b7d'; x.font = '600 20px "Golos Text", system-ui, sans-serif'; this.wrap(x, `Ошибка: ${err.msg}`, c.width - 40, 2).forEach((l, i) => x.fillText(l, 20, 206 + i * 24)); }
     t.needsUpdate = true;
   }
   banner(text, level) {
@@ -981,6 +1167,7 @@ class View3D {
   }
   xrSelect(info) {
     this.app.userGesture();
+    if (this.tutor && this.tutor.m.visible) { this.showTutor(false); store.set('ts.vrTutor', '1'); this.pulse(info, 0.3); return; }
     const h = this.xrHit(info);
     if (!h) return;
     const u = h.object.userData;
@@ -1058,7 +1245,13 @@ class View3D {
         info.dot.visible = true; info.dot.position.copy(h.point);
         if (h.object.userData.dev) hoverId = h.object.userData.dev;
       } else { info.line.scale.z = 6; info.dot.visible = false; }
+      const u = h && h.object.userData, col = u && (u.dev || u.board || u.menu || u.wire) ? RAY.hot : RAY.idle;
+      info.line.material.color.setHex(col); info.dot.material.color.setHex(col);
       const gp = info.src.gamepad;
+      // A (правый) или X (левый) — отметка для отчёта теста
+      const bA = !!(gp && gp.buttons && gp.buttons[4] && gp.buttons[4].pressed);
+      if (bA && !info.aWas) this.addMark('кнопка ' + (info.hand === 'left' ? 'X' : 'A'));
+      info.aWas = bA;
       if (gp && gp.axes && gp.axes.length) {
         const ax = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0] || 0;
         const ay = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1] || 0;
@@ -1068,6 +1261,12 @@ class View3D {
     }
     this.setHover(hoverId);
     if (this.bannerH.m.visible && performance.now() > this.bannerUntil) this.bannerH.m.visible = false;
+    const now = performance.now();
+    if (!this.gazeT || now - this.gazeT > 250) {
+      this.gazeT = now;
+      const g = this.gazeLabel();
+      if (!g.board) this.lastGaze = { label: g.label, t: now };
+    }
   }
   xrMove(ax, ay, dt) {
     if (Math.abs(ax) < 0.15 && Math.abs(ay) < 0.15) return;
@@ -1095,9 +1294,19 @@ class View3D {
     this.rig.rotation.set(0, 0, 0);
     this.tip(null); this.setHover(null);
     document.getElementById('btnVR').textContent = 'Выйти из VR';
+    const s = this.renderer.xr.getSession();
+    const feats = s && s.enabledFeatures ? [...s.enabledFeatures].join(', ') : '';
+    this.refInfo = (this.refType || 'local-floor') + (feats ? ` (включено: ${feats})` : '');
+    Diag.sessionStart({ ua: navigator.userAgent, scheme: this.app.scheme.title, ref: this.refInfo });
+    if (s) s.addEventListener('inputsourceschange', () => this.checkHands());
+    this.handsOnly = false; this.checkHands();
+    if (store.get('ts.vrTutor') !== '1') this.showTutor(true);
     this.drawBoard();
   }
   onXREnd() {
+    Diag.sessionEnd();
+    if (this.tutor) this.tutor.m.visible = false;
+    this.handsOnly = false;
     this.rig.position.set(0, 0, 0);
     this.rig.rotation.set(0, 0, 0);
     for (const info of this.ctrls) { info.line.visible = false; info.dot.visible = false; }

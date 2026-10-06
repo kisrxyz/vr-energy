@@ -1,10 +1,11 @@
-import { TYPES, ptKey, clamp, esc, portPoints, bbox, isSwitchable, isPzId, emptyScheme, makeEl, makeWire, normalizeScheme } from './core/elements.js';
+import { APP_VER, TYPES, ptKey, clamp, esc, portPoints, bbox, isSwitchable, isPzId, emptyScheme, makeEl, makeWire, normalizeScheme } from './core/elements.js';
 import { GLOSSARY } from './core/glossary.js';
 import { SAMPLES } from './core/samples.js';
 import { buildTopo, makeSim, compute, Trainer } from './core/engine.js';
 import { elSubtitle, nearestOnWire, Scheme2D } from './view2d/scheme2d.js';
 import { Panels } from './ui/panels.js';
 import { store } from './ui/store.js';
+import { Diag } from './ui/diag.js';
 import { Sound } from './ui/sound.js';
 import { View3D } from './view3d/view3d.js';
 
@@ -384,7 +385,7 @@ const app = Object.assign({
       const a = e.target.closest('[data-ma]');
       if (a) { const act = this.modalActions[+a.dataset.ma]; if (act && act.act) act.act(); return; }
       const m = e.target.closest('[data-m]');
-      if (m) this.modalAction(m.dataset.m);
+      if (m) this.modalAction(m.dataset.m, m);
     });
     const fi = document.getElementById('fileInput');
     fi.addEventListener('change', () => {
@@ -436,8 +437,24 @@ const app = Object.assign({
       case 'task-del': { this.history(); this.scheme.tasks = this.scheme.tasks.filter(t => t.id !== b.dataset.id); this.commit(); break; }
     }
   },
-  modalAction(m) {
+  modalAction(m, b) {
     if (m === 'close') { this.closeModal(); return; }
+    // отчёт VR-теста и журнал ошибок (справка); очистка — только со второго нажатия
+    if (m === 'vr-copy') { this.copyText(Diag.report(APP_VER), 'Отчёт VR-теста скопирован — вставьте его в сообщение.'); return; }
+    if (m === 'vr-dl') { this.saveFile(`Отчёт VR-теста ${new Date().toISOString().slice(0, 10)}.txt`, Diag.report(APP_VER), 'text/plain'); return; }
+    if (m === 'err-copy') { this.copyText(Diag.errorsText(), 'Журнал ошибок скопирован.'); return; }
+    if (m === 'vr-clear' || m === 'err-clear') {
+      if (b && !b.dataset.sure) {
+        const t = b.textContent;
+        b.dataset.sure = '1'; b.textContent = 'Точно? Нажмите ещё раз';
+        setTimeout(() => { if (b.isConnected) { delete b.dataset.sure; b.textContent = t; } }, 4000);
+        return;
+      }
+      if (m === 'vr-clear') Diag.clearTest(); else Diag.clearErrors();
+      this.toast(m === 'vr-clear' ? 'Запись VR-теста очищена.' : 'Журнал ошибок очищен.');
+      this.showHelp();
+      return;
+    }
     if (m === 'copy') { this.copyText(this.fileJson, 'Текст схемы скопирован.'); return; }
     if (m === 'download') { this.saveFile((this.scheme.title || 'schema').replace(/[\\/:*?"<>|«»]+/g, '').trim() + '.json', this.fileJson, 'application/json'); return; }
     if (m === 'open-file') { document.getElementById('fileInput').click(); return; }
@@ -489,6 +506,7 @@ const app = Object.assign({
     if (e.code === 'KeyV') this.toggleTool('check');
     else if (e.code === 'KeyP') this.toggleTool('pz');
     else if (e.code === 'KeyK') { if (!this.tr.ack()) this.toast('Сигналов нет.'); }
+    else if (e.code === 'KeyF' && this.mode === '3d' && this.v3 && this.v3.ready) this.v3.toggleDebug();
     else if (e.key === 'Escape') { if (document.getElementById('actmenu')) this.closeActMenu(); else if (this.tool) this.toggleTool(this.tool); }
   },
   toggleTheme() {

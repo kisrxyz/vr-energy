@@ -144,7 +144,7 @@ const app = Object.assign({
     else this.toast('Переносное заземление накладывается на провод или шину.', 'warn');
   },
   pick3D(id, alt, at) {
-    if (this.tool === 'pz') { this.pzAt(id, null); return; }
+    if (this.tool === 'pz' && !alt) { this.pzAt(id, null); return; }
     this.pickEl(id, alt || this.tool === 'check', at);
   },
   pickWire3D(wid, alt) {
@@ -296,7 +296,7 @@ const app = Object.assign({
     const el = this.selEl();
     if (!el) return;
     this.history();
-    const c = makeEl(this.scheme, el.t, el.x + 3, el.y, { r: el.r, p: JSON.parse(JSON.stringify(el.p)), on: el.on });
+    const c = makeEl(this.scheme, el.t, el.x + 3, el.y, { r: el.r, p: JSON.parse(JSON.stringify(el.p)), on: el.on, pos: el.pos });
     this.view.sel = { type: 'el', id: c.id };
     this.commit();
   },

@@ -1,4 +1,4 @@
-import { G, TYPES, BOX, POS_NAME, rot, ptKey, clamp, esc, portPoints, bbox, vClass, fmtNum, fmtKv, isSwitchable, wireRoute } from '../core/elements.js';
+import { G, TYPES, BOX, POS_NAME, rot, ptKey, clamp, esc, portPoints, bbox, vClass, fmtNum, fmtKv, isSwitchable, isPzId, wireRoute } from '../core/elements.js';
 import { buildTopo } from '../core/engine.js';
 
 /* ===== §4. 2D: схема и редактор ===== */
@@ -339,19 +339,26 @@ class Scheme2D {
     if (!g) { g = document.createElementNS('http://www.w3.org/2000/svg', 'g'); g.id = 'ovx'; this.lo.appendChild(g); }
     g.innerHTML = h;
   }
-  burst(id, color) {
+  // Центр места на схеме: аппарат или наложенное ПЗ
+  spotOf(id) {
     const el = this.app.scheme.els.find(e => e.id === id);
-    if (!el) return;
-    const b = bbox(el), cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    if (el) { const b = bbox(el); return { c: [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], tl: [b[0] - 0.2, b[1] - 0.2] }; }
+    if (isPzId(id)) { const pl = this.pzPlace(id); if (pl) return { c: pl.p, tl: [pl.p[0] - 0.7, pl.p[1] - 0.7] }; }
+    return null;
+  }
+  burst(id, color) {
+    const sp = this.spotOf(id);
+    if (!sp) return;
+    const [cx, cy] = sp.c;
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.innerHTML = `<circle class="burst" cx="${cx}" cy="${cy}" r="0.4" style="fill:${color}"><animate attributeName="r" from="0.4" to="3.2" dur="1.1s" fill="freeze"/><animate attributeName="opacity" from="0.75" to="0" dur="1.1s" fill="freeze"/></circle>`;
     this.lfx.appendChild(g);
     setTimeout(() => g.remove(), 1300);
   }
   checkMark(id, live) {
-    const el = this.app.scheme.els.find(e => e.id === id);
+    const sp = this.spotOf(id);
     let x, y;
-    if (el) { const b = bbox(el); x = b[0] - 0.2; y = b[1] - 0.2; }
+    if (sp) { [x, y] = sp.tl; }
     else { const w = this.app.scheme.wires.find(v => v.id === id); if (!w) return; x = (w.a[0] + w.b[0]) / 2; y = (w.a[1] + w.b[1]) / 2; }
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', 'vcheck');

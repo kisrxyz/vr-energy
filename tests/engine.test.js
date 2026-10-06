@@ -3,6 +3,8 @@ import * as lib from '../src/core/elements.js';
 import * as samples from '../src/core/samples.js';
 import * as engine from '../src/core/engine.js';
 import { GLOSSARY } from '../src/core/glossary.js';
+import { symbolSVG, editColors } from '../src/view2d/scheme2d.js';
+import { MODELS } from '../src/view3d/models/index.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -186,6 +188,11 @@ function setup(key) {
   ok(find('КРУ').includes('cart') && find('тележка').includes('cartdisc'), 'search: КРУ, тележка');
   ok(find('QF')[0] === 'acb' && find('ТН').includes('vt') && find('ОПН').includes('arrester') && find('ЗН').includes('earth'), 'search by designation');
   ok(find('трехобмоточный').includes('tr3'), 'search ignores ё');
+  ok(find('ТН')[0] === 'vt' && find('QS')[0] === 'disconnector' && find('ЗН')[0] === 'earth' && find('ОПН')[0] === 'arrester', 'exact designation ranks first: ' + find('ТН').slice(0, 3));
+  const noSym = types.filter(t => !symbolSVG(Object.assign({ t, r: 0, x: 0, y: 0, p: Object.assign({}, E.TYPES[t].props || {}) }, t === 'bus' ? { p: { len: 2 } } : {}), editColors(E.TYPES[t])));
+  ok(!noSym.length, '2D symbol for every type: ' + noSym);
+  const noModel = types.filter(t => !MODELS[t] || typeof MODELS[t].build !== 'function' || typeof MODELS[t].update !== 'function');
+  ok(!noModel.length, '3D model for every type: ' + noModel);
 }
 
 // Мини-схема: элементы в вертикальную линию через провода в одну клетку.
@@ -495,6 +502,70 @@ function rp10(feeders, kv = 10) {
   tr.opt.interlocks = false;
   r = tr.operate(id('ЗН Л-3'));
   ok(r.viol && r.viol.kind === 'accident' && r.tripped.length === 1 && r.tripped[0] === id('В-10 Л-3'), 'KZ on cable: only the feeder trolley breaker trips: ' + r.tripped.map(x => tr.nm(x)));
+}
+{
+  console.log('Review fixes: wire check recorded on the wire, hints follow it');
+  const { s, tr, id } = mini(s => {
+    E.makeEl(s, 'source', 0, -2, { name: 'С', p: { kv: 10 } });
+    chain(s, 0, -1, [['disconnector', 'ЛР1'], ['breaker', 'Q1']]);   // Q1: (0,3)-(0,5)
+    E.makeWire(s, [0, 5], [0, 8]);
+    E.makeEl(s, 'load', 0, 9, { name: 'Н1' });
+  });
+  const w = s.wires.find(x => x.a[1] === 5 && x.b[1] === 8);
+  tr.startRec(); tr.operate(id('Q1')); tr.check(w.id); tr.pzToggle(w.id);
+  const t = tr.saveRec('ПЗ на линии', '');
+  ok(t.steps[1].op === 'check' && t.steps[1].id === w.id, 'wire check recorded on the wire: ' + JSON.stringify(t.steps[1]));
+  const txt = tr.stepText(t.steps[1]);
+  ok(txt.includes('Q1') && txt.includes('Н1') && !txt.includes('?'), 'step text names the place: ' + txt);
+  ok(!tr.log.some(e => e.text.includes('у ПЗ')), 'check text does not name an unapplied PZ');
+  const replay = sch => {
+    const t2 = new E.Trainer(); t2.load(E.normalizeScheme(JSON.parse(JSON.stringify(sch))));
+    t2.startTask(t2.s.tasks[t2.s.tasks.length - 1]);
+    for (let i = 0; i < 30 && !t2.run.done; i++) {
+      const h = t2.hint(); if (!h) break;
+      const st = h.step;
+      if (st.op === 'check') t2.check(st.id); else if (st.op === 'pos') t2.operate(st.id, { pos: st.pos }); else t2.operate(st.id);
+    }
+    return t2;
+  };
+  let t2 = replay(s);
+  ok(t2.run.completed && !t2.run.errors.length, 'hint-driven replay, no errors: ' + t2.run.errors.map(e => e.text));
+  // ПС 110/35/10: инструктор проверяет конец кабеля по проводу и накладывает ПЗ
+  const k = setup('ps35'), kid = k.id, ktr = k.tr;
+  const end = k.s.wires.find(x => ktr.topo.wireNode.get(x.id) === ktr.topo.term.get(kid('РВ Л-1'))[0]);
+  ktr.startRec();
+  ktr.operate(kid('В-10 Л-1')); ktr.operate(kid('В-10 Л-1'), { pos: 'test' }); ktr.operate(kid('РВ Л-1'));
+  ktr.check(kid('ЗН Л-1')); ktr.operate(kid('ЗН Л-1')); ktr.check(end.id); ktr.pzToggle(end.id);
+  ktr.saveRec('КЛ-10 Л-1 с ПЗ', '');
+  t2 = replay(k.s);
+  ok(t2.run.completed && !t2.run.errors.length, 'ps35 hint-driven replay with PZ, no errors: ' + t2.run.errors.map(e => e.text));
+}
+{
+  console.log('Review fixes: one PZ per point, task compares PZ by point');
+  const { s, tr, id } = mini(s => {
+    E.makeEl(s, 'source', 0, -2, { name: 'С', p: { kv: 10 } });
+    chain(s, 0, -1, [['breaker', 'Q1']]);                            // Q1: (0,0)-(0,2)
+    E.makeWire(s, [0, 2], [0, 5]); E.makeWire(s, [0, 5], [0, 8]);
+    E.makeEl(s, 'load', 0, 9, { name: 'Н1' });
+  });
+  const wa = s.wires.find(w => w.a[1] === 2), wb = s.wires.find(w => w.a[1] === 5);
+  tr.startRec(); tr.operate(id('Q1')); tr.check(wa.id); tr.pzToggle(wa.id);
+  const t = tr.saveRec('ПЗ', '');
+  tr.reset(); tr.startTask(t);
+  tr.operate(id('Q1')); tr.check(wb.id);
+  const r = tr.pzToggle(wb.id);
+  ok(r && r.ok && !r.viol, 'PZ on another wire of the same point');
+  ok(tr.run.completed && tr.run.grade.tone === 'good', 'task with PZ done at the same point: ' + (tr.run.grade && tr.run.grade.verdict));
+  tr.pzToggle(wa.id);
+  ok(tr.pzOn().length === 0, 'click on the other wire of the point removes that PZ, not a second one');
+}
+{
+  console.log('Review fixes: accident text keeps «кВ»');
+  const { tr, id } = rp10([[['breaker', 'Q1'], ['knife', 'Р1'], ['@earth', 'ЗН1'], ['load', 'Н1']]], 0.4);
+  tr.operate(id('Q1')); tr.operate(id('Р1')); tr.check(id('ЗН1')); tr.operate(id('ЗН1')); tr.operate(id('Q1'));
+  tr.opt.interlocks = false;
+  const r = tr.operate(id('Р1'));
+  ok(r.viol && r.viol.kind === 'accident' && r.viol.text.includes('рубильник 0,4 кВ'), 'text: ' + (r.viol && r.viol.text));
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

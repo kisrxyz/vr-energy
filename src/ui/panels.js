@@ -37,15 +37,15 @@ const Panels = {
       <div class="pal-list">${CATS.map(([k, t]) => {
         const ts = PALETTE.filter(x => TYPES[x].cat === k);
         const open = !this.palClosed.has(k);
-        return `<section class="pal-cat${k === this.palCat ? ' active' : ''}" data-cat="${k}"><button class="pal-cat-h" data-cat="${k}" aria-expanded="${open}"><span>${esc(t)}</span><span class="n">${ts.length}</span></button>
-          <div class="pal-items"${open ? '' : ' hidden'}>${ts.map(item).join('')}</div></section>`;
+        return `<section class="pal-cat${k === this.palCat ? ' active' : ''}${open ? '' : ' closed'}" data-cat="${k}"><button class="pal-cat-h" data-cat="${k}" aria-expanded="${open}"><span>${esc(t)}</span><span class="n">${ts.length}</span></button>
+          <div class="pal-items">${ts.map(item).join('')}</div></section>`;
       }).join('')}<p class="pal-empty" hidden>Ничего не найдено.</p></div>
       <p class="pal-note">Щёлкните элемент, затем поле — или перетащите на поле. Shift — поставить несколько.</p>`;
     const search = pal.querySelector('#palSearch');
     search.addEventListener('input', () => this.filterPalette(search.value));
     search.addEventListener('keydown', e => {
       if (e.key === 'Escape') { search.value = ''; this.filterPalette(''); search.blur(); }
-      if (e.key === 'Enter') { const b = pal.querySelector('.pal-item:not([hidden])'); if (b) this.paletteClick(b.dataset.type); }
+      if (e.key === 'Enter') { const t = searchTypes(search.value)[0]; if (t) this.paletteClick(t); }
     });
     pal.addEventListener('click', e => {
       const h = e.target.closest('.pal-cat-h');
@@ -67,9 +67,10 @@ const Panels = {
   togglePalCat(k) {
     const sec = document.querySelector(`.pal-cat[data-cat="${k}"]`);
     if (!sec) return;
-    const h = sec.querySelector('.pal-cat-h'), box = sec.querySelector('.pal-items');
+    // свёрнутость — класс, а не hidden: на телефоне категории без заголовков всегда раскрыты
+    const h = sec.querySelector('.pal-cat-h');
     const open = h.getAttribute('aria-expanded') !== 'true';
-    h.setAttribute('aria-expanded', String(open)); box.hidden = !open;
+    h.setAttribute('aria-expanded', String(open)); sec.classList.toggle('closed', !open);
     if (open) this.palClosed.delete(k); else this.palClosed.add(k);
     store.set('ts.palClosed', JSON.stringify([...this.palClosed]));
   },
@@ -86,8 +87,6 @@ const Panels = {
       const all = [...sec.querySelectorAll('.pal-item')], shown = all.filter(b => !b.hidden).length, any = shown > 0;
       sec.hidden = on && !any;
       sec.querySelector('.n').textContent = on ? shown : all.length;
-      const box = sec.querySelector('.pal-items');
-      box.hidden = on ? !any : this.palClosed.has(sec.dataset.cat);
     }
     pal.querySelector('.pal-empty').hidden = !on || hit.size > 0;
   },
@@ -193,7 +192,7 @@ const Panels = {
         const meta = T.pmeta || [], nums = meta.filter(m => m[2] !== 'bool');
         if (nums.length) f += (nums.length > 1 ? '<div class="row">' : '') + nums.map(m => num(m[0], m[1], m[2])).join('') + (nums.length > 1 ? '</div>' : '');
         f += meta.filter(m => m[2] === 'bool').map(m => bool(m[0], m[1])).join('');
-        if (el.t === 'tr3') f += '<p>Выводы слева и справа можно поменять напряжениями — так рисуют второй трансформатор зеркально.</p>';
+        if (el.t === 'tr3') f += '<p>Напряжения выводов слева и справа (СН и НН) можно поменять местами — так рисуют второй трансформатор зеркально.</p>';
         const seg = (label, html) => `<div class="field"><label>${label}</label><div class="seg">${html}</div></div>`;
         if (isSwitchable(el) && !(T.cart && T.sw !== 'breaker')) {
           const w = T.did || ['Включён', 'Отключён'];

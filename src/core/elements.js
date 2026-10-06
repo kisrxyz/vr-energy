@@ -66,7 +66,7 @@ const TYPES = {
   transformer:  { title: 'Трансформатор', code: 'T', gost: 'T', cat: 'tr', ports: [[0, -2], [0, 2]], cls: 'transformer', wnd: ['kv1', 'kv2'], props: { kv1: 110, kv2: 10, mva: 25 },
                   pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'НН, кВ', 0.1], ['mva', 'Мощность, МВА', 0.01]], syn: ['силовой', 'двухобмоточный', 'ТМ', 'ТДН', 'ТРДН', 'ТП'] },
   tr3:          { title: 'Трёхобмоточный трансформатор', code: 'T', gost: 'T', cat: 'tr', ports: [[0, -2], [-1, 2], [1, 2]], cls: 'transformer', wnd: ['kv1', 'kv2', 'kv3'], props: { kv1: 110, kv2: 35, kv3: 10, mva: 40 },
-                  pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'СН, кВ', 0.1], ['kv3', 'НН, кВ', 0.1], ['mva', 'Мощность, МВА', 0.01]], syn: ['трёхобмоточный', 'трехобмоточный', 'ТДТН', '110/35/10'] },
+                  pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'Вывод слева, кВ', 0.1], ['kv3', 'Вывод справа, кВ', 0.1], ['mva', 'Мощность, МВА', 0.01]], syn: ['трёхобмоточный', 'трехобмоточный', 'ТДТН', '110/35/10'] },
   tsn:          { title: 'ТСН', code: 'ТСН', gost: 'T', cat: 'tr', ports: [[0, -2], [0, 2]], cls: 'transformer', wnd: ['kv1', 'kv2'], props: { kv1: 10, kv2: 0.4, mva: 0.063 },
                   pmeta: [['kv1', 'ВН, кВ', 0.1], ['kv2', 'НН, кВ', 0.1], ['mva', 'Мощность, МВА', 0.001]], syn: ['трансформатор собственных нужд', 'собственные нужды', 'СН', 'ТМ-63'] },
   // TODO преподаватель: нужны ли дугогасящий (ДГР) и шунтирующий реакторы и какие операции с ними разрешены? Сейчас — токоограничивающий, без коммутации.
@@ -177,16 +177,25 @@ function breaksLoad(el) { const T = TYPES[el.t]; return !!T.lb || (el.t === 'kni
 // Переносное заземление, наложенное в тренажёре: id = 'pz:' + id провода или шины
 const isPzId = id => typeof id === 'string' && id.startsWith('pz:');
 
-// Строка поиска по палитре: название, обозначения, синонимы (без регистра, ё = е)
+// Поиск по палитре: название, обозначения, синонимы (без регистра, ё = е).
+// Порядок: точное обозначение (ТН, QS) → целое слово → начало слова → часть слова; при равенстве — порядок палитры.
 const normText = s => String(s).toLowerCase().replace(/ё/g, 'е');
+function searchScore(t, w) {
+  const T = TYPES[t];
+  if ([T.code, T.gost].some(c => c && normText(c) === w)) return 4;
+  const hay = normText([T.title, T.code, T.gost, ...(T.syn || [])].join(' '));
+  const words = hay.split(/[^a-zа-я0-9,]+/).filter(Boolean);
+  if (words.includes(w)) return 3;
+  if (words.some(x => x.startsWith(w))) return 2;
+  return hay.includes(w) ? 1 : 0;
+}
 function searchTypes(q) {
   const words = normText(q).trim().split(/\s+/).filter(Boolean);
   if (!words.length) return PALETTE.slice();
-  return PALETTE.filter(t => {
-    const T = TYPES[t];
-    const hay = normText([T.title, T.code, T.gost, ...(T.syn || [])].join(' '));
-    return words.every(w => hay.includes(w));
-  });
+  return PALETTE.map((t, i) => {
+    const sc = words.map(w => searchScore(t, w));
+    return { t, i, score: sc.every(x => x > 0) ? sc.reduce((a, b) => a + b, 0) : 0 };
+  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.i - b.i).map(x => x.t);
 }
 
 // ---------- схема: создание, имена, провода ----------

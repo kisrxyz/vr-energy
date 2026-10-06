@@ -431,9 +431,10 @@ class View3D {
     return d.group;
   }
   // ПЗ, наложенные в тренажёре: модель ставится в точку провода и убирается, когда ПЗ снято
+  // Модель пересоздаётся и тогда, когда ПЗ перенесли в другую точку, пока 3D был скрыт.
   syncPz() {
-    const tr = this.app.tr, on = new Set(tr.pzOn());
-    for (const [id, d] of this.pzDev) if (!on.has(id)) {
+    const tr = this.app.tr, on = new Set(tr.pzOn()), where = id => { const pl = this.app.view.pzPlace(id); return pl ? pl.p.join(',') + '/' + pl.r : ''; };
+    for (const [id, d] of this.pzDev) if (!on.has(id) || d.where !== where(id)) {
       this.root.remove(d.group);
       for (const p of d.proxies) { this.root.remove(p); this.pickables.splice(this.pickables.indexOf(p), 1); }
       this.dev.delete(id); this.pzDev.delete(id);
@@ -447,7 +448,8 @@ class View3D {
       MODELS.pz.build(k, el, d);
       this.mergeInto(d.show);
       d.group.position.copy(this.toWorld(pl.p));
-      d.group.rotation.y = pl.r ? -Math.PI / 2 : 0;
+      d.group.rotation.y = -pl.r * Math.PI / 2;
+      d.where = where(id);
       this.root.add(d.group);
       this.dev.set(id, d);
       d.proxies = this.makeProxies(new Map([[id, d]]));
@@ -459,6 +461,7 @@ class View3D {
   update(instant) {
     if (!this.ready || !this.active) return;
     const tr = this.app.tr;
+    this.closeMenu3D();   // после любой операции пункты меню тележки устарели
     if (this.builtTopo !== tr.topo) this.build();
     this.syncPz();
     const st = tr.state;

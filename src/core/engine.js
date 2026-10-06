@@ -197,20 +197,28 @@ class Trainer {
     if (!isPzId(id)) return null;
     const at = id.slice(3), n = pzNode(this.topo, at);
     if (n == null) return null;
-    const atEl = this.byId.get(at);
-    let name;
-    if (atEl && atEl.t === 'bus') name = 'ПЗ на ' + atEl.name;
-    else {
-      const ids = (this.topo.nodeEls.get(n) || []).filter(i => TYPES[this.byId.get(i).t].cls !== 'earth');
-      name = ids.length >= 2 ? `ПЗ между ${this.nm(ids[0])} и ${this.nm(ids[1])}` : ids.length ? 'ПЗ у ' + this.nm(ids[0]) : 'ПЗ на проводе';
-    }
-    const el = { id, t: 'pz', name, at, pseudo: true };
+    const el = { id, t: 'pz', name: 'ПЗ ' + this.nodeName(n), at, pseudo: true };
     this.byId.set(id, el);
     this.topo.term.set(id, [n]);
     if (!this.topo.nodeEls.has(n)) this.topo.nodeEls.set(n, []);
     this.topo.nodeEls.get(n).push(id);
     return el;
   }
+  // Название точки схемы по соседним аппаратам: «на 1СШ», «между ЛР Л-1 и Цех №1», «у Q1»
+  nodeName(n) {
+    const ids = (this.topo.nodeEls.get(n) || []).filter(i => !isPzId(i) && TYPES[this.byId.get(i).t].cls !== 'earth');
+    const bus = ids.find(i => this.byId.get(i).t === 'bus');
+    if (bus) return 'на ' + this.nm(bus);
+    return ids.length >= 2 ? `между ${this.nm(ids[0])} и ${this.nm(ids[1])}` : ids.length ? 'у ' + this.nm(ids[0]) : 'на проводе';
+  }
+  // Узел шага задания: аппарат (первая точка), провод или переносное заземление
+  stepNode(id) {
+    if (isPzId(id)) return pzNode(this.topo, id.slice(3));
+    const t = this.topo.term.get(id);
+    return t ? t[0] : this.topo.wireNode.get(id);
+  }
+  // Наложено ли переносное заземление в узле n (на любом проводе этой точки)
+  pzAt(n) { return this.pzOn().some(k => pzNode(this.topo, k.slice(3)) === n); }
   nm(id) { const e = this.elOf(id); return e ? e.name : '?'; }
   names(ids) { return ids.map(i => this.nm(i)).join(', '); }
   addLog(level, text, id) {
@@ -306,7 +314,7 @@ class Trainer {
       }
       if (T.sw === 'disconnector') {
         return {
-          viol: { kind: 'accident', text: `Авария: ${T.title.toLowerCase()} ${el.name} включён на заземлённый участок (${en}). Дуга, короткое замыкание.`,
+          viol: { kind: 'accident', text: `Авария: ${T.title.charAt(0).toLowerCase() + T.title.slice(1)} ${el.name} включён на заземлённый участок (${en}). Дуга, короткое замыкание.`,
                   block: `Блокировка: ${el.name} не включается — участок заземлён (${en}). Сначала отключите заземляющие ножи.` },
           faultNodes };
       }
@@ -482,7 +490,12 @@ class Trainer {
     return res;
   }
   // Наложить или снять переносное заземление на провод или шину (pt — точка на схеме для рисунка)
+  // В одной точке схемы — одно ПЗ: щелчок по другому проводу той же точки снимает уже наложенное.
   pzToggle(target, pt) {
+    const n = pzNode(this.topo, target);
+    if (n == null) return null;
+    const here = this.pzOn().find(k => pzNode(this.topo, k.slice(3)) === n);
+    if (here) return this.operate(here);
     const id = 'pz:' + target;
     const el = this.elOf(id);
     if (!el) return null;
@@ -553,7 +566,7 @@ class Trainer {
     return n ? [n] : [];
   }
   placeOf(n) {
-    const ids = this.topo.nodeEls.get(n) || [];
+    const ids = (this.topo.nodeEls.get(n) || []).filter(i => !isPzId(i) || (this.sim.st[i] && this.sim.st[i].on));
     const by = t => ids.find(i => this.byId.get(i).t === t);
     return by('earth') || by('pz') || by('bus') || ids[0] || null;
   }
@@ -572,8 +585,8 @@ class Trainer {
       text = `Указатель напряжения на ${el.name}: ` + res.map((r, i) => { const p = this.placeOf(r.n); return `сторона ${i + 1}${p && p !== el.id ? ' (' + this.nm(p) + ')' : ''} — ${say(r)}`; }).join('; ') + '.';
     }
     this.addLog(res.some(r => r.kv != null) ? 'warn' : 'ok', text, target);
-    const sid = el ? target : this.placeOf(nodes[0]);
-    if (sid) this.record({ op: 'check', id: sid });
+    // в эталон записывается то, что проверяли: аппарат, провод или место ПЗ
+    this.record({ op: 'check', id: target });
     this.emit('check', { target, res, text, live: res.some(r => r.kv != null) });
     this.emit('state', {});
     return { res, text };
@@ -593,11 +606,16 @@ class Trainer {
     this.emit('state', { reset: true });
   }
   stopTask() { if (this.run && !this.run.done) this.finish(false); }
+  // Положение аппарата для задания; ПЗ сравнивается по точке, а не по отрезку провода
+  isOn(id) {
+    if (isPzId(id)) { const n = pzNode(this.topo, id.slice(3)); return n != null && this.pzAt(n); }
+    return !!(this.sim.st[id] && this.sim.st[id].on);
+  }
   exitTask() { this.run = null; this.emit('task', { exit: true }); }
   checkDone() {
     const r = this.run;
     if (!r || r.done) return;
-    const ok = Object.entries(r.task.target).every(([id, on]) => !!(this.sim.st[id] && this.sim.st[id].on) === on) &&
+    const ok = Object.entries(r.task.target).every(([id, on]) => this.isOn(id) === on) &&
       Object.entries(r.task.targetPos || {}).every(([id, p]) => this.sim.st[id] && this.sim.st[id].pos === p);
     if (ok && !Object.values(this.sim.src).some(x => x.trip)) this.finish(true);
   }
@@ -627,7 +645,7 @@ class Trainer {
   stepText(st) {
     const n = this.nm(st.id), el = this.elOf(st.id), T = el ? TYPES[el.t] : {};
     if (st.op === 'pos') return `перевести тележку ${n} в ${POS_NAME[st.pos]} положение`;
-    if (st.op === 'check') return `проверить отсутствие напряжения у ${n}`;
+    if (st.op === 'check') return el && !el.pseudo ? `проверить отсутствие напряжения у ${n}` : `проверить отсутствие напряжения на проводе ${this.nodeName(this.stepNode(st.id))}`;
     const v = T.verbs || ['включить', 'отключить'];
     return `${st.op === 'on' ? v[0] : v[1]} ${n}`;
   }
@@ -637,12 +655,14 @@ class Trainer {
     for (const st of r.task.steps) {
       const x = this.sim.st[st.id];
       if (st.op === 'check') {
-        const t = this.topo.term.get(st.id), n = t ? t[0] : this.topo.wireNode.get(st.id);
-        if (!(x && x.on) && !this.sim.checked.has(n)) return st;
+        const n = this.stepNode(st.id), dev = this.byId.get(st.id);
+        // проверка перед ЗН не нужна, если ЗН уже включён; на проводе — если в этой точке уже наложено ПЗ
+        const done = dev && !dev.pseudo ? !!(x && x.on) : this.pzAt(n);
+        if (!done && !this.sim.checked.has(n)) return st;
         continue;
       }
       if (st.op === 'pos') { if (x && x.pos !== st.pos) return st; continue; }
-      if (!!(x && x.on) !== (st.op === 'on')) return st;
+      if (this.isOn(st.id) !== (st.op === 'on')) return st;
     }
     return null;
   }

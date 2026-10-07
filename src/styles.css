@@ -317,12 +317,16 @@ details.more p.ask { color: var(--warn); }
 .lbl { font: 600 .7px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--canvas); stroke-width: .2px; stroke-linejoin: round; }
 .lbl2 { font: 400 .56px var(--f-mono); fill: var(--muted); paint-order: stroke; stroke: var(--canvas); stroke-width: .2px; stroke-linejoin: round; }
 .lbl.busl { font-size: .74px; }
+/* подписи не ловят мышь: у повторяющихся ячеек подпись соседа ложится на аппарат рядом */
+#ll { pointer-events: none; }
 .hit { fill: transparent; stroke: none; }
 .el.hot { cursor: pointer; }
 .el.hot:hover .hit { fill: var(--accent-soft); }
 .app[data-mode="edit"] .el { cursor: move; }
 .app[data-mode="edit"] .el:hover .hit { fill: var(--accent-soft); }
 .selbox { fill: none; stroke: var(--accent); stroke-width: .07; stroke-dasharray: .3 .18; }
+/* рамка выделения (Shift/Ctrl + перетаскивание, кнопка «Выделение») */
+.selrect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: .06; stroke-dasharray: .25 .15; pointer-events: none; }
 .port { fill: var(--canvas); stroke: var(--muted); stroke-width: .06; }
 .port.free { stroke: var(--fault); stroke-width: .09; }
 .pt-hit { fill: transparent; stroke: none; cursor: crosshair; }

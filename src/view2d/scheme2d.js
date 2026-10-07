@@ -1,5 +1,6 @@
 import { G, TYPES, BOX, POS_NAME, rot, ptKey, clamp, esc, portPoints, bbox, vClass, fmtNum, fmtKv, isSwitchable, isPzId, wireRoute } from '../core/elements.js';
 import { buildTopo } from '../core/engine.js';
+import { inRect, grip, moveGrip } from '../core/edit.js';
 
 /* ===== §4. 2D: схема и редактор ===== */
 const CVAR = { 'c-fault': '--fault', 'c-edit': '--edit', 'c-dead': '--dead', 'c-gnd': '--gnd', 'c-v220': '--v220', 'c-v110': '--v110', 'c-v35': '--v35', 'c-v10': '--v10', 'c-v6': '--v6', 'c-v04': '--v04', 'c-vlow': '--vlow' };
@@ -176,7 +177,9 @@ class Scheme2D {
   constructor(app, svg) {
     this.app = app; this.svg = svg;
     this.k = 1; this.tx = 40; this.ty = 40;
-    this.sel = null; this.placing = null; this.drag = null; this.down = null;
+    // sel — { type: 'el' | 'wire', id } или группа { type: 'group', els: Set, wires: Set } (src/core/edit.js)
+    // boxMode — кнопка «Выделение» (телефон): палец рисует рамку; cursorW — где курсор на схеме (вставка Ctrl+V)
+    this.sel = null; this.placing = null; this.drag = null; this.down = null; this.boxMode = false; this.cursorW = null;
     this.pointers = new Map();
     svg.innerHTML = '<defs><pattern id="gridp" width="1" height="1" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.055"/></pattern></defs>' +
       '<g id="world"><rect x="-600" y="-600" width="1200" height="1200" fill="url(#gridp)"/><g id="lw"></g><g id="le"></g><g id="ll"></g><g id="lo"></g><g id="lfx"></g></g>';
@@ -225,7 +228,7 @@ class Scheme2D {
     let hw = '';
     for (const w of s.wires) {
       const pts = wireRoute(w).map(p => p[0] + ',' + p[1]).join(' ');
-      const selw = this.sel && this.sel.type === 'wire' && this.sel.id === w.id;
+      const selw = this.isSel('wire', w.id);
       hw += `<g data-w="${w.id}"><polyline class="hitw" points="${pts}"/><polyline class="wire ${cls(topo.wireNode.get(w.id))}${selw ? ' selw' : ''}" points="${pts}"/></g>`;
     }
     for (const [k, u] of topo.use) {
@@ -254,10 +257,11 @@ class Scheme2D {
         `<rect class="hit" x="${hb[0] - 0.15}" y="${hb[1] - 0.15}" width="${hb[2] - hb[0] + 0.3}" height="${hb[3] - hb[1] + 0.3}" rx="0.2"/>${symbolSVG(el, c)}</g>`;
       hl += this.labelSVG(el, edit ? null : st, topo, x);
       if (edit) {
-        if (this.sel && this.sel.type === 'el' && this.sel.id === el.id) {
+        if (this.isSel('el', el.id)) {
           const b = bbox(el);
           ho += `<rect class="selbox" x="${b[0] - 0.25}" y="${b[1] - 0.25}" width="${b[2] - b[0] + 0.5}" height="${b[3] - b[1] + 0.5}" rx="0.25"/>`;
-          if (el.t === 'bus') { const q = rot([el.p.len, 0], el.r); ho += `<rect class="bh" data-bh="${el.id}" x="${el.x + q[0] - 0.28}" y="${el.y + q[1] - 0.28}" width="0.56" height="0.56" rx="0.1"/>`; }
+          // ручка длины шины — только у одной выделенной шины
+          if (el.t === 'bus' && this.sel.type === 'el') { const q = rot([el.p.len, 0], el.r); ho += `<rect class="bh" data-bh="${el.id}" x="${el.x + q[0] - 0.28}" y="${el.y + q[1] - 0.28}" width="0.56" height="0.56" rx="0.1"/>`; }
         }
         const pts = portPoints(el);
         for (const p of pts) {
@@ -328,6 +332,10 @@ class Scheme2D {
     if (d && d.kind === 'wire') {
       const pts = wireRoute({ a: d.a, b: d.b, vf: d.vf }).map(p => p.join(',')).join(' ');
       h += `<polyline class="wire-ghost" points="${pts}"/>`;
+    }
+    if (d && d.kind === 'rect') {
+      const x = Math.min(d.a[0], d.b[0]), y = Math.min(d.a[1], d.b[1]);
+      h += `<rect class="selrect" x="${x}" y="${y}" width="${Math.abs(d.b[0] - d.a[0])}" height="${Math.abs(d.b[1] - d.a[1])}"/>`;
     }
     if (this.placing && this.ghostAt) {
       const T = TYPES[this.placing];
@@ -429,6 +437,21 @@ class Scheme2D {
       return;
     }
     if (this.placing) { app.placeAt(this.placing, g, e.shiftKey); this.drag = null; return; }
+    // Shift или Ctrl (или кнопка «Выделение»): по пустому месту — рамка, по элементу или проводу — добавить или убрать.
+    // Точки подключения и ручки лежат поверх элементов — смотрим, что под ними
+    if (e.shiftKey || e.ctrlKey || e.metaKey || this.boxMode) {
+      const under = (document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [t]).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean);
+      if (under && under.dataset.el) { this.toggle('el', under.dataset.el); this.drag = null; return; }
+      if (under && under.dataset.w) { this.toggle('wire', under.dataset.w); this.drag = null; return; }
+      this.drag = { kind: 'rect', a: p, b: p };
+      return;
+    }
+    // по элементу или проводу из выделенной группы — переносим всю группу
+    const inGroup = this.sel && this.sel.type === 'group' && ((elG && this.sel.els.has(elG.dataset.el)) || (!elG && wG && this.sel.wires.has(wG.dataset.w)));
+    if (inGroup && !pt && !we) {
+      this.drag = { kind: 'gmove', grip: grip(app.scheme, this.selSets()), p0: p, dx: 0, dy: 0, started: false, one: elG ? { type: 'el', id: elG.dataset.el } : { type: 'wire', id: wG.dataset.w } };
+      return;
+    }
     if (we) { const [wid, end] = we.split(':'); app.history(); this.drag = { kind: 'wend', wid, end }; return; }
     if (bh) { app.history(); this.drag = { kind: 'bus', id: bh }; return; }
     if (pt) { const a = pt.split(',').map(Number); this.drag = { kind: 'wire', a, b: a, vf: this.vfFor(a) }; this.overlayExtra(); return; }
@@ -456,6 +479,7 @@ class Scheme2D {
       return;
     }
     const p = this.toWorld(e.clientX, e.clientY), g = [Math.round(p[0]), Math.round(p[1])];
+    this.cursorW = p;
     if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 5) this.down.moved = true;
     if (!d) {
       if (this.placing) { if (!this.ghostAt || this.ghostAt[0] !== g[0] || this.ghostAt[1] !== g[1]) { this.ghostAt = g; this.overlayExtra(); } }
@@ -470,6 +494,16 @@ class Scheme2D {
       if (!d.started) { app.history(); d.started = true; }
       el.x = d.sx + dx; el.y = d.sy + dy;
       for (const a of d.att) a.w[a.end] = [a.x + dx, a.y + dy];
+      this.render();
+      return;
+    }
+    if (d.kind === 'rect') { d.b = p; this.overlayExtra(); return; }
+    if (d.kind === 'gmove') {
+      const dx = Math.round(p[0] - d.p0[0]), dy = Math.round(p[1] - d.p0[1]);
+      if (dx === d.dx && dy === d.dy) return;
+      if (!d.started) { app.history(); d.started = true; }
+      d.dx = dx; d.dy = dy;
+      moveGrip(d.grip, dx, dy);
       this.render();
       return;
     }
@@ -501,6 +535,18 @@ class Scheme2D {
       return;
     }
     if (d.kind === 'move') { if (d.started) this.app.commit(); return; }
+    if (d.kind === 'rect') {
+      this.overlayExtra();
+      // рамка — новое выделение: элементы целиком внутри, провода — обоими концами
+      if (!cancel && moved) { const r = inRect(this.app.scheme, d.a[0], d.a[1], d.b[0], d.b[1]); this.setSel(r.els, r.wires); }
+      return;
+    }
+    if (d.kind === 'gmove') {
+      if (d.started) { this.app.commit(); return; }
+      // щелчок без переноса по одному из группы — выделить только его
+      if (!cancel) this.select(d.one);
+      return;
+    }
     if (d.kind === 'wend' || d.kind === 'bus') { this.app.commit(); return; }
     if (d.kind === 'pan' && d.click && !moved && !cancel) this.app.pick2D(d.click);
   }
@@ -508,6 +554,36 @@ class Scheme2D {
     this.sel = sel;
     this.render();
     this.app.renderSide();
+  }
+  // ---------- выделение нескольких ----------
+  isSel(kind, id) {
+    const s = this.sel;
+    if (!s) return false;
+    if (s.type === 'group') return (kind === 'el' ? s.els : s.wires).has(id);
+    return s.type === kind && s.id === id;
+  }
+  // Выделенное списками { els, wires } — для src/core/edit.js
+  selSets() {
+    const s = this.sel;
+    if (!s) return { els: [], wires: [] };
+    if (s.type === 'group') return { els: [...s.els], wires: [...s.wires] };
+    return s.type === 'el' ? { els: [s.id], wires: [] } : { els: [], wires: [s.id] };
+  }
+  // Один элемент или провод — обычное выделение (свойства, ручки), больше — группа
+  setSel(els, wires) {
+    els = [...new Set(els || [])]; wires = [...new Set(wires || [])];
+    const n = els.length + wires.length;
+    this.select(!n ? null : n > 1 ? { type: 'group', els: new Set(els), wires: new Set(wires) } : els.length ? { type: 'el', id: els[0] } : { type: 'wire', id: wires[0] });
+  }
+  toggle(kind, id) {
+    const cur = this.selSets(), list = kind === 'el' ? cur.els : cur.wires, i = list.indexOf(id);
+    if (i >= 0) list.splice(i, 1); else list.push(id);
+    this.setSel(cur.els, cur.wires);
+  }
+  setBoxMode(on) {
+    this.boxMode = on;
+    const b = document.getElementById('zSel');
+    if (b) b.setAttribute('aria-pressed', String(on));
   }
   setPlacing(t) {
     this.placing = t;

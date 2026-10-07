@@ -6,6 +6,9 @@ import { store } from './store.js';
 import { Diag } from './diag.js';
 
 /* ===== §5. Панели и окна ===== */
+// «5 элементов, 1 провод» — для выделения и буфера
+const plural = (n, f) => f[n % 10 === 1 && n % 100 !== 11 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2];
+const countText = (ne, nw) => `${ne} ${plural(ne, ['элемент', 'элемента', 'элементов'])}, ${nw} ${plural(nw, ['провод', 'провода', 'проводов'])}`;
 const Panels = {
   // ---------- уведомления ----------
   toast(text, level = 'info') {
@@ -158,7 +161,7 @@ const Panels = {
   renderStatus() {
     const st = document.getElementById('status');
     const k = s => `<kbd>${s}</kbd>`;
-    if (this.mode === 'edit') st.innerHTML = `Элемент: выберите в палитре и щёлкните по полю или перетащите · Провод: тяните от точки подключения · ${k('R')} повернуть · ${k('Del')} удалить · ${k('Ctrl+Z')} отменить · ${k('Ctrl+D')} копия · двойной щелчок по проводу — излом`;
+    if (this.mode === 'edit') st.innerHTML = `Элемент: выберите в палитре и щёлкните по полю или перетащите · Провод: тяните от точки подключения · ${k('Shift')}/${k('Ctrl')} + перетаскивание — рамка, + щелчок — добавить · ${k('Ctrl+A')} всё · ${k('R')} повернуть · ${k('Del')} удалить · ${k('Ctrl+C')} ${k('Ctrl+V')} копировать, вставить · ${k('Ctrl+D')} копия · ${k('Ctrl+Z')} отменить · двойной щелчок по проводу — излом`;
     else if (this.mode === 'train') st.innerHTML = `Щелчок по аппарату — переключить (у тележки КРУ — меню) · ${k('V')} указатель напряжения · ${k('P')} переносное заземление · ${k('K')} квитировать · колесо — масштаб`;
     else if (this.scheme && (this.scheme.room || (this.v3 && this.v3.yardWalk))) st.innerHTML = this.walkStatus();
     else st.innerHTML = 'Мышь: левая кнопка — повернуть, правая — сдвинуть, колесо — приблизить, щелчок по аппарату — переключить · «Пешком» — пройти по площадке · В шлеме: курок — операция или телепорт, боковая кнопка — указатель напряжения, стики — ходьба и поворот';
@@ -213,6 +216,11 @@ const Panels = {
         f += this.moreHTML(el.t);
         prop = `<h3>${esc(T.title)} <span class="chip">${esc(T.code)}</span></h3>${f}`;
       }
+    } else if (sel && sel.type === 'group') {
+      // несколько: повернуть вокруг центра, копия со своими проводами, удалить — каждое одним шагом «Отменить»
+      prop = `<h3>Выбрано</h3><p>Выбрано: ${countText(sel.els.size, sel.wires.size)}.</p>
+        <div class="row"><button class="btn" data-act="rotate">Повернуть</button><button class="btn" data-act="dup"${sel.els.size ? '' : ' disabled'}>Копия</button><button class="btn danger" data-act="del">Удалить</button></div>
+        <p class="muted">Перетащите любой выделенный — сдвинется вся группа, провода к остальным тянутся. Ctrl+C, Ctrl+V — копировать и вставить под курсор, в том числе в другую схему.</p>`;
     } else if (sel && sel.type === 'wire') {
       prop = '<h3>Провод</h3><p>Соединяет только концы. Двойной щелчок меняет излом.</p><div class="row"><button class="btn" data-act="bend">Изменить излом</button><button class="btn danger" data-act="del">Удалить</button></div>';
     }
@@ -229,7 +237,8 @@ const Panels = {
         <li>Аппараты соединяются только концами проводов; точка в месте соединения — признак связи.</li>
         <li>Красный кружок на конце — точка ни к чему не подключена.</li>
         <li>У шины можно подключаться в любой точке. Длину меняет квадрат на её конце.</li>
-        <li>Двойной щелчок по аппарату поворачивает его.</li></ul></div>`;
+        <li>Двойной щелчок по аппарату поворачивает его.</li>
+        <li>Несколько элементов: Shift или Ctrl + перетаскивание по пустому месту — рамка, Shift или Ctrl + щелчок — добавить или убрать (на телефоне — кнопка «Выделение»). Повторяющиеся ячейки — Ctrl+C, Ctrl+V.</li></ul></div>`;
   },
   trainSideHTML() {
     const welcome = this.welcomeSeen ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
@@ -526,10 +535,10 @@ const Panels = {
       <li>Отделитель вручную — как разъединитель; короткозамыкатель на напряжение — искусственное КЗ.</li></ol></div>
       <div><b>Элементы</b>${CATS.map(([k, t]) => `<details class="more"><summary>${esc(t)}</summary>${PALETTE.filter(x => TYPES[x].cat === k).map(x => `<p><b>${esc(TYPES[x].title)}</b> (${esc(TYPES[x].code)}). ${esc(GLOSSARY[x].what)} ${esc(GLOSSARY[x].sim)}</p>`).join('')}</details>`).join('')}</div>
       <div><b>Цвета</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Цвета классов напряжения условные и настраиваются под стандарт предприятия. Красный аппарат — включён, зелёный — отключён. Мигает — отключился защитой, нужно квитировать.</p></div>
-      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: R — повернуть, Del — удалить, Ctrl+Z / Ctrl+Y — отменить и вернуть, Ctrl+D — копия, Esc — отмена. Тренажёр: V — указатель напряжения, P — переносное заземление, K — квитировать, Esc — закрыть меню. 3D: F — панель отладки. Пешком: WASD, E, Esc; на площадке — V, P; в полигоне — Q.</p></div>
+      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: Shift или Ctrl + перетаскивание по пустому месту — рамка, Shift или Ctrl + щелчок — добавить или убрать, Ctrl+A — всё, R — повернуть (группу — вокруг центра), Del — удалить, Ctrl+C / Ctrl+V — копировать и вставить под курсор (и в другую схему), Ctrl+D — копия рядом, Ctrl+Z / Ctrl+Y — отменить и вернуть, Esc — снять выделение. На телефоне — кнопка «Выделение»: палец рисует рамку. Тренажёр: V — указатель напряжения, P — переносное заземление, K — квитировать, Esc — закрыть меню. 3D: F — панель отладки. Пешком: WASD, E, Esc; на площадке — V, P; в полигоне — Q.</p></div>
       <p style="color:var(--muted);font-size:12px">Демо-бета ${APP_VER}. Схемы хранятся в этом браузере; для переноса сохраните файл.</p>`,
       [{ label: 'Понятно', primary: true, act: () => this.closeModal() }]);
   },
 };
 
-export { Panels };
+export { Panels, countText };

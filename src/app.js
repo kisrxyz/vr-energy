@@ -71,16 +71,24 @@ const app = Object.assign({
     this.view.sel = null; this.view.setPlacing(null); this.paletteState(null);
     this.tr.load(s);
     this.fillSchemeSelect();
+    this.polyTools();
     this.view.render(); this.renderSide(); this.renderLegend(); this.renderStatus();
     requestAnimationFrame(() => this.view.fit());
     if (this.mode === '3d') this.show3D();
   },
+  // В 3D-полигоне указатель и ПЗ — предметы в руках: 2D-инструмент снимаем
+  polyTools() {
+    if (this.mode !== '3d' || !this.scheme.room || !this.tool) return;
+    this.tool = null;
+    document.getElementById('app').dataset.tool = '';
+  },
   autosave() {
     if (this.isMine() && !this.lib.save(this.myId(), this.scheme)) this.storeWarn();
   },
-  storeWarn() {
+  // force — ответ на действие человека (переименовать, дублировать): сразу; автосохранение — не чаще раза в 30 с
+  storeWarn(force) {
     const now = Date.now();
-    if (now - (this._storeWarnT || 0) < 30000) return;
+    if (!force && now - (this._storeWarnT || 0) < 30000) return;
     this._storeWarnT = now;
     this.toast('Не удалось сохранить в браузере: хранилище переполнено или запрещено. Скачайте схему в файл: «Схемы» → «Скачать файл».', 'warn');
   },
@@ -127,6 +135,7 @@ const app = Object.assign({
       this.tr.run = null; this.tool = null;
     } else { this.view.setPlacing(null); this.paletteState(null); }
     this.mode = m;
+    this.polyTools();
     const root = document.getElementById('app');
     root.dataset.mode = m; root.dataset.tool = this.tool || '';
     for (const b of document.querySelectorAll('.tab')) b.setAttribute('aria-selected', String(b.dataset.mode === m));
@@ -234,6 +243,11 @@ const app = Object.assign({
     if (this.tr.rec) { this.toast('Сначала сохраните или отмените запись.', 'warn'); return; }
     this.tool = null;
     document.getElementById('app').dataset.tool = '';
+    // задание полигона выполняют руками в 3D: СИЗ, указатель и плакаты есть только там
+    if (this.scheme.room && this.mode !== '3d') {
+      this.setMode('3d');
+      this.toast('Задание полигона выполняют в 3D: средства защиты, указатель и плакаты — на стенде у входа.');
+    }
     this.tr.startTask(task);
     this.renderSide();
   },
@@ -242,6 +256,8 @@ const app = Object.assign({
       this.closeActMenu();
       if (this.mode !== 'edit') this.view.render();
       if (this.v3 && this.v3.ready) this.v3.update();
+      // «Нормальный режим», новое задание, «Ещё раз»: предметы полигона — с рук и с пола на стенд
+      if (d.reset && this.v3 && this.v3.ready) this.v3.onField({ reset: true });
       this.updateAlarmsBtn();
       return;
     }
@@ -515,10 +531,12 @@ const app = Object.assign({
     if (m === 'new') { this.newScheme(); return; }
     // «Мои схемы»: открыть, дублировать, переименовать, удалить (с подтверждением в этом же окне)
     const id = b && b.dataset ? b.dataset.id : null, row = id && this.lib.list().find(x => x.id === id);
+    // запись не читается — не «переполнено», а «повреждена»: её можно только удалить
+    const fail = () => { if (!this.lib.load(id)) this.toast(`Схема «${row.title}»: запись в браузере повреждена — её можно только удалить.`, 'warn'); else this.storeWarn(true); };
     if (m === 'sch-open' && row) { this.closeModal(); this.chooseScheme('my:' + id); return; }
     if (m === 'sch-dup' && row) {
       const n = this.lib.duplicate(id);
-      if (n) this.toast(`Создана копия «${row.title} (копия)».`, 'ok'); else this.storeWarn();
+      if (n) this.toast(`Создана копия «${row.title} (копия)».`, 'ok'); else fail();
       this.fillSchemeSelect(); this.showSchemes();
       return;
     }
@@ -526,7 +544,7 @@ const app = Object.assign({
     if (m === 'sch-ren-ok' && row) {
       const inp = document.getElementById('schRen'), v = inp ? inp.value.trim() : '';
       if (!v) { this.toast('Название не может быть пустым.', 'warn'); return; }
-      if (!this.lib.rename(id, v)) { this.storeWarn(); return; }
+      if (!this.lib.rename(id, v)) { fail(); return; }
       if (this.myId() === id) { this.scheme.title = v.slice(0, 80); this.renderSide(); if (this.v3 && this.v3.ready) this.v3.drawBoard(); }
       this.fillSchemeSelect(); this.showSchemes();
       this.toast(`Схема переименована: «${v.slice(0, 80)}».`, 'ok');

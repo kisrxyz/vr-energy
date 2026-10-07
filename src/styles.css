@@ -239,6 +239,9 @@ details.more p.ask { color: var(--warn); }
 
 /* ---------- всплывающие ---------- */
 .toasts { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: grid; gap: 6px; z-index: 5; width: min(560px, calc(100% - 24px)); pointer-events: none; }
+/* полигон от первого лица: слева вверху плашка «Следующее мероприятие», справа кнопки — тосты под кнопками справа */
+.view3d[data-fps="1"] ~ .toasts { left: auto; right: 12px; top: 64px; transform: none; width: min(380px, calc(100% - 24px)); }
+@media (max-width: 760px) { .view3d[data-fps="1"] ~ .toasts { top: auto; bottom: 64px; } }
 .toast { padding: 9px 12px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); font-size: 13px; animation: tin .18s ease-out; }
 .toast.warn { border-color: var(--warn); }
 .toast.err { border-color: var(--fault); background: color-mix(in srgb, var(--fault) 14%, var(--panel)); font-weight: 600; }

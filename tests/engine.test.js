@@ -792,6 +792,141 @@ function polyRef(tr, pm, id, skip = []) {
   for (const st of k.s.tasks[0].steps) { if (st.op === 'check') k.tr.check(st.id); else k.tr.operate(st.id); }
   ok(k.tr.run.completed && k.tr.run.grade.tone === 'good' && !k.tr.run.errors.length, 'ПС 110/10 task unaffected by the permit');
 }
+/* ===== Все задания всех схем: по эталону и по подсказкам (с дополнением полигона) ===== */
+// Шаг эталона или подсказки → действие; шаги полигона без аппаратов — через Permit, как руками
+function doStep(tr, pm, st) {
+  const freePoster = p => ITEMS.find(i => i.poster === p && !pm.itemAt(i.id));
+  switch (st.op) {
+    case 'check': { const mt = pm.contactMount(st.id); return mt ? pm.touch(mt) : tr.check(st.id); }
+    case 'pos': return tr.operate(st.id, { pos: st.pos });
+    case 'wear': return pm.wear(st.item);
+    case 'hang': return pm.place(freePoster(st.poster).id, st.at);
+    case 'lock': return pm.place('lock', st.at);
+    case 'fence': return pm.place('fence', st.at);
+    case 'on': case 'off': {
+      const mt = E.isPzId(st.id) && pm.contactMount(st.id.slice(3));
+      if (mt) return st.op === 'on' ? pm.place('pz', mt) : pm.take('pz');
+      return tr.operate(st.id);
+    }
+  }
+  return null;
+}
+// Подсказка полигона — следующее мероприятие: сделать его
+function doMeasure(tr, pm, m) {
+  const freePoster = p => ITEMS.find(i => i.poster === p && !pm.itemAt(i.id));
+  switch (m.k) {
+    case 'ppe': return pm.wear(pm.itemAt('gloves') === 'worn' ? 'helmet' : 'gloves');
+    case 'off': return tr.operate(m.id);
+    case 'rack': return tr.operate(m.id, { pos: m.pos });
+    case 'sign': return pm.place(freePoster(m.poster).id, m.at.find(a => pm.mountState(a).ok));
+    case 'lock': return pm.place('lock', m.at[0]);
+    case 'fence': return pm.place('fence', m.at[0]);
+    case 'check': return pm.touch(pm.contactMount(m.wire));
+    case 'earth': return tr.operate(m.id);
+  }
+  return null;
+}
+{
+  console.log('Every task of every scheme: reference steps and hints');
+  const fresh = key => { const s = E.SAMPLES.find(x => x.key === key).make(), tr = new E.Trainer(), pm = tr.use(new Permit()); tr.load(s); return { s, tr, pm }; };
+  for (const smp of E.SAMPLES) {
+    const n = smp.make().tasks.length;
+    ok(n >= 1, smp.key + ': has tasks (' + n + ')');
+    for (let k = 0; k < n; k++) {
+      let { s, tr, pm } = fresh(smp.key);
+      tr.startTask(s.tasks[k]);
+      const bad = s.tasks[k].steps.map(st => [st, doStep(tr, pm, st)]).filter(([, r]) => !r || r.err || r.blocked || r.viol);
+      ok(!bad.length && tr.run.done && tr.run.completed && tr.run.grade.score === 100, `${smp.key} «${s.tasks[k].title}»: reference → 100` + (bad.length ? ' :: ' + bad.map(([st, r]) => st.op + ': ' + (r && r.text)).join('; ') : ''));
+      ({ s, tr, pm } = fresh(smp.key));
+      const t = s.tasks[k];
+      tr.startTask(t);
+      let stuck = '';
+      for (let i = 0; i < 40 && !tr.run.done; i++) {
+        const h = tr.hint();
+        if (!h) { stuck = 'hints ran out'; break; }
+        const r = h.step.op === 'measure' ? doMeasure(tr, pm, t.measures[h.step.i]) : doStep(tr, pm, h.step);
+        if (!r || r.err || r.blocked) { stuck = h.text + ' :: ' + (r && r.text); break; }
+      }
+      ok(tr.run.done && tr.run.completed && !tr.run.errors.length, `${smp.key} «${t.title}»: by hints (${tr.run.hints}), no errors` + (stuck ? ' :: ' + stuck : '') + tr.run.errors.map(e => ' :: ' + e.text).join(''));
+    }
+  }
+}
+
+/* ===== Полигон: правки по обзору ===== */
+{
+  console.log('Polygon: indicator log names the contacts (addon checkWhere), other schemes unchanged');
+  const { tr, pm, id } = poly();
+  pm.wear('gloves'); pm.wear('helmet');
+  tr.operate(id('В-10 яч.3')); tr.operate(id('В-10 яч.3'), { pos: 'repair' });
+  const r = pm.touch('contact:3:lo');
+  ok(r.text.startsWith('Указатель напряжения на нижних контактах яч.3:') && !r.text.includes('ЗН'), 'text: ' + r.text);
+  ok(tr.log[0].text === r.text, 'same text in the log');
+  ok(pm.checkWhere(tr.s.room.cells[2].lo) === 'на нижних контактах яч.3' && pm.checkWhere(id('В-10 яч.3')) === null, 'checkWhere: contacts only');
+  const k = setup('ps110');
+  const c = k.tr.check(k.id('ЗН-1 Л-1'));
+  ok(c.text.startsWith('Указатель напряжения у ЗН-1 Л-1:'), 'ПС 110/10 keeps «у …»: ' + c.text);
+}
+{
+  console.log('Polygon: no-PPE warning in free mode at most once per 15 s; log every time; in a task every time');
+  const { tr, pm, id, task } = poly();
+  let now = 1000, warns = 0;
+  pm.now = () => now;
+  tr.on((t, d) => { if (t === 'field' && d.warn) warns++; });
+  const q2 = id('В-10 яч.2');
+  tr.operate(q2); now += 4000; tr.operate(q2); now += 4000; tr.operate(q2);
+  ok(warns === 1 && tr.log.filter(e => e.text.includes('без СИЗ')).length === 3, 'free mode: 3 operations in 8 s — 1 warning, 3 log lines (warnings ' + warns + ')');
+  now += 15000; tr.operate(q2);
+  ok(warns === 2, 'after 15 s — warned again');
+  tr.startTask(task);
+  warns = 0;
+  tr.operate(id('В-10 яч.3')); tr.operate(id('В-10 яч.3'), { pos: 'repair' });
+  ok(warns === 2 && tr.run.errors.filter(e => e.text.includes('без СИЗ')).length === 1, 'task: warning on every operation, one error');
+}
+{
+  console.log('Polygon: wrong moves — current behaviour (questions for the teacher in docs)');
+  let { tr, pm, id, task } = poly();
+  const q3 = id('В-10 яч.3'), zn = id('ЗН яч.3');
+  pm.wear('gloves'); pm.wear('helmet');
+  tr.operate(q3); tr.operate(q3, { pos: 'repair' }); pm.touch('contact:3:lo'); tr.operate(zn);
+  let r = tr.operate(q3, { pos: 'work' });
+  ok(r.ok && !r.viol, 'racking in with ЗН on and the breaker off is allowed (question 10 of the table)');
+  r = tr.operate(q3);
+  ok(r.blocked && r.text.includes('ЗН яч.3'), 'switching the breaker on onto the earthed section is blocked: ' + r.text);
+  ({ tr, pm, id, task } = poly());
+  ok(pm.place('nevkl1', 'drive:3').ok && pm.place('nevkl2', 'drive:3').ok && pm.place('zazem1', 'drive:3').ok, 'up to 3 posters on one place');
+  ok(pm.place('work1', 'drive:3').err && pm.place('nevkl1', 'drive:3').ok && pm.onMount('drive:3').length === 3, '4th refused; the same poster again changes nothing');
+  ({ tr, pm, id, task } = poly());
+  tr.startTask(task);
+  pm.place('nevkl1', 'drive:2');
+  const e1 = tr.run.errors.filter(e => e.text.includes('№2')).length;
+  pm.place('nevkl1', 'drive:3'); pm.place('nevkl1', 'drive:2');
+  ok(e1 === 1 && tr.run.errors.filter(e => e.text.includes('№2')).length === 1, 'poster on a foreign cell, moved away and back — one error for that place');
+  ({ tr, pm, id, task } = poly());
+  pm.wear('gloves'); tr.operate(q3); tr.operate(q3, { pos: 'repair' }); pm.place('nevkl1', 'drive:3'); pm.place('pz', 'contact:3:lo');
+  ok(tr.resetToNormal() && !pm.itemAt('gloves') && !pm.itemAt('nevkl1') && !pm.itemAt('pz') && tr.sim.st[q3].pos === 'work' && tr.sim.st[q3].on, '«Нормальный режим» in free training: items back on the stand, cells in normal state');
+  ({ tr, pm, id, task } = poly());
+  tr.startTask(task); pm.wear('gloves'); pm.place('nevkl1', 'drive:3'); tr.stopTask();
+  tr.startTask(tr.run.task);
+  ok(!pm.itemAt('gloves') && !pm.itemAt('nevkl1') && !tr.run.errors.length && pm.status().n === 0, '«Ещё раз»: items back, no errors carried over');
+}
+{
+  console.log('My schemes: broken record and full storage');
+  const mem = new Map();
+  const st = { get: k => (mem.has(k) ? mem.get(k) : null), set: (k, v) => { mem.set(k, String(v)); return true; }, del: k => { mem.delete(k); } };
+  const lib = makeLibrary(st);
+  const a = lib.add(E.SAMPLES[0].make());
+  mem.set('ts.my.' + a, '{испорчено');
+  ok(lib.list().some(x => x.id === a) && lib.load(a) === null, 'broken record stays in the list, does not load');
+  ok(lib.duplicate(a) === null && lib.rename(a, 'Новое') === false, 'duplicate / rename of a broken record refused');
+  ok(lib.remove(a) && !lib.list().length, 'broken record can be removed');
+  const b = lib.add(E.SAMPLES[1].make());
+  let full = false;
+  const st2 = { get: st.get, set: (k, v) => (full ? false : st.set(k, v)), del: st.del };
+  const lib2 = makeLibrary(st2);
+  full = true;
+  ok(lib2.rename(b, 'Другое') === false && lib2.load(b).title === E.SAMPLES[1].make().title, 'storage full: rename refused, title unchanged');
+  ok(lib2.add(E.emptyScheme('x')) === null && lib2.list().length === 1 && [...mem.keys()].filter(k => k.startsWith('ts.my.')).length === 1, 'storage full: nothing half-written');
+}
 {
   console.log('Explanations: every measure, poster and misplacement says why it is dangerous');
   const kinds = ['ppe', 'off', 'rack', 'lock', 'check', 'earth', 'fence'];

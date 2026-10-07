@@ -3,9 +3,9 @@ import { fmtTime } from '../core/engine.js';
 import { Sound } from '../ui/sound.js';
 import { Diag } from '../ui/diag.js';
 import { store } from '../ui/store.js';
-import { MODELS, S3, H3, makeKit } from './models/index.js';
+import { MODELS, S3, H3, PAL, texture, makeMaterials, makeKit } from './models/index.js';
 import { wireMid } from '../view2d/scheme2d.js';
-import { buildRoom, ROOM_COL } from './room.js';
+import { buildRoom } from './room.js';
 import { Items } from './items.js';
 import { Walk } from './walk.js';
 import { footprints, makeYardWorld } from './world.js';
@@ -27,11 +27,12 @@ async function loadThree() {
   if (!THREE) THREE = await import('three');
   return THREE;
 }
-const RAY = { idle: 0x1f45ff, hot: 0xffd23f };
+// цвета 3D — в models/kit.js (PAL)
+const RAY = { idle: PAL.ui.rayIdle, hot: PAL.ui.rayHot };
 const YARD_GATE = 3;                                // ворота ограждения площадки: полуширина, м
 // Меню тележки в 3D: ширина холста (560 = 1 м) от и до, отступ текста, шрифт, строка, высота кнопки с зазором, шапка; закрыть дальше far м
 const MENU = { minW: 560, maxW: 900, pad: 34, font: 28, line: 34, row: 84, top: 70, far: 4 };
-const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d, live: ROOM_COL.live };
+const COL3 = PAL.volt;
 function rr(x, X, Y, W, H, R) {
   x.beginPath();
   x.moveTo(X + R, Y); x.lineTo(X + W - R, Y); x.quadraticCurveTo(X + W, Y, X + W, Y + R);
@@ -92,18 +93,18 @@ class View3D {
     r.domElement.setAttribute('aria-label', '3D-вид подстанции');
     this.host.prepend(r.domElement);
     const sc = this.scene = new T.Scene();
-    sc.background = new T.Color(0xBCD2E4);
-    sc.fog = new T.Fog(0xBCD2E4, 90, 320);
+    sc.background = new T.Color(PAL.env.fog);
+    sc.fog = new T.Fog(PAL.env.fog, 90, 320);
     this.camera = new T.PerspectiveCamera(60, 1, 0.05, 900);
     this.rig = new T.Group();
     this.rig.add(this.camera);
     sc.add(this.rig);
-    this.hemi = new T.HemisphereLight(0xe8f2ff, 0x5d5a50, 1.1);
+    this.hemi = new T.HemisphereLight(PAL.env.hemiSky, PAL.env.hemiGround, 1.1);
     sc.add(this.hemi);
-    const sun = this.sun = new T.DirectionalLight(0xffffff, 1.7);
+    const sun = this.sun = new T.DirectionalLight(PAL.env.sun, 1.7);
     sun.position.set(40, 70, 25);
     sc.add(sun);
-    this.arcLight = new T.PointLight(0x9fd8ff, 0, 30, 2);
+    this.arcLight = new T.PointLight(PAL.ui.arcLight, 0, 30, 2);
     sc.add(this.arcLight);
     this.root = new T.Group();
     sc.add(this.root);
@@ -112,7 +113,11 @@ class View3D {
     this.tmp = { m: new T.Matrix4(), v: new T.Vector3(), v2: new T.Vector3(), dir: new T.Vector3(), up: new T.Vector3(0, 1, 0) };
     this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 12, 8) };
     this.makeMats();
-    this.ring = new T.Mesh(this.geo.ring, new T.MeshBasicMaterial({ color: 0xffd23f }));
+    this.ring = new T.Mesh(this.geo.ring, new T.MeshBasicMaterial({ color: PAL.ui.ring }));
+    // небо с дальними холмами — одна сфера вокруг площадки (в помещении спрятана); рисуется первой, без тумана
+    this.sky = new T.Mesh(new T.SphereGeometry(800, 32, 16), new T.MeshBasicMaterial({ map: texture(T, 'sky'), side: T.BackSide, fog: false, depthWrite: false, toneMapped: false }));
+    this.sky.renderOrder = -1; this.sky.frustumCulled = false; this.sky.raycast = () => {};
+    sc.add(this.sky);
     this.ring.rotation.x = -Math.PI / 2; this.ring.visible = false;
     sc.add(this.ring);
     this.orbit = { target: new T.Vector3(), r: 60, th: 0.42, ph: 0.98 };
@@ -125,18 +130,8 @@ class View3D {
     this.ready = true;
   }
   makeMats() {
-    const T = THREE, M = (c, o = {}) => new T.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.75, metalness: 0.1 }, o));
-    this.M = {
-      galv: M(0xb4bcbf, { metalness: 0.5, roughness: 0.5 }), porcelain: M(0x8a4f2a, { roughness: 0.35 }),
-      tank: M(0x5c6b62, { metalness: 0.3, roughness: 0.6 }), radiator: M(0x6c7a71, { metalness: 0.3 }),
-      cabinet: M(0xc9cdc7), concrete: M(0xa9a79e, { roughness: 0.95 }), blade: M(0xdfe5e8, { metalness: 0.8, roughness: 0.3 }),
-      earthBlade: M(0xe0b81a, { metalness: 0.4, roughness: 0.5 }), plate: M(0x6f8f3a), dark: M(0x2b302e), handle: M(0x1f2226),
-      wall: M(0xd9cfbd), roof: M(0x5b4a3c), motor: M(0x3f6f9e, { metalness: 0.35 }), pump: M(0x6f7d84, { metalness: 0.4 }),
-      stripe: M(0xffd200, { emissive: 0x332a00 }), fan: M(0x2f3437), qf: M(0xe8e9e4), ground: M(0x7f8c66, { roughness: 1 }),
-      yard: M(0xffffff, { roughness: 1 }), post: M(0x7d8285), ctrl: M(0x202428),
-      kru: M(0xd4d8d2, { metalness: 0.2, roughness: 0.6 }), cap: M(0xb9bfc4, { metalness: 0.4, roughness: 0.45 }),
-      coil: M(0x6b5a4a, { roughness: 0.8 }), pzCable: M(0xd8c25a, { roughness: 0.6 }),
-    };
+    // материалы и процедурные текстуры — по палитре models/kit.js
+    this.M = makeMaterials(THREE);
     this.kit = makeKit(THREE, this.M, this.geoCache, n => this.nodeMat(n));
     this.kit.sphere = this.geo.sphere;
     this.kit.winTex = () => this.winTex();
@@ -160,7 +155,7 @@ class View3D {
     return m;
   }
   nodeMat(n) {
-    if (!this.nodeMats.has(n)) this.nodeMats.set(n, new THREE.MeshStandardMaterial({ color: COL3.dead, roughness: 0.4, metalness: 0.3, emissive: 0x000000 }));
+    if (!this.nodeMats.has(n)) this.nodeMats.set(n, new THREE.MeshStandardMaterial({ color: COL3.dead, roughness: 0.35, metalness: 0.45, emissive: 0x000000 }));
     return this.nodeMats.get(n);
   }
   labelSprite(text, bg = 'rgba(14,20,18,0.82)', h = 0.36) {
@@ -232,14 +227,16 @@ class View3D {
   setEnv(poly) {
     const sc = this.scene;
     if (!this._fog) this._fog = sc.fog;
+    const E = PAL.env;
+    this.sky.visible = !poly;
     if (poly) {
-      sc.background.setHex(0x1d2427); sc.fog = null;
-      this.hemi.color.setHex(0xf6f7f4); this.hemi.groundColor.setHex(0x7d776a); this.hemi.intensity = 1.55;
+      sc.background.setHex(E.roomBg); sc.fog = null;
+      this.hemi.color.setHex(E.roomSky); this.hemi.groundColor.setHex(E.roomGround); this.hemi.intensity = 1.55;
       this.sun.intensity = 0.95; this.sun.position.set(-12, 40, 34);
     } else {
-      sc.background.setHex(0xBCD2E4); sc.fog = this._fog;
-      this.hemi.color.setHex(0xe8f2ff); this.hemi.groundColor.setHex(0x5d5a50); this.hemi.intensity = 1.1;
-      this.sun.intensity = 1.7; this.sun.position.set(40, 70, 25);
+      sc.background.setHex(E.fog); sc.fog = this._fog;
+      this.hemi.color.setHex(E.hemiSky); this.hemi.groundColor.setHex(E.hemiGround); this.hemi.intensity = 1.15;
+      this.sun.intensity = 1.75; this.sun.position.set(40, 70, 25);
     }
   }
   buildYard(s, topo) {
@@ -253,24 +250,17 @@ class View3D {
     const hx = (x1 - x0) / 2 * S3 + 7, hz = (y1 - y0) / 2 * S3 + 7;
     this.bounds = { hx, hz };
     const ground = new T.Mesh(new T.PlaneGeometry(700, 700), this.M.ground);
-    ground.rotation.x = -Math.PI / 2; ground.userData.ground = true;
+    ground.rotation.x = -Math.PI / 2; ground.position.y = -0.06; ground.userData.ground = true;
     this.root.add(ground); this.pickables.push(ground);
-    if (!this.M.yard.map) {
-      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
-      const x = c.getContext('2d');
-      x.fillStyle = '#b3b2aa'; x.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 900; i++) { const g = 140 + Math.floor(Math.random() * 70); x.fillStyle = `rgb(${g},${g - 2},${g - 8})`; x.fillRect(Math.random() * 128, Math.random() * 128, 2, 2); }
-      x.strokeStyle = 'rgba(90,92,86,0.2)'; x.lineWidth = 2; x.strokeRect(0, 0, 128, 128);
-      const tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace; tex.wrapS = tex.wrapT = T.RepeatWrapping; tex.anisotropy = 4;
-      this.M.yard.map = tex; this.M.yard.needsUpdate = true;
-    }
-    this.M.yard.map.repeat.set(hx / 2, hz / 2);
+    // гравий: одна текстура на 3 м площадки
+    this.M.yard.map.repeat.set(hx * 2 / 3, hz * 2 / 3);
     const yard = new T.Mesh(new T.PlaneGeometry(hx * 2, hz * 2), this.M.yard);
     yard.rotation.x = -Math.PI / 2; yard.position.y = 0.01; yard.userData.ground = true;
     this.root.add(yard); this.pickables.push(yard);
     this.buildFence(hx, hz);
+    this.buildRoads(hx, hz);
     // Провода: видимые трубы (сливаются по узлам) и невидимые коробки для луча — на провод накладывают ПЗ и ставят указатель
-    const pmat = new T.MeshBasicMaterial({ color: 0xffffff });
+    const pmat = new T.MeshBasicMaterial({ color: PAL.ui.proxy });
     for (const w of s.wires) {
       const pts = wireRoute(w).map(p => { const v = W(p); v.y = H3; return v; });
       const mat = this.nodeMat(topo.wireNode.get(w.id));
@@ -293,6 +283,7 @@ class View3D {
     }
     const board = this.makeBoard();
     this.makeProxies();
+    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus').map(d => d.group), [board]);
     // Пешком: граница — ограждение с воротами, препятствия — детали моделей (и щита), до которых не дотянуться над головой.
     // Дальние части (линия от энергосистемы) не мешают; провода и шины на высоте 3,4 м — тоже
     const blocks = footprints(T, board);
@@ -315,7 +306,18 @@ class View3D {
     const pts = [];
     const segs = [[[-hx, -hz], [hx, -hz]], [[hx, -hz], [hx, hz]], [[hx, hz], [gate, hz]], [[-gate, hz], [-hx, hz]], [[-hx, hz], [-hx, -hz]]];
     for (const y of [0.6, 1.3, 2.0]) for (const [a, b] of segs) pts.push(new T.Vector3(a[0], y, a[1]), new T.Vector3(b[0], y, b[1]));
-    this.root.add(new T.LineSegments(new T.BufferGeometry().setFromPoints(pts), new T.LineBasicMaterial({ color: 0x5f666a })));
+    this.root.add(new T.LineSegments(new T.BufferGeometry().setFromPoints(pts), new T.LineBasicMaterial({ color: PAL.ui.wireLine })));
+    // сетка ограждения между стойками (одна сетка после слияния): рисунок ромбов 0,5 м
+    for (const [a, b] of segs) {
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 0.1) continue;
+      const g = new T.PlaneGeometry(len, 1.9), uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len / 0.5, uv.getY(i) * 1.9 / 0.5);
+      const m = new T.Mesh(g, this.M.fence);
+      m.position.set((a[0] + b[0]) / 2, 1.08, (a[1] + b[1]) / 2);
+      m.rotation.y = -Math.atan2(b[1] - a[1], b[0] - a[0]);
+      this.root.add(m);
+    }
     const c = document.createElement('canvas'); c.width = 320; c.height = 200;
     const x = c.getContext('2d');
     x.fillStyle = '#ffffff'; x.fillRect(0, 0, 320, 200);
@@ -329,11 +331,64 @@ class View3D {
     this.root.add(sign);
   }
 
+  // Дорога вдоль ограждения с выездом к воротам и кабельный лоток вдоль неё: плиты и бетон (одна сетка после слияния)
+  buildRoads(hx, hz) {
+    const T = THREE, W = 2.6, m0 = 1.1, cell = 6, y = 0.026;
+    const strip = (x0, z0, x1, z1) => {
+      const w = x1 - x0, d = z1 - z0, g = new T.PlaneGeometry(w, d), uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / cell, uv.getY(i) * d / cell);
+      const m = new T.Mesh(g, this.M.road);
+      m.rotation.x = -Math.PI / 2; m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+      this.root.add(m);
+    };
+    const a = m0, b = m0 + W;
+    strip(-hx + a, -hz + a, hx - a, -hz + b);       // дальняя сторона
+    strip(-hx + a, hz - b, hx - a, hz - a);         // у ворот
+    strip(-hx + a, -hz + b, -hx + b, hz - b);       // левая
+    strip(hx - b, -hz + b, hx - a, hz - b);         // правая
+    strip(-YARD_GATE, hz - a, YARD_GATE, hz - 0.05); // выезд к воротам
+    // лоток: бетонный короб с крышками вдоль внутреннего края дороги
+    const tw = 0.5, th = 0.12, t = b + 0.35;
+    const tray = (x0, z0, x1, z1) => {
+      const w = Math.max(tw, x1 - x0), d = Math.max(tw, z1 - z0), g = new T.BoxGeometry(w, th, d), uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * Math.max(1, w / 1.5), uv.getY(i) * Math.max(1, d / 1.5));
+      const m = new T.Mesh(g, this.M.concrete);
+      m.position.set((x0 + x1) / 2, th / 2, (z0 + z1) / 2);
+      this.root.add(m);
+    };
+    tray(-hx + t, -hz + t, hx - t, -hz + t + tw);
+    tray(-hx + t, hz - t - tw, -YARD_GATE - 1, hz - t);
+    tray(YARD_GATE + 1, hz - t - tw, hx - t, hz - t);
+    tray(-hx + t, -hz + t + tw, -hx + t + tw, hz - t - tw);
+    tray(hx - t - tw, -hz + t + tw, hx - t, hz - t - tw);
+  }
+  // Мягкие «запечённые» тени-пятна под оборудованием: одна InstancedMesh, пятно чуть сдвинуто от солнца
+  makeShadows(groups, extra = []) {
+    const T = THREE, b = new T.Box3(), c = new T.Vector3(), s = new T.Vector3(), list = [];
+    this.root.updateMatrixWorld(true);
+    for (const g of [...groups, ...extra]) {
+      b.makeEmpty();
+      g.traverse(o => { if (o.isMesh && !o.userData.proxy && o.geometry && !(o.geometry.boundingSphere && o.geometry.boundingSphere.radius > 40)) b.expandByObject(o); });
+      if (b.isEmpty()) continue;
+      b.getCenter(c); b.getSize(s);
+      // от дальних частей (линия к энергосистеме) тени нет: берём пятно не больше 9 м
+      if (s.x > 18 || s.z > 18) continue;
+      list.push([c.x - 0.12 * Math.min(s.y, 4), c.z - 0.07 * Math.min(s.y, 4), Math.min(9, s.x * 1.25 + 0.7), Math.min(9, s.z * 1.25 + 0.7)]);
+    }
+    if (!list.length) return;
+    const geo = new T.PlaneGeometry(1, 1);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new T.MeshBasicMaterial({ map: texture(T, 'blob'), color: PAL.env.shadow, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -10 });
+    const im = new T.InstancedMesh(geo, mat, list.length), m4 = new T.Matrix4();
+    list.forEach(([x, z, w, d], i) => { m4.makeScale(w, 1, d); m4.setPosition(x, 0.034, z); im.setMatrixAt(i, m4); });
+    im.raycast = () => {}; im.renderOrder = 1;
+    this.root.add(im);
+  }
   // Невидимые коробки вокруг аппаратов: по ним считается щелчок и луч контроллера
   makeProxies(only) {
     const T = THREE;
     this.root.updateMatrixWorld(true);
-    const mat = this._proxyMat || (this._proxyMat = new T.MeshBasicMaterial({ color: 0xffffff }));
+    const mat = this._proxyMat || (this._proxyMat = new T.MeshBasicMaterial({ color: PAL.ui.proxy }));
     const b = new T.Box3(), size = new T.Vector3(), c = new T.Vector3(), out = [];
     for (const [id, d] of only || this.dev) {
       b.makeEmpty();
@@ -414,7 +469,7 @@ class View3D {
     for (const d of this.dev.values()) for (const l of d.lamps || []) list.push({ d, l });
     this.lampList = list; this.lampMesh = null;
     if (!list.length) return;
-    const im = new T.InstancedMesh(this.geo.lamp, new T.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), list.length);
+    const im = new T.InstancedMesh(this.geo.lamp, new T.MeshBasicMaterial({ color: PAL.ui.lamp, toneMapped: false }), list.length);
     const m4 = new T.Matrix4(), v = new T.Vector3(), q = new T.Quaternion(), sc = new T.Vector3();
     list.forEach(({ d, l }, i) => {
       v.set(l.p[0], l.p[1], l.p[2]).applyMatrix4((l.slide ? d.slide : d.group).matrixWorld);
@@ -450,8 +505,8 @@ class View3D {
       if (l.role === 'on') hex = d.lampState === 'on' ? COL3.on : COL3.lampDark;
       else if (l.role === 'off') hex = d.lampState === 'off' ? COL3.off : COL3.lampDark;
       else if (l.role === 'live') hex = d.live ? COL3.live : COL3.lampDark;
-      else if (l.role === 'btnOn') hex = 0xb81c2a;
-      else if (l.role === 'btnOff') hex = 0x168a45;
+      else if (l.role === 'btnOn') hex = COL3.btnOn;
+      else if (l.role === 'btnOff') hex = COL3.btnOff;
       if (d.trip && !blink && l.role !== 'live' && l.role !== 'btnOn' && l.role !== 'btnOff') hex = COL3.lampDark;
       im.setColorAt(l.i, c.setHex(hex));
     }
@@ -1202,7 +1257,7 @@ class View3D {
   }
   arc(p) {
     const T = THREE;
-    const sph = new T.Mesh(this.geo.sphere, new T.MeshBasicMaterial({ color: 0xe6f6ff, transparent: true, opacity: 1, blending: T.AdditiveBlending, depthWrite: false }));
+    const sph = new T.Mesh(this.geo.sphere, new T.MeshBasicMaterial({ color: PAL.ui.arc, transparent: true, opacity: 1, blending: T.AdditiveBlending, depthWrite: false }));
     sph.position.copy(p); sph.scale.setScalar(0.3);
     this.scene.add(sph);
     const n = 140, pos = new Float32Array(n * 3), vel = [];
@@ -1213,7 +1268,7 @@ class View3D {
     }
     const geo = new T.BufferGeometry();
     geo.setAttribute('position', new T.BufferAttribute(pos, 3));
-    const pts = new T.Points(geo, new T.PointsMaterial({ color: 0xffd27a, size: 0.09, transparent: true, blending: T.AdditiveBlending, depthWrite: false }));
+    const pts = new T.Points(geo, new T.PointsMaterial({ color: PAL.ui.sparks, size: 0.09, transparent: true, blending: T.AdditiveBlending, depthWrite: false }));
     this.scene.add(pts);
     this.arcLight.position.copy(p);
     this.arcLight.intensity = 90;

@@ -7,6 +7,7 @@
    Перчатки и каску в руку не берут: их надевают сразу, как взяли со стенда. */
 import { ITEMS, ITEM, TAKES, parseMount, placeText } from '../core/permit.js';
 import { Sound } from '../ui/sound.js';
+import { PAL } from './models/kit.js';
 
 const PW = 0.32, PH = 0.2;                         // плакат, м (крупнее настоящего 240×130 мм — читается в шлеме)
 const REACH = { desk: 2.6, xr: 1.7, grab: 0.17, snap: 0.3, tip: 0.1 };
@@ -23,7 +24,7 @@ const HOLD = {
   },
 };
 const PPE = { gloves: true, helmet: true };        // надевают сразу, в руку не берут
-const GLOVE = 0xe7c65a, CTRL = 0x202428;           // цвет перчаток; коробки контроллеров в шлеме — без перчаток и в перчатках
+const C = PAL.items, GLOVE = C.glove, CTRL = C.ctrl;   // цвет перчаток; коробки контроллеров в шлеме — без перчаток и в перчатках (цвета — models/kit.js)
 // Как предмет лежит на полу: высота и наклон
 const REST = { poster: [0.006, -Math.PI / 2], gloves: [0.03, 0], helmet: [0.0, 0], uvn: [0.03, 0], pz: [0.03, 0], lock: [0.02, 0], fence: [0, 0] };
 
@@ -34,7 +35,7 @@ class Items {
     this.touching = new Map(); this.lampUntil = 0; this.lastFence = null;
     this.mats();
     for (const it of ITEMS) this.make(it);
-    this.ghost = new this.T.Mesh(new this.T.BoxGeometry(1, 1, 1), new this.T.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
+    this.ghost = new this.T.Mesh(new this.T.BoxGeometry(1, 1, 1), new this.T.MeshBasicMaterial({ color: C.ghost, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
     this.ghost.visible = false; this.ghost.renderOrder = 5;
     v.scene.add(this.ghost);
     this.sync(true);
@@ -79,12 +80,12 @@ class Items {
     for (let i = -1; i < 4; i++) { tx.beginPath(); tx.moveTo(i * 32, 16); tx.lineTo(i * 32 + 16, 16); tx.lineTo(i * 32 + 32, 0); tx.lineTo(i * 32 + 16, 0); tx.closePath(); tx.fill(); }
     const tape = new T.CanvasTexture(tc); tape.colorSpace = T.SRGBColorSpace; tape.wrapS = T.RepeatWrapping;
     this.M = {
-      poster: new T.MeshBasicMaterial({ map: tex, toneMapped: false }), back: S(0xd9d6cc),
-      glove: S(GLOVE, { roughness: 0.75 }), helmet: S(0xf3f3ee, { roughness: 0.35 }),
-      rod: S(0xb3342a, { roughness: 0.4 }), handle: S(0x1d2124, { roughness: 0.6 }), head: S(0xe6e8e4, { roughness: 0.4 }),
-      metal: S(0xc9ced2, { metalness: 0.7, roughness: 0.3 }), pzRod: S(0xe0a020, { roughness: 0.45 }), pzCable: S(0x9b6a3a, { roughness: 0.5 }),
-      brass: S(0xc9a43c, { metalness: 0.6, roughness: 0.35 }), post: S(0x2b2f31), tape: new T.MeshStandardMaterial({ map: tape, roughness: 0.6 }),
-      lamp: new T.MeshBasicMaterial({ color: 0x3a1010, toneMapped: false }),
+      poster: new T.MeshBasicMaterial({ map: tex, toneMapped: false }), back: S(C.back),
+      glove: S(GLOVE, { roughness: 0.75 }), helmet: S(C.helmet, { roughness: 0.35 }),
+      rod: S(C.rod, { roughness: 0.4 }), handle: S(C.handle, { roughness: 0.6 }), head: S(C.head, { roughness: 0.4 }),
+      metal: S(C.metal, { metalness: 0.7, roughness: 0.3 }), pzRod: S(C.pzRod, { roughness: 0.45 }), pzCable: S(C.pzCable, { roughness: 0.5 }),
+      brass: S(C.brass, { metalness: 0.6, roughness: 0.35 }), post: S(C.post), tape: new T.MeshStandardMaterial({ map: tape, roughness: 0.6 }),
+      lamp: new T.MeshBasicMaterial({ color: C.lampOff, toneMapped: false }),
     };
   }
   // Плоскость с куском атласа плакатов
@@ -511,7 +512,7 @@ class Items {
     const u = this.list.get('uvn');
     if (u && u.lamp) {
       const on = performance.now() < this.lampUntil && Math.floor(time / 120) % 2 === 0;
-      u.lamp.material.color.setHex(on ? 0xff2d2d : 0x3a1010);
+      u.lamp.material.color.setHex(on ? C.lampOn : C.lampOff);
     }
   }
   dispose() {

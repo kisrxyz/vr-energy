@@ -10,6 +10,7 @@
    Ячейка: начало — середина лицевой стороны на полу; тележка внизу (отсек на всю высоту до 1,5 м), выше — полоса
    с номером, ещё выше — дверь релейного отсека с лампами и ключом управления; ЗН — рукоятка на правой стойке. */
 import { resolveIn, walkableIn } from './world.js';
+import { PAL, makeMaterials } from './models/kit.js';
 
 const CW = 0.9, CD = 1.4, CH = 2.3;               // ячейка КРУ: ширина, глубина, высота
 const ZF = -1.15;                                  // лицевая сторона ряда
@@ -18,41 +19,14 @@ const OUT = { work: 0, test: 0.3, repair: 2.0 };   // насколько выд�
 const DOOR = { x0: 2.4, x1: 3.5, h: 2.1 };
 const STAND = { x: R.x1, z: 2.0 };                 // стенд на правой стене у входа
 const CONTACT = { up: 1.3, lo: 0.95, z: -0.85 };   // разъёмные контакты в отсеке тележки
-const COL = { live: 0xff6a00 };
-
-// Материалы помещения: добавляются к общим материалам вида (v.M) один раз
+// Материалы помещения: добавляются к общим материалам вида (v.M) один раз; цвета и рисунки — models/kit.js (PAL.room, TEX)
 function roomMats(v) {
   const T = v.kit.T, M = v.M;
   if (M.rFloor) return M;
-  const S = (c, o = {}) => new T.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.8, metalness: 0.05 }, o));
-  const tex = (w, h, draw, rep) => {
-    const c = document.createElement('canvas'); c.width = w; c.height = h;
-    draw(c.getContext('2d'), w, h);
-    const t = new T.CanvasTexture(c); t.colorSpace = T.SRGBColorSpace; t.anisotropy = 4;
-    if (rep) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(rep[0], rep[1]); }
-    return t;
-  };
-  // пол: бетон с плиткой, полосы — разметка и стыки
-  const floor = tex(256, 256, (x, w, h) => {
-    x.fillStyle = '#9a9c97'; x.fillRect(0, 0, w, h);
-    for (let i = 0; i < 1400; i++) { const g = 135 + Math.floor(Math.random() * 40); x.fillStyle = `rgb(${g},${g + 1},${g - 3})`; x.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
-    x.strokeStyle = 'rgba(70,72,68,0.45)'; x.lineWidth = 3; x.strokeRect(0, 0, w, h);
-  }, [(R.x1 - R.x0) / 1.2, (R.z1 - R.z0) / 1.2]);
-  // контур заземления: жёлто-зелёные полосы
-  const gstrip = tex(128, 16, (x, w, h) => {
-    x.fillStyle = '#1f9a3c'; x.fillRect(0, 0, w, h);
-    x.fillStyle = '#f2d21a';
-    for (let i = -2; i < 10; i++) { x.beginPath(); x.moveTo(i * 16, h); x.lineTo(i * 16 + 8, h); x.lineTo(i * 16 + 16, 0); x.lineTo(i * 16 + 8, 0); x.closePath(); x.fill(); }
-  }, [12, 1]);
-  Object.assign(M, {
-    rFloor: S(0xffffff, { map: floor, roughness: 0.95 }), rMat: S(0x2a2d2c, { roughness: 1 }), rLine: S(0xf2c318, { roughness: 0.7 }),
-    rWall: S(0xe6e2d6, { roughness: 0.95 }), rWallLow: S(0x8fa5a0, { roughness: 0.9 }), rWallF: S(0xe6e2d6, { roughness: 0.95 }),
-    rCeil: S(0xd9d7cf, { roughness: 1 }), rLampBox: S(0xc9ccc8, { metalness: 0.3 }), rTube: new T.MeshBasicMaterial({ color: 0xfafcff, toneMapped: false }),
-    rDoor: S(0x58707a, { metalness: 0.35, roughness: 0.55 }), rGstrip: S(0xffffff, { map: gstrip, roughness: 0.6 }),
-    rKruDoor: S(0xbcc3bd, { metalness: 0.05, roughness: 0.8 }), rCavity: S(0x262b2a, { roughness: 0.9 }), rShutter: S(0xb8432e, { roughness: 0.6 }),
-    rTrolley: S(0xa9b2ad, { metalness: 0.05, roughness: 0.85 }), rPole: S(0x5b3328, { roughness: 0.5 }), rCopper: S(0xc8823e, { metalness: 0.6, roughness: 0.35 }),
-    rStand: S(0x50646f, { roughness: 0.7 }), rShelf: S(0x8b6b4a, { roughness: 0.8 }), rRed: S(0xc8202c, { roughness: 0.45 }),
-  });
+  Object.assign(M, makeMaterials(T, PAL.room), { rTube: new T.MeshBasicMaterial({ color: PAL.roomTube, toneMapped: false }) });
+  // пол — по плитке 1,2 м, контур заземления — полосы по длине
+  M.rFloor.map = Object.assign(M.rFloor.map.clone(), { repeat: new T.Vector2((R.x1 - R.x0) / 1.2, (R.z1 - R.z0) / 1.2), needsUpdate: true });
+  M.rGstrip.map = Object.assign(M.rGstrip.map.clone(), { repeat: new T.Vector2(12, 1), needsUpdate: true });
   return M;
 }
 
@@ -186,7 +160,7 @@ function buildRoom(v, s, topo) {
   const n = cells.length, rowX0 = -n * CW / 2;
   const busNode = cells[0].up != null ? topo.wireNode.get(cells[0].up) : null, busMat = busNode != null ? v.nodeMat(busNode) : M.galv;
   const mounts = new Map(), zones = new Map(), touch = [], obstacles = [], out = [];
-  const proxyMat = v._proxyMat || (v._proxyMat = new T.MeshBasicMaterial({ color: 0xffffff }));
+  const proxyMat = v._proxyMat || (v._proxyMat = new T.MeshBasicMaterial({ color: PAL.ui.proxy }));
   const proxy = (parent, w, h, d, x, y, z, data) => {
     const m = new T.Mesh(new T.BoxGeometry(w, h, d), proxyMat);
     m.position.set(x, y, z); m.visible = false; Object.assign(m.userData, data, { proxy: true });
@@ -215,6 +189,9 @@ function buildRoom(v, s, topo) {
     g.add(k.box(CW - 0.06, 0.56, 0.02, M.rKruDoor, 0, 2.0, 0.01));
     g.add(k.box(0.025, 0.12, 0.035, M.handle, CW / 2 - 0.07, 1.98, 0.035));
     g.add(k.box(CW - 0.2, 0.2, 0.012, M.rKruDoor, 0, 1.6, 0.006));
+    // мнемосхема присоединения на двери: линия и выключатель — между местами для плакатов
+    g.add(k.box(0.018, 0.46, 0.006, M.mimic, 0, 2.0, 0.023));
+    g.add(k.box(0.05, 0.05, 0.006, M.mimic, 0, 2.02, 0.024));
     const num = atlas.plane('n' + Math.min(cn, 6), 0.12, 0.12); num.position.set(-0.27, 1.6, 0.014); g.add(num);
     g.add(k.cyl(0.035, 0.03, M.dark, 0.33, 2.15, 0.03, 'z'));                         // ключ управления
     g.add(k.box(0.012, 0.06, 0.02, M.handle, 0.33, 2.15, 0.05));
@@ -330,6 +307,8 @@ function buildRoom(v, s, topo) {
     stop1: { p: [-0.65, 0.58, 0.075] }, stop2: { p: [0, 0.58, 0.075] }, work1: { p: [0.65, 0.58, 0.075] },
   };
   const fenceHome = { x: STAND.x - 0.28, z: 0.75 };
+  // мягкие тени-пятна под ячейками и стендом (одна InstancedMesh, как на площадке)
+  v.makeShadows(out.map(o => o.group), [st]);
 
   const room = {
     R, ZF, CW, CD, CH, OUT, cells: out, mounts, zones, touch, obstacles, hideTop,
@@ -388,4 +367,4 @@ const ZN = {
   },
 };
 
-export { buildRoom, R as ROOM, ZF, CW, CD, CH, OUT, CONTACT, COL as ROOM_COL };
+export { buildRoom, R as ROOM, ZF, CW, CD, CH, OUT, CONTACT };

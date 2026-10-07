@@ -7,7 +7,9 @@ import { statSync } from 'node:fs';
 import { launch, sleep } from './cdp.mjs';
 
 const tag = (process.argv.find(a => a.startsWith('--tag=')) || '--tag=after').slice(6);
-const OUT = 'docs/screens';
+// --review: ракурсы для проверки моделей глазами — в e2e-out/, а не в docs/screens
+const REVIEW = process.argv.includes('--review');
+const OUT = REVIEW ? 'e2e-out' : 'docs/screens';
 // где стоять пешком: элемент схемы, смещение от него в метрах (x, z) и высота взгляда на него
 const SHOTS = [
   { n: 1, name: 'ps110-obzor', key: 'ps110' },
@@ -16,6 +18,16 @@ const SHOTS = [
   { n: 4, name: 'ps110-transformator', key: 'ps110', walk: { el: 'Т1', dx: 5.5, dz: 4.5, look: 2.2 } },
   { n: 5, name: 'rp10-yacheyka', key: 'rp10', walk: { el: 'В-10 Л-3', dx: 3.2, dz: 3.4, look: 1.3 } },
   { n: 6, name: 'poly-stend', key: 'poly', room: { x: 2.7, z: 2.6, look: [4.6, 1.2, 1.9] } },
+];
+const REVIEW_SHOTS = [
+  { n: 'r1', name: 'breaker110', key: 'ps110', walk: { el: 'В-110 Т1', dx: 3.6, dz: 2.6, look: 2.0 } },
+  { n: 'r2', name: 'disconnector', key: 'ps110', walk: { el: 'ЛР-110 Т1', dx: 3.2, dz: 2.4, look: 2.6 } },
+  { n: 'r3', name: 'tr3', key: 'ps35', walk: { el: 'Т2', dx: -6, dz: 5, look: 2.4 } },
+  { n: 'r4', name: 'opn-tt', key: 'ps35', walk: { el: 'ТТ-110 Т1', dx: 4.5, dz: 3, look: 2.4 } },
+  { n: 'r5', name: 'gate', key: 'ps110', walk: { el: 'В-10 Л-2', dx: 0, dz: 22, look: 2 } },
+  { n: 'r6', name: 'poly-cells', key: 'poly', room: { x: -1.2, z: 1.6, look: [0.2, 1.3, -1.2] } },
+  { n: 'r7', name: 'source', key: 'ps110', walk: { el: 'ВЛ-110 «Восток»', dx: 5, dz: 5, look: 3.5 } },
+  { n: 'r8', name: 'rp-walk', key: 'rp10', walk: { el: 'СВ-10', dx: 2, dz: 12, look: 1.6 } },
 ];
 
 const server = await createServer({ server: { port: 5182, strictPort: false }, logLevel: 'error' });
@@ -28,7 +40,7 @@ try {
   await p.goto(url);
   // снимок — без кнопок и подсказок поверх сцены
   await p.eval(`(() => { const s = document.createElement('style'); s.textContent = '.v3-top, .v3-fps, .v3-tip, .v3-note, .toasts, .v3-load { display: none !important; }'; document.head.appendChild(s); })()`);
-  for (const s of SHOTS) {
+  for (const s of REVIEW ? REVIEW_SHOTS : SHOTS) {
     await p.eval(`(async () => { TS.app.chooseScheme('${s.key}'); TS.app.setMode('3d'); await TS.app.v3.show(); })()`);
     await p.fn(s => {
       const v = TS.app.v3, T = v.kit.T, w = v.walk;

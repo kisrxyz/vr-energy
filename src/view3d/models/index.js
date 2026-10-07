@@ -42,4 +42,4 @@ import * as capacitor from './capacitor.js';
 const MODELS = { source, gen, bus, ohl, cable, breaker, cart, disconnector, cartdisc, loadbreak, od, knife, acb, earth, kz, transformer, tr3, tsn, reactor, vt, ct, arrester, fuse, pz, load, motor, capacitor };
 
 export { MODELS };
-export { S3, H3, makeKit } from './kit.js';
+export { S3, H3, PAL, texture, makeMaterials, makeKit } from './kit.js';

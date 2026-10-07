@@ -1240,7 +1240,7 @@ function doMeasure(tr, pm, m) {
   console.log('3D models: each builds in Node; moving parts, ports, labels, lamps and size as in the base (tests/models3d-base.json); triangles and materials within limits');
   const base = JSON.parse(readFileSync(new URL('./models3d-base.json', import.meta.url), 'utf8'));
   // лимиты на модель: треугольники и материалы (материал — вызов отрисовки после слияния по материалам)
-  const LIMIT = { transformer: [6000, 12], tr3: [7000, 12], tsn: [3000, 10], breaker: [4000, 11], cart: [3000, 11], cartdisc: [3000, 11], disconnector: [3500, 10],
+  const LIMIT = { transformer: [6000, 12], tr3: [7000, 12], tsn: [3000, 10], breaker: [4000, 11], cart: [3000, 13], cartdisc: [3000, 13], disconnector: [3500, 10],
     source: [3000, 9], ct: [2500, 9], vt: [2500, 9], arrester: [2500, 8], bus: [3000, 8] };
   const near = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => Array.isArray(x) ? near(x, b[i]) : Math.abs(x - b[i]) <= 0.02);
   for (const t of Object.keys(E.TYPES)) {

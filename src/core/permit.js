@@ -46,6 +46,8 @@ const ITEM = Object.fromEntries(ITEMS.map(i => [i.id, i]));
 // Что физически вешают или ставят на место
 const TAKES = { drive: ['poster', 'lock'], door: ['poster'], earth: ['poster'], cart: ['poster'], shutter: ['poster'], fence: ['poster'], contact: ['pz', 'uvn'], zone: ['fence'] };
 const MAX_POSTERS = 3;
+// Свободный режим: предупреждение «без СИЗ» (тост, баннер, звук) — не чаще раза в QUIET мс; в журнал — каждый раз
+const QUIET = 15000;
 // После чего мероприятие идёт «по смыслу»: если пропущено именно это — объяснение EARLY (почему рано),
 // иначе — WHY пропущенного (почему его нельзя пропускать)
 const AFTER = {
@@ -78,6 +80,7 @@ const capFirst = t => t.charAt(0).toUpperCase() + t.slice(1);
 class Permit {
   constructor() {
     this.tr = null; this.room = null; this.guide = true; this.pending = null;
+    this.now = () => Date.now();   // часы: тест подменяет
     this.clear();
   }
   attach(tr) { this.tr = tr; this.setup(); }
@@ -90,7 +93,7 @@ class Permit {
   }
   clear() {
     this.at = new Map(ITEMS.filter(i => i.kind !== 'pz').map(i => [i.id, null]));   // null — свободен; 'worn' — надет; иначе место
-    this.doneAt = new Map(); this.flagged = new Set(); this.miss = new Set();
+    this.doneAt = new Map(); this.flagged = new Set(); this.miss = new Set(); this.ppeWarnAt = -Infinity;
   }
   cell(n) { return this.room ? this.room.cells.find(c => c.n === n) || null : null; }
   cellByCart(id) { return this.room ? this.room.cells.find(c => c.cart === id) || null : null; }
@@ -288,14 +291,24 @@ class Permit {
   }
   afterCheck(d) {
     if (this.ppeOn()) return;
-    const mt = this.contactMount(d.target), place = mt ? placeText(mt, 1) : 'у ' + this.tr.nm(d.target);
-    this.violation(`Проверка указателем без СИЗ ${place} — ${this.ppeMissing()}.`, d.target, WHY.ppeCheck);
+    this.violation(`Проверка указателем без СИЗ ${this.checkWhere(d.target) || 'у ' + this.tr.nm(d.target)} — ${this.ppeMissing()}.`, d.target, WHY.ppeCheck);
   }
-  // Работа без СИЗ: в журнал каждый раз, в задание — одной ошибкой (мероприятие «СИЗ»)
+  // Где проверяли указателем — для журнала движка: «на нижних контактах яч.3» (остальное движок называет сам)
+  checkWhere(target) {
+    const mt = this.contactMount(target);
+    return mt ? placeText(mt, 1) : null;
+  }
+  // Работа без СИЗ: в журнал каждый раз, в задание — одной ошибкой (мероприятие «СИЗ»).
+  // Предупреждение (тост, баннер, звук) в задании — каждый раз, в свободном режиме — не чаще раза в 15 с
   violation(text, id, why) {
     const tr = this.tr, ms = this.measures(), i = ms ? ms.findIndex(m => m.k === 'ppe') : -1;
     tr.addLog('warn', text, id);
     if (i >= 0 && !this.flagged.has(i) && !this.doneAt.has(i)) { this.flagged.add(i); tr.note('safety', text, id, { why }); }
+    if (!ms) {
+      const t = this.now();
+      if (t - this.ppeWarnAt < QUIET) return;
+      this.ppeWarnAt = t;
+    }
     this.warn(text);
   }
   warn(text) { this.tr.emit('field', { warn: text }); }

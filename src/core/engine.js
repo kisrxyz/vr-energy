@@ -36,7 +36,8 @@ import { TYPES, POS, POS_NAME, ptKey, clamp, portPoints, fmtKv, isSwitchable, wi
      event(type, data) — события движка, раньше остальных слушателей;
      guard(el, act) → { text, why } — механическая блокировка: операция не выполняется, попытка — ошибка;
      done(run) — ещё одно условие выполнения задания; finish(run, completed) — перед оценкой (пропущенное);
-     hint(run) → { step, text } — подсказка вместо эталонных шагов; stepText(st) — текст шагов, которых движок не знает.
+     hint(run) → { step, text } — подсказка вместо эталонных шагов; stepText(st) — текст шагов, которых движок не знает;
+     checkWhere(target) → «на нижних контактах яч.3» — где проверяли указателем (для журнала), если движок назвал бы место хуже.
    Ошибка вида 'safety' (охрана труда) стоит в оценке как нарушение порядка. */
 
 // Проводит ли аппарат в состоянии x (тележка — только в рабочем положении)
@@ -607,8 +608,9 @@ class Trainer {
     const say = r => r.kv != null ? `напряжение есть, ${fmtKv(r.kv)}` : r.g ? 'напряжения нет, заземлено' : 'напряжения нет';
     let text;
     if (res.length === 1) {
-      const place = el ? el.name : (this.placeOf(res[0].n) ? this.nm(this.placeOf(res[0].n)) : 'провод');
-      text = `Указатель напряжения у ${place}: ${say(res[0])}.`;
+      // место может назвать дополнение: в полигоне — контакты ячейки, а не ближайший к ним ЗН
+      const place = this.addon('checkWhere', target) || 'у ' + (el ? el.name : (this.placeOf(res[0].n) ? this.nm(this.placeOf(res[0].n)) : 'провод'));
+      text = `Указатель напряжения ${place}: ${say(res[0])}.`;
     } else {
       text = `Указатель напряжения на ${el.name}: ` + res.map((r, i) => { const p = this.placeOf(r.n); return `сторона ${i + 1}${p && p !== el.id ? ' (' + this.nm(p) + ')' : ''} — ${say(r)}`; }).join('; ') + '.';
     }

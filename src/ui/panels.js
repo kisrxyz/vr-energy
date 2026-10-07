@@ -233,10 +233,13 @@ const Panels = {
     // VR-полигон: предметы берут руками в 3D — на ноутбуке клавишами, в шлеме контроллерами
     const poly = this.scheme.room ? `<div class="sec"><h3>VR-полигон</h3><p>Помещение ЗРУ-10 кВ: ячейки КРУ, у входа — стенд со средствами защиты и плакатами. Предметы берут руками во вкладке «3D и VR»: на ноутбуке WASD и мышь, E — взять или применить, Q — положить; в шлеме — боковая кнопка.</p>
       ${this.mode !== '3d' ? '<div class="row"><button class="btn primary" data-act="go3d">Открыть 3D</button></div>' : ''}</div>` : '';
+    // в 3D-полигоне указатель и ПЗ — предметы на стенде, 2D-инструментов нет
+    const hands = this.scheme.room && this.mode === '3d';
+    const tools = hands ? '' : `<button class="btn" data-act="tool-check" aria-pressed="${this.tool === 'check'}">Указатель напряжения</button>
+        <button class="btn" data-act="tool-pz" aria-pressed="${this.tool === 'pz'}" title="Наложить или снять переносное заземление на провод или шину">Переносное заземление</button>`;
     return `${welcome}<div class="sec" id="taskSec"></div>${poly}
-      <div class="sec"><h3>Инструменты</h3>
-        <div class="row"><button class="btn" data-act="tool-check" aria-pressed="${this.tool === 'check'}">Указатель напряжения</button>
-        <button class="btn" data-act="tool-pz" aria-pressed="${this.tool === 'pz'}" title="Наложить или снять переносное заземление на провод или шину">Переносное заземление</button>
+      <div class="sec"><h3>Инструменты</h3>${hands ? '<p class="muted">Указатель напряжения и переносное заземление — предметы на стенде у входа: возьмите их руками (E на ноутбуке, боковая кнопка в шлеме).</p>' : ''}
+        <div class="row">${tools}
         <button class="btn" data-act="ack" id="ackBtn" ${this.tr.hasAlarms() ? '' : 'disabled'}>Квитировать</button>
         <button class="btn" data-act="reset">Нормальный режим</button></div>
         <label class="switch"><span>Блокировки<small>Не дают выполнить опасную операцию</small></span><input type="checkbox" data-opt="interlocks" ${o.interlocks ? 'checked' : ''}></label>
@@ -254,7 +257,7 @@ const Panels = {
       box.innerHTML = `<h3>Задание <span class="chip">идёт</span></h3><div class="task-card"><h4>${esc(run.task.title)}</h4><div class="desc">${esc(run.task.desc)}</div>
         <div class="task-stats"><div><b id="tTime">${fmtTime(tr.elapsed())}</b><span>время</span></div><div><b id="tOps">${g.myOps}</b><span>операций</span></div>
         <div class="${run.errors.length ? 'bad' : ''}" id="tErrBox"><b id="tErr">${run.errors.length}</b><span>ошибок</span></div></div>
-        <div class="row"><button class="btn" data-act="task-hint">Подсказка</button><button class="btn" data-act="task-stop">Завершить</button></div>
+        <div class="row"><button class="btn" data-act="task-hint" ${this.freeHints() ? 'hidden' : ''}>Подсказка</button><button class="btn" data-act="task-stop">Завершить</button></div>
         <div id="hintBox"></div>${run.task.measures && this.permit.active ? `<div id="measBox" class="meas-box">${this.measuresHTML()}</div>` : ''}</div>`;
       return;
     }
@@ -299,12 +302,24 @@ const Panels = {
   renderMeasures() {
     const b = document.getElementById('measBox');
     if (b) b.innerHTML = this.measuresHTML();
+    const h = document.querySelector('[data-act="task-hint"]');
+    if (h) h.hidden = this.freeHints();
+  },
+  // Задание полигона с включёнными подсказками: «следующее мероприятие» видно бесплатно — платная «Подсказка» (−5) не нужна
+  freeHints() {
+    const run = this.tr.run;
+    return !!(run && !run.done && run.task.measures && this.permit.active && this.permit.guide);
   },
   renderRec() {
     const box = document.getElementById('recSec');
     if (!box) return;
     const r = this.tr.rec;
     if (this.tr.run && !this.tr.run.done) { box.innerHTML = '<h3>Режим инструктора</h3><p>Доступен после завершения задания.</p>'; return; }
+    // запись не умеет мероприятия допуска (СИЗ, плакаты, замок, порядок этапов) — задание вышло бы без порядка
+    if (!r && this.scheme.room) {
+      box.innerHTML = '<h3>Режим инструктора</h3><p>В VR-полигоне запись эталона пока недоступна: она запомнит переключения и предметы, но не технические мероприятия и их порядок. Задание полигона — готовое.</p><div class="row"><button class="btn" data-act="rec-start" disabled>Записать задание</button></div>';
+      return;
+    }
     if (!r) {
       box.innerHTML = '<h3>Режим инструктора</h3><p>Запишите эталон: выполните переключения сами, и программа сделает из них задание для ученика.</p><div class="row"><button class="btn" data-act="rec-start">Записать задание</button></div>';
       return;
@@ -418,10 +433,11 @@ const Panels = {
         <div class="row"><button class="btn primary" data-m="sch-ren-ok" data-id="${esc(x.id)}">Сохранить</button><button class="btn" data-m="sch-ren-no">Отмена</button></div></li>`;
       if (st.del === x.id) return `<li class="sch-row confirm" role="alert"><p>Удалить «${esc(x.title)}»? Вернуть её будет нельзя${x.id === cur ? '; откроется готовая схема' : ''}.</p>
         <div class="row"><button class="btn danger-fill" data-m="sch-del-ok" data-id="${esc(x.id)}">Удалить</button><button class="btn" data-m="sch-del-no">Отмена</button></div></li>`;
-      const on = x.id === cur;
-      return `<li class="sch-row${on ? ' cur' : ''}"><div class="sch-t"><b>${esc(x.title)}</b><span>${on ? 'открыта сейчас · ' : ''}изменена ${esc(when(x.t))}</span></div>
-        <div class="row">${on ? '' : `<button class="btn primary" data-m="sch-open" data-id="${esc(x.id)}">Открыть</button>`}<button class="btn" data-m="sch-dup" data-id="${esc(x.id)}">Дублировать</button>
-        <button class="btn" data-m="sch-ren" data-id="${esc(x.id)}">Переименовать</button><button class="btn danger" data-m="sch-del" data-id="${esc(x.id)}">Удалить</button></div></li>`;
+      // запись не читается (повреждена) — открыть, дублировать и переименовать нечего, только удалить
+      const on = x.id === cur, broken = !on && !this.lib.load(x.id);
+      return `<li class="sch-row${on ? ' cur' : ''}"><div class="sch-t"><b>${esc(x.title)}</b><span>${on ? 'открыта сейчас · ' : broken ? 'запись повреждена, не открывается · ' : ''}изменена ${esc(when(x.t))}</span></div>
+        <div class="row">${on || broken ? '' : `<button class="btn primary" data-m="sch-open" data-id="${esc(x.id)}">Открыть</button>`}${broken ? '' : `<button class="btn" data-m="sch-dup" data-id="${esc(x.id)}">Дублировать</button>
+        <button class="btn" data-m="sch-ren" data-id="${esc(x.id)}">Переименовать</button>`}<button class="btn danger" data-m="sch-del" data-id="${esc(x.id)}">Удалить</button></div></li>`;
     };
     this.openModal('Схемы', `
       <div class="field"><div class="row sch-head"><b>Мои схемы · ${list.length}</b><button class="btn" data-m="new">Новая схема</button></div>

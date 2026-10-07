@@ -1,6 +1,6 @@
 /* ===== §1. Библиотека элементов ===== */
 const G = 20;          // пикселей в одной клетке сетки при масштабе 1
-const APP_VER = '0.2';
+const APP_VER = '0.3';
 
 // Категории палитры (порядок = порядок в палитре)
 const CATS = [
@@ -236,6 +236,11 @@ function onWire(w, p) {
   }
   return false;
 }
+// Шаги задания без аппаратов схемы (VR-полигон, src/core/permit.js): надеть СИЗ, вывесить и снять плакат, замок, ограждение
+const FIELD_OPS = ['wear', 'hang', 'unhang', 'lock', 'unlock', 'fence', 'unfence'];
+// Только строковые поля из списка: шаги и мероприятия полигона хранятся в файле как есть, лишнее отбрасывается
+function pickStr(o, keys) { const out = {}; for (const k of keys) if (typeof o[k] === 'string') out[k] = o[k]; return out; }
+
 // Проверка и починка файла схемы
 function normalizeScheme(s) {
   if (!s || typeof s !== 'object' || !Array.isArray(s.els) || !Array.isArray(s.wires)) throw new Error('Это не файл схемы тренажёра');
@@ -260,21 +265,39 @@ function normalizeScheme(s) {
   // ссылка задания: аппарат схемы или переносное заземление на проводе или шине
   const ok = k => ids.has(k) || (isPzId(k) && (wids.has(k.slice(3)) || ids.has(k.slice(3))));
   const okPos = ([k, v]) => carts.has(k) && POS.includes(v);
+  const field = x => FIELD_OPS.includes(x.op);
   s.tasks = s.tasks.filter(t => t && t.target && t.steps).map(t => {
     bump(t.id);
-    return {
+    const task = {
       id: String(t.id || 'task' + (++maxN)), title: String(t.title || 'Задание'), desc: String(t.desc || ''),
       init: Object.fromEntries(Object.entries(t.init || {}).filter(([k]) => ok(k))),
       target: Object.fromEntries(Object.entries(t.target).filter(([k]) => ok(k))),
       initPos: Object.fromEntries(Object.entries(t.initPos || {}).filter(okPos)),
       targetPos: Object.fromEntries(Object.entries(t.targetPos || {}).filter(okPos)),
-      steps: t.steps.filter(x => x && (ok(x.id) || (x.op === 'check' && wids.has(x.id))) && (['on', 'off', 'check'].includes(x.op) || (x.op === 'pos' && carts.has(x.id) && POS.includes(x.pos))))
-        .map(x => x.op === 'pos' ? { op: 'pos', id: x.id, pos: x.pos } : { op: x.op, id: x.id }),
+      steps: t.steps.filter(x => x && (field(x) || ((ok(x.id) || (x.op === 'check' && wids.has(x.id))) && (['on', 'off', 'check'].includes(x.op) || (x.op === 'pos' && carts.has(x.id) && POS.includes(x.pos))))))
+        .map(x => field(x) ? Object.assign({ op: x.op }, pickStr(x, ['item', 'poster', 'at'])) : x.op === 'pos' ? { op: 'pos', id: x.id, pos: x.pos } : { op: x.op, id: x.id }),
       keep: (t.keep || []).filter(k => ids.has(k)), requireCheck: !!t.requireCheck,
     };
+    // мероприятия VR-полигона: ссылки на аппараты и провода — только существующие
+    if (Array.isArray(t.measures)) {
+      task.measures = t.measures.filter(m => m && typeof m.k === 'string' && (m.id == null || ids.has(m.id)) && (m.wire == null || wids.has(m.wire)))
+        .map(m => Object.assign({ k: m.k, stage: Math.round(+m.stage) || 0 }, pickStr(m, ['id', 'wire', 'pos', 'poster', 'title']),
+          Array.isArray(m.at) ? { at: m.at.filter(a => typeof a === 'string') } : {}));
+      if (+t.workCell > 0) task.workCell = Math.round(+t.workCell);
+    }
+    return task;
   });
+  // VR-полигон: как ячейки КРУ стоят в помещении (тележка, ЗН, провода у верхних и нижних контактов)
+  if (s.room && typeof s.room === 'object' && Array.isArray(s.room.cells)) {
+    const cells = s.room.cells.filter(c => c && carts.has(c.cart) && +c.n > 0).map(c => ({
+      n: Math.round(+c.n), title: String(c.title || ''), kind: String(c.kind || 'line'), cart: c.cart,
+      earth: ids.has(c.earth) ? c.earth : null, up: wids.has(c.up) ? c.up : null, lo: wids.has(c.lo) ? c.lo : null,
+    }));
+    if (cells.length) s.room = { kind: 'zru', title: String(s.room.title || 'ЗРУ'), cells };
+    else delete s.room;
+  } else delete s.room;
   s.seq = Math.max(+s.seq || 1, maxN + 1);
   return s;
 }
 
-export { G, APP_VER, CATS, TYPES, PALETTE, POS, POS_NAME, BOX, rot, ptKey, clamp, esc, portPoints, bbox, vClass, V_CLASSES, fmtNum, fmtKv, isSwitchable, windings, breaksLoad, isPzId, normText, searchTypes, emptyScheme, cloneScheme, newId, nameFor, nextName, makeEl, makeWire, wireRoute, onWire, normalizeScheme };
+export { G, APP_VER, CATS, TYPES, PALETTE, POS, POS_NAME, BOX, rot, ptKey, clamp, esc, portPoints, bbox, vClass, V_CLASSES, fmtNum, fmtKv, isSwitchable, windings, breaksLoad, isPzId, normText, searchTypes, emptyScheme, cloneScheme, newId, nameFor, nextName, makeEl, makeWire, wireRoute, onWire, FIELD_OPS, normalizeScheme };

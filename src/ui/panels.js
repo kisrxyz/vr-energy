@@ -160,6 +160,7 @@ const Panels = {
     const k = s => `<kbd>${s}</kbd>`;
     if (this.mode === 'edit') st.innerHTML = `Элемент: выберите в палитре и щёлкните по полю или перетащите · Провод: тяните от точки подключения · ${k('R')} повернуть · ${k('Del')} удалить · ${k('Ctrl+Z')} отменить · ${k('Ctrl+D')} копия · двойной щелчок по проводу — излом`;
     else if (this.mode === 'train') st.innerHTML = `Щелчок по аппарату — переключить (у тележки КРУ — меню) · ${k('V')} указатель напряжения · ${k('P')} переносное заземление · ${k('K')} квитировать · колесо — масштаб`;
+    else if (this.scheme && this.scheme.room) st.innerHTML = `Полигон: щелчок по сцене — управление · ${k('W')}${k('A')}${k('S')}${k('D')} ходить · мышь — смотреть · ${k('Shift')} быстрее · ${k('E')} или щелчок — взять, применить, переключить · ${k('Q')} положить · ${k('Esc')} отпустить мышь · В шлеме: боковая кнопка — взять/отпустить, курок — операция`;
     else st.innerHTML = 'Мышь: левая кнопка — повернуть, правая — сдвинуть, колесо — приблизить, щелчок по аппарату — переключить · В шлеме: курок — операция или телепорт, боковая кнопка — указатель напряжения, стики — ходьба и поворот';
   },
 
@@ -229,7 +230,10 @@ const Panels = {
       <li>Вкладка «3D и VR» — та же схема в объёме, в шлеме Quest — в VR.</li></ol>
       <div class="row"><button class="btn" data-act="welcome-close">Понятно</button><button class="btn" data-act="help">Подробнее</button></div></div></div>`;
     const o = this.tr.opt;
-    return `${welcome}<div class="sec" id="taskSec"></div>
+    // VR-полигон: предметы берут руками в 3D — на ноутбуке клавишами, в шлеме контроллерами
+    const poly = this.scheme.room ? `<div class="sec"><h3>VR-полигон</h3><p>Помещение ЗРУ-10 кВ: ячейки КРУ, у входа — стенд со средствами защиты и плакатами. Предметы берут руками во вкладке «3D и VR»: на ноутбуке WASD и мышь, E — взять или применить, Q — положить; в шлеме — боковая кнопка.</p>
+      ${this.mode !== '3d' ? '<div class="row"><button class="btn primary" data-act="go3d">Открыть 3D</button></div>' : ''}</div>` : '';
+    return `${welcome}<div class="sec" id="taskSec"></div>${poly}
       <div class="sec"><h3>Инструменты</h3>
         <div class="row"><button class="btn" data-act="tool-check" aria-pressed="${this.tool === 'check'}">Указатель напряжения</button>
         <button class="btn" data-act="tool-pz" aria-pressed="${this.tool === 'pz'}" title="Наложить или снять переносное заземление на провод или шину">Переносное заземление</button>
@@ -251,7 +255,7 @@ const Panels = {
         <div class="task-stats"><div><b id="tTime">${fmtTime(tr.elapsed())}</b><span>время</span></div><div><b id="tOps">${g.myOps}</b><span>операций</span></div>
         <div class="${run.errors.length ? 'bad' : ''}" id="tErrBox"><b id="tErr">${run.errors.length}</b><span>ошибок</span></div></div>
         <div class="row"><button class="btn" data-act="task-hint">Подсказка</button><button class="btn" data-act="task-stop">Завершить</button></div>
-        <div id="hintBox"></div></div>`;
+        <div id="hintBox"></div>${run.task.measures && this.permit.active ? `<div id="measBox" class="meas-box">${this.measuresHTML()}</div>` : ''}</div>`;
       return;
     }
     if (run && run.done) {
@@ -282,6 +286,19 @@ const Panels = {
     const b = document.getElementById('hintBox');
     if (b) b.innerHTML = `<div class="hint-box">${esc(text)}</div>`;
     this.toast(text);
+  },
+  // Технические мероприятия задания полигона: СИЗ, сделано / следующее / не по порядку
+  measuresHTML() {
+    const st = this.permit.status();
+    if (!st.total) return '';
+    const ppe = `СИЗ: перчатки ${st.ppe.gloves ? '✓' : '—'}, каска ${st.ppe.helmet ? '✓' : '—'}`;
+    const head = `<div class="meas-h"><b>Мероприятия: ${st.n} из ${st.total}</b><label class="switch sm"><span>Подсказки</span><input type="checkbox" data-opt="guide" ${st.guide ? 'checked' : ''}></label></div>`;
+    if (!st.guide) return `${head}<p class="muted">${ppe}. Подсказки выключены — порядок мероприятий по памяти.</p>`;
+    return `${head}<ol class="meas">${st.measures.map(m => `<li class="${m.sat ? 'ok' : !m.sat && m.title === st.next ? 'next' : ''}${m.flagged ? ' bad' : ''}">${esc(m.title)}${m.flagged ? ' <span class="tag">ошибка</span>' : ''}</li>`).join('')}</ol><p class="muted">${ppe}</p>`;
+  },
+  renderMeasures() {
+    const b = document.getElementById('measBox');
+    if (b) b.innerHTML = this.measuresHTML();
   },
   renderRec() {
     const box = document.getElementById('recSec');
@@ -323,21 +340,27 @@ const Panels = {
 
   showReport(run) {
     if (!run || !run.grade) return;
-    const tr = this.tr, g = run.grade;
-    const kindName = { accident: 'Авария', kz: 'КЗ', blocked: 'Блокировка', supply: 'Перерыв питания', proc: 'Порядок' };
-    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${kindName[e.kind] || e.kind}: ${esc(e.text)}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
+    const tr = this.tr, g = run.grade, ms = run.measures || null;
+    const kindName = { accident: 'Авария', kz: 'КЗ', blocked: 'Блокировка', supply: 'Перерыв питания', proc: 'Порядок', safety: 'Охрана труда' };
+    // ошибки полигона объясняют, почему это опасно (тексты — src/core/explain.js, проверяет преподаватель)
+    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${kindName[e.kind] || e.kind}: ${esc(e.text)}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
     const mine = run.ops.length ? '<ol>' + run.ops.map(o => `<li><span class="mono">${fmtTime(o.t)}</span> ${esc(capFirst(tr.stepText(o)))}</li>`).join('') + '</ol>' : '<p>Действий не было.</p>';
     const ref = '<ol>' + run.task.steps.map(s => `<li>${esc(capFirst(tr.stepText(s)))}</li>`).join('') + '</ol>';
+    const mark = m => (m.sat && !m.flagged ? '✓' : m.sat ? '!' : '—');
+    const meas = ms ? `<div><h4 style="margin:0 0 6px;font-size:13px">Технические мероприятия${run.guide ? ' <span class="chip">подсказки были включены</span>' : ''}</h4>
+      <ol class="meas">${ms.map(m => `<li class="${m.sat && !m.flagged ? 'ok' : 'bad'}">${esc(m.title)}${m.flagged ? ` <span class="tag">${m.sat ? 'не по порядку' : 'пропущено'}</span>` : ''}</li>`).join('')}</ol></div>` : '';
     const body = `<div class="verdict ${g.tone}"><span class="score">${g.score}</span><div><b>${esc(g.verdict)}</b><div class="desc">из 100 баллов</div></div></div>
       <dl class="kv"><dt>Время</dt><dd>${fmtTime(g.secs)}</dd><dt>Операций</dt><dd>${g.myOps} (эталон ${g.refOps}${g.extra ? `, лишних ${g.extra}` : ''})</dd>
-      <dt>Аварии и КЗ</dt><dd>${g.acc}</dd><dt>Блокировки</dt><dd>${g.blk}</dd><dt>Перерывы питания</dt><dd>${g.sup}</dd><dt>Нарушения порядка</dt><dd>${g.prc}</dd><dt>Подсказки</dt><dd>${g.hints}</dd></dl>
-      <div><h4 style="margin:0 0 6px;font-size:13px">Ошибки</h4>${errs}</div>
+      <dt>Аварии и КЗ</dt><dd>${g.acc}</dd><dt>Блокировки</dt><dd>${g.blk}</dd><dt>Перерывы питания</dt><dd>${g.sup}</dd><dt>Нарушения порядка</dt><dd>${g.prc}</dd>${ms ? `<dt>Охрана труда</dt><dd>${g.saf || 0}</dd>` : ''}<dt>Подсказки</dt><dd>${g.hints}</dd></dl>
+      <div><h4 style="margin:0 0 6px;font-size:13px">Ошибки</h4>${errs}</div>${meas}
       <div class="cols"><div><h4>Ваши действия (бланк)</h4>${mine}</div><div><h4>Эталон</h4>${ref}</div></div>
-      <p class="desc" style="color:var(--muted);font-size:12px">Баллы: −40 за аварию или КЗ, −15 за перерыв питания, −10 за блокировку и нарушение порядка, −5 за подсказку, −2 за лишнюю операцию.</p>`;
+      <p class="desc" style="color:var(--muted);font-size:12px">Баллы: −40 за аварию или КЗ, −15 за перерыв питания, −10 за блокировку, нарушение порядка и охраны труда, −5 за подсказку, −2 за лишнюю операцию.</p>`;
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
       `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, '', 'Ошибки:',
-      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${kindName[e.kind] || e.kind}: ${e.text}`) : ['- нет']), '', 'Действия:',
+      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${kindName[e.kind] || e.kind}: ${e.text}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
+      ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
+      '', 'Действия:',
       ...run.ops.map((o, i) => `${i + 1}. ${fmtTime(o.t)} ${capFirst(tr.stepText(o))}`),
     ].join('\n');
     this.openModal('Отчёт: ' + run.task.title, body, [
@@ -383,17 +406,43 @@ const Panels = {
       } },
     ]);
   },
-  showFile() {
+  // «Схемы»: мои схемы (открыть, дублировать, переименовать, удалить — с подтверждением здесь же) и файл .json.
+  // st.ren / st.del — id схемы, у которой сейчас открыто переименование или подтверждение удаления.
+  showSchemes(st = {}) {
     const json = JSON.stringify(this.scheme, null, 1);
     this.fileJson = json;
-    this.openModal('Файл схемы', `
-      <div class="field"><b>Сохранить</b><p style="margin:0;color:var(--muted);font-size:13px">Схема сохраняется вместе с заданиями. Если кнопка «Скачать» не сработала (в окне предпросмотра так бывает), скопируйте текст и сохраните его в файл с расширением .json.</p>
+    const list = this.lib.list().sort((a, b) => b.t - a.t), cur = this.myId();
+    const when = t => { try { return t ? new Date(t).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''; } catch (e) { return ''; } };
+    const row = x => {
+      if (st.ren === x.id) return `<li class="sch-row editing"><label class="sr" for="schRen">Новое название</label><input class="inp" id="schRen" value="${esc(x.title)}" maxlength="80">
+        <div class="row"><button class="btn primary" data-m="sch-ren-ok" data-id="${esc(x.id)}">Сохранить</button><button class="btn" data-m="sch-ren-no">Отмена</button></div></li>`;
+      if (st.del === x.id) return `<li class="sch-row confirm" role="alert"><p>Удалить «${esc(x.title)}»? Вернуть её будет нельзя${x.id === cur ? '; откроется готовая схема' : ''}.</p>
+        <div class="row"><button class="btn danger-fill" data-m="sch-del-ok" data-id="${esc(x.id)}">Удалить</button><button class="btn" data-m="sch-del-no">Отмена</button></div></li>`;
+      const on = x.id === cur;
+      return `<li class="sch-row${on ? ' cur' : ''}"><div class="sch-t"><b>${esc(x.title)}</b><span>${on ? 'открыта сейчас · ' : ''}изменена ${esc(when(x.t))}</span></div>
+        <div class="row">${on ? '' : `<button class="btn primary" data-m="sch-open" data-id="${esc(x.id)}">Открыть</button>`}<button class="btn" data-m="sch-dup" data-id="${esc(x.id)}">Дублировать</button>
+        <button class="btn" data-m="sch-ren" data-id="${esc(x.id)}">Переименовать</button><button class="btn danger" data-m="sch-del" data-id="${esc(x.id)}">Удалить</button></div></li>`;
+    };
+    this.openModal('Схемы', `
+      <div class="field"><div class="row sch-head"><b>Мои схемы · ${list.length}</b><button class="btn" data-m="new">Новая схема</button></div>
+      ${list.length ? `<ul class="sch-list">${list.map(row).join('')}</ul>` : '<p class="muted">Своих схем пока нет. «Новая схема» — пустое поле; правка готовой схемы в редакторе сама создаёт копию здесь.</p>'}
+      <p class="muted">Схемы хранятся в этом браузере. Чтобы перенести на другой компьютер — скачайте файл.</p></div>
+      <div class="field"><b>Файл текущей схемы</b><p class="muted">«${esc(this.scheme.title)}» сохраняется вместе с заданиями. Если «Скачать» не сработала (в окне предпросмотра так бывает), скопируйте текст и сохраните его в файл .json.</p>
       <div class="row"><button class="btn primary" data-m="download">Скачать файл</button><button class="btn" data-m="copy">Скопировать текст</button></div></div>
-      <div class="field"><b>Открыть</b><div class="row"><button class="btn" data-m="open-file">Открыть файл .json</button></div>
-      <label for="pasteJson">или вставьте текст схемы</label><textarea class="inp mono" id="pasteJson" rows="4" spellcheck="false"></textarea>
-      <div class="row"><button class="btn" data-m="open-paste">Открыть из текста</button></div></div>
-      <div class="field"><b>Новая схема</b><p style="margin:0;color:var(--muted);font-size:13px">Пустая схема заменит «Мою схему» в этом браузере. Нужное сохраните в файл заранее.</p>
-      <div class="row"><button class="btn" data-m="new">Создать пустую схему</button></div></div>`);
+      <div class="field"><b>Открыть файл</b><p class="muted">Открытая схема добавится в «Мои схемы».</p><div class="row"><button class="btn" data-m="open-file">Открыть файл .json</button></div>
+      <label for="pasteJson">или вставьте текст схемы</label><textarea class="inp mono" id="pasteJson" rows="3" spellcheck="false"></textarea>
+      <div class="row"><button class="btn" data-m="open-paste">Открыть из текста</button></div></div>`);
+    const inp = document.getElementById('schRen');
+    if (inp) {
+      setTimeout(() => { inp.focus(); inp.select(); }, 40);
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); this.modalAction('sch-ren-ok', { dataset: { id: st.ren } }); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.showSchemes(); }
+      });
+    }
+    // в подтверждении удаления фокус на «Отмена»: случайный Enter ничего не удалит
+    const no = document.querySelector('.sch-row.confirm [data-m="sch-del-no"]');
+    if (no) setTimeout(() => no.focus(), 40);
   },
   // Отчёт VR-теста и журнал ошибок: в начале справки, чтобы после теста в шлеме их было легко найти
   vrTestHTML() {
@@ -420,6 +469,12 @@ const Panels = {
       <li>Курок — переключить аппарат или переместиться в точку на земле; у тележки КРУ рядом появится меню. Боковая кнопка — указатель напряжения. Левый стик — ходьба, правый — поворот.</li>
       <li>Щит с заданием стоит перед вами: его кнопки нажимаются лучом. «Отметка» (или кнопка A / X) запоминает момент для отчёта теста, «Отладка» — FPS и устройство, «Обучение» — подсказка по управлению.</li>
       <li>После теста: выйдите из VR, нажмите «?» → «Отчёт VR-теста» → «Скопировать отчёт».</li></ol></div>
+      <div><b>VR-полигон «Допуск к работе»</b><ol class="issues">
+      <li>Вверху выберите «VR-полигон: допуск к работе» — откроется помещение ЗРУ-10 кВ: шесть ячеек КРУ, у входа — стенд со средствами защиты, указателем, ПЗ, плакатами, замком и ограждением.</li>
+      <li>На ноутбуке: щелчок по сцене — управление мышью, WASD — ходить, мышь — смотреть, Shift — быстрее, E или щелчок — взять, надеть, повесить, переключить, Q — положить, Esc — отпустить мышь.</li>
+      <li>В шлеме: боковая кнопка — взять предмет и отпустить (у подходящего места — повесить или поставить). Перчатки поднесите к другой руке, каску — к голове, указателем коснитесь нижних контактов в отсеке тележки. Курок — переключить аппарат.</li>
+      <li>Задание «Подготовка рабочего места для ремонта выключателя ячейки №3»: СИЗ → отключить → выкатить тележку → «Не включать» и замок → проверить отсутствие напряжения → ЗН или ПЗ → «Заземлено», «Работать здесь», ограждение и «Стой! Напряжение». Пропущенное или переставленное мероприятие — ошибка с объяснением, почему это опасно.</li></ol></div>
+      <div><b>Мои схемы</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Кнопка «Схемы»: новая, дублировать, переименовать, удалить, файл .json. Готовая схема не меняется — первая правка в редакторе создаёт копию в «Моих схемах».</p></div>
       <div><b>Правила логики (проверить с преподавателем)</b><ol class="issues">
       <li>Заземляющий нож на участок под напряжением — авария: дуга, КЗ.</li>
       <li>Разъединитель на заземлённый участок под напряжением — авария.</li>
@@ -438,7 +493,7 @@ const Panels = {
       <li>Отделитель вручную — как разъединитель; короткозамыкатель на напряжение — искусственное КЗ.</li></ol></div>
       <div><b>Элементы</b>${CATS.map(([k, t]) => `<details class="more"><summary>${esc(t)}</summary>${PALETTE.filter(x => TYPES[x].cat === k).map(x => `<p><b>${esc(TYPES[x].title)}</b> (${esc(TYPES[x].code)}). ${esc(GLOSSARY[x].what)} ${esc(GLOSSARY[x].sim)}</p>`).join('')}</details>`).join('')}</div>
       <div><b>Цвета</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Цвета классов напряжения условные и настраиваются под стандарт предприятия. Красный аппарат — включён, зелёный — отключён. Мигает — отключился защитой, нужно квитировать.</p></div>
-      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: R — повернуть, Del — удалить, Ctrl+Z / Ctrl+Y — отменить и вернуть, Ctrl+D — копия, Esc — отмена. Тренажёр: V — указатель напряжения, P — переносное заземление, K — квитировать, Esc — закрыть меню.</p></div>
+      <div><b>Клавиши</b><p style="margin:4px 0 0;color:var(--muted);font-size:13px">Редактор: R — повернуть, Del — удалить, Ctrl+Z / Ctrl+Y — отменить и вернуть, Ctrl+D — копия, Esc — отмена. Тренажёр: V — указатель напряжения, P — переносное заземление, K — квитировать, Esc — закрыть меню. 3D: F — панель отладки. Полигон: WASD, Shift, E, Q, Esc.</p></div>
       <p style="color:var(--muted);font-size:12px">Демо-бета ${APP_VER}. Схемы хранятся в этом браузере; для переноса сохраните файл.</p>`,
       [{ label: 'Понятно', primary: true, act: () => this.closeModal() }]);
   },

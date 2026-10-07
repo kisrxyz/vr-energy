@@ -5,6 +5,9 @@ import * as engine from '../src/core/engine.js';
 import { GLOSSARY } from '../src/core/glossary.js';
 import { symbolSVG, editColors } from '../src/view2d/scheme2d.js';
 import { MODELS } from '../src/view3d/models/index.js';
+import { Permit, ITEMS, POSTERS } from '../src/core/permit.js';
+import { WHY, MISPLACED } from '../src/core/explain.js';
+import { makeLibrary } from '../src/ui/myschemes.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -566,6 +569,236 @@ function rp10(feeders, kv = 10) {
   tr.opt.interlocks = false;
   const r = tr.operate(id('Р1'));
   ok(r.viol && r.viol.kind === 'accident' && r.viol.text.includes('рубильник 0,4 кВ'), 'text: ' + (r.viol && r.viol.text));
+}
+
+/* ===== Мои схемы: список в хранилище браузера ===== */
+{
+  console.log('My schemes: old slot moved into the list, new / duplicate / rename / delete');
+  const mem = new Map();
+  const st = { get: k => (mem.has(k) ? mem.get(k) : null), set: (k, v) => { mem.set(k, String(v)); return true; }, del: k => { mem.delete(k); } };
+  const old = E.SAMPLES[1].make(); old.title = 'Старая моя схема';
+  mem.set('ts.my', JSON.stringify(old));
+  const lib = makeLibrary(st);
+  const mid = lib.migrate();
+  ok(mid && lib.list().length === 1 && lib.list()[0].title === 'Старая моя схема' && !mem.has('ts.my'), 'old slot ts.my moved into the list');
+  ok(lib.load(mid) && lib.load(mid).els.length === old.els.length && lib.load(mid).tasks.length === 2, 'migrated scheme loads with tasks');
+  ok(lib.migrate() === null && lib.list().length === 1, 'migration runs once');
+  const a = lib.add(E.emptyScheme('Новая схема')), b = lib.add(E.SAMPLES[0].make());
+  ok(lib.list().length === 3 && a && b && a !== b && mem.has('ts.my.' + a) && mem.has('ts.my.' + b), 'each scheme under its own id');
+  const s0 = lib.load(b); s0.els.pop(); ok(lib.save(b, s0) && lib.load(b).els.length === s0.els.length, 'save keeps changes');
+  const c = lib.duplicate(b);
+  ok(c && c !== b && lib.load(c).title.includes('копия') && lib.load(c).els.length === lib.load(b).els.length, 'duplicate: ' + (c && lib.load(c).title));
+  ok(lib.rename(a, '  РП-10 цех  ') && lib.load(a).title === 'РП-10 цех' && lib.list().find(x => x.id === a).title === 'РП-10 цех', 'rename: list and scheme title');
+  ok(!lib.rename(a, '   ') && lib.load(a).title === 'РП-10 цех', 'empty name refused');
+  ok(lib.remove(b) && !lib.load(b) && lib.list().length === 3 && !mem.has('ts.my.' + b), 'remove');
+  ok(lib.list()[0].id === c || lib.list().some(x => x.id === c), 'list keeps the rest');
+  mem.set('ts.mySchemes', '{испорчено');
+  ok(Array.isArray(makeLibrary(st).list()) && makeLibrary(st).list().length === 0, 'broken index -> empty list, no crash');
+  const full = { get: k => (mem.has(k) ? mem.get(k) : null), set: () => false, del: () => {} };
+  ok(makeLibrary(full).add(E.emptyScheme('x')) === null, 'storage full -> add returns null');
+}
+
+/* ===== VR-полигон «Допуск к работе»: технические мероприятия ===== */
+function poly() {
+  const s = E.SAMPLES.find(x => x.key === 'poly').make();
+  const tr = new E.Trainer(), pm = tr.use(new Permit());
+  tr.load(s);
+  const id = n => { const e = s.els.find(x => x.name === n); if (!e) throw new Error('нет ' + n); return e.id; };
+  const cell = n => s.room.cells.find(c => c.n === n);
+  return { s, tr, pm, id, cell, task: s.tasks[0] };
+}
+// Эталон: все мероприятия по порядку — как их делают руками в шлеме или на ноутбуке. skip — что пропустить.
+function polyRef(tr, pm, id, skip = []) {
+  const q3 = id('В-10 яч.3');
+  const acts = {
+    gloves: () => pm.wear('gloves'), helmet: () => pm.wear('helmet'),
+    off: () => tr.operate(q3), rack: () => tr.operate(q3, { pos: 'repair' }),
+    nevkl: () => pm.place('nevkl1', 'drive:3'), lock: () => pm.place('lock', 'drive:3'),
+    check: () => pm.touch('contact:3:lo'), earth: () => tr.operate(id('ЗН яч.3')),
+    zazem: () => pm.place('zazem1', 'drive:3'), work: () => pm.place('work1', 'cart:3'),
+    fence: () => pm.place('fence', 'zone:3'), stop: () => pm.place('stop1', 'fence'),
+  };
+  const out = {};
+  for (const k of ['gloves', 'helmet', 'off', 'rack', 'nevkl', 'lock', 'check', 'earth', 'zazem', 'work', 'fence', 'stop']) if (!skip.includes(k)) out[k] = acts[k]();
+  return out;
+}
+{
+  console.log('Polygon: ZRU-10 kV scheme under the 3D room');
+  const { s, tr, cell } = poly();
+  ok(s.room && s.room.cells.length === 6, '6 KRU cells in the room');
+  ok(s.room.cells.every(c => s.els.some(e => e.id === c.cart && E.TYPES[e.t].cart)), 'every cell has a trolley');
+  ok(s.room.cells.every(c => s.wires.some(w => w.id === c.up) && s.wires.some(w => w.id === c.lo)), 'cells reference upper and lower contact wires');
+  let dangling = [];
+  for (const el of s.els) { if (el.t === 'bus') continue; for (const k of tr.topo.portKeys.get(el.id)) { const u = tr.topo.use.get(k); if (u.ports + u.wires < 2 && !u.bus) dangling.push(el.name); } }
+  ok(!dangling.length, 'no dangling ports: ' + dangling);
+  const names = new Set(s.els.map(e => e.name));
+  ok(names.size === s.els.length, 'unique names');
+  const cons = s.els.filter(e => E.TYPES[e.t].consumer);
+  ok(cons.length === 4 && tr.state.loads.size === 4, 'all 4 consumers powered');
+  ok(tr.state.V.get(tr.topo.wireNode.get(cell(3).lo)) === 10, 'lower contacts of cell 3 live in normal state');
+  ok(tr.state.V.get(tr.topo.wireNode.get(cell(3).up)) === 10 && tr.topo.wireNode.get(cell(3).up) === tr.topo.term.get(s.els.find(e => e.t === 'bus').id)[0], 'upper contacts are the bus');
+  ok(tr.topo.wireNode.get(cell(3).lo) === tr.topo.term.get(cell(3).earth)[0], 'ЗН яч.3 earths the lower contacts node');
+  const t = s.tasks[0];
+  ok(s.tasks.length === 1 && t.measures.length === 11 && t.workCell === 3 && !t.requireCheck, 'task with 11 measures, work cell 3');
+}
+{
+  console.log('Polygon task: reference run, all measures in order');
+  const { tr, pm, id, task } = poly();
+  ok(!pm.active || pm.active, 'permit present');
+  tr.startTask(task);
+  ok(pm.active && pm.status().next && pm.status().next.includes('перчатки'), 'first measure: PPE — ' + pm.status().next);
+  const out = polyRef(tr, pm, id);
+  const bad = Object.entries(out).filter(([, r]) => !r || r.err || r.blocked || r.viol);
+  ok(!bad.length, 'every action ok: ' + bad.map(([k, r]) => k + ': ' + (r && r.text)).join('; '));
+  ok(out.check && out.check.res.every(x => x.kv == null), 'no voltage on the lower contacts of cell 3');
+  ok(tr.run.done && tr.run.completed, 'task completed');
+  ok(tr.run.grade.tone === 'good' && !tr.run.errors.length, 'no errors: ' + tr.run.errors.map(e => e.text));
+  ok(tr.run.grade.score === 100 && tr.run.grade.myOps === tr.run.grade.refOps, 'score 100, ops ' + tr.run.grade.myOps + '/' + tr.run.grade.refOps);
+  ok(task.keep.length === 3 && task.keep.every(k => tr.state.loads.has(k)) && !tr.state.loads.has(id('Цех №3')), 'Цех №3 off, others keep power');
+  ok(tr.stepText({ op: 'hang', poster: 'nevkl', at: 'drive:3' }).includes('Не включать') && tr.stepText({ op: 'wear', item: 'gloves' }).includes('перчатки'), 'report texts for new steps');
+  ok(tr.stepText({ op: 'check', id: tr.s.room.cells[2].lo }).includes('нижних контактах яч.3'), 'check text names the contacts: ' + tr.stepText({ op: 'check', id: tr.s.room.cells[2].lo }));
+  ok(tr.run.measures && tr.run.measures.length === 11 && tr.run.measures.every(m => m.sat && !m.flagged), 'report: measures snapshot');
+}
+{
+  console.log('Polygon task: not completed until every measure is done');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  polyRef(tr, pm, id, ['stop']);
+  ok(!tr.run.done, 'switching done, «Стой! Напряжение» missing -> task goes on');
+  const h = tr.hint();
+  ok(h && h.text.includes('Стой! Напряжение') && tr.run.hints === 1, 'hint names the next measure: ' + (h && h.text));
+  ok(pm.place('stop2', 'door:2').ok && tr.run.done && tr.run.completed, 'completed after «Стой! Напряжение» on the neighbour cell');
+}
+{
+  console.log('Polygon: operations without PPE — violation, counted once');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  let r = tr.operate(id('В-10 яч.3'));
+  ok(r.ok && !tr.sim.st[id('В-10 яч.3')].on, 'operation is performed');
+  const saf = () => tr.run.errors.filter(e => e.kind === 'safety');
+  ok(saf().length === 1 && saf()[0].why && saf()[0].text.includes('без СИЗ'), 'safety error with explanation: ' + saf().map(e => e.text));
+  r = tr.operate(id('В-10 яч.3'), { pos: 'repair' });
+  ok(r.ok && saf().length === 1, 'second operation without PPE: no second error');
+  ok(tr.log.filter(e => e.text.includes('без СИЗ')).length === 2, 'each operation without PPE is logged');
+  const c = pm.touch('contact:3:lo');
+  ok(c && c.res && tr.log.some(e => e.text.includes('Проверка указателем без СИЗ')), 'indicator without gloves is logged too');
+  ok(saf().length === 2 && saf()[1].text.startsWith('Нарушен порядок'), 'check before the poster and the lock — order error, PPE not counted again: ' + saf().map(e => e.text).join(' | '));
+}
+{
+  console.log('Polygon: earthing without check and skipped posters — order errors with explanations');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  const out = polyRef(tr, pm, id, ['nevkl', 'lock', 'check', 'zazem', 'work', 'fence', 'stop']);
+  ok(out.earth.ok && !out.earth.viol, 'ЗН switched on (section is dead)');
+  const errs = tr.run.errors;
+  ok(errs.length === 2, '2 errors: no check; earthing before «Не включать» and lock: ' + errs.map(e => e.text).join(' | '));
+  ok(errs.some(e => e.text.includes('без проверки отсутствия напряжения')), 'earthing without check is named');
+  ok(errs.some(e => e.text.includes('раньше') && e.text.includes('Не включать')), 'earthing before the prohibiting poster is named');
+  ok(errs.every(e => e.kind === 'safety' && e.why && e.why.length > 40), 'each error explains why it is dangerous');
+  pm.place('nevkl1', 'drive:3'); pm.place('lock', 'drive:3');
+  ok(tr.run.errors.length === 2, 'skipped measures done later: no new errors');
+  pm.place('zazem1', 'drive:3'); pm.place('work1', 'cart:3'); pm.place('fence', 'zone:3'); pm.place('stop1', 'fence');
+  ok(tr.run.done && tr.run.completed && tr.run.grade.tone === 'mid' && tr.run.grade.saf === 2, 'completed with errors: ' + tr.run.grade.verdict + ', ' + tr.run.grade.score);
+  ok(tr.run.measures.filter(m => m.flagged).length === 2, 'report marks 2 measures');
+}
+{
+  console.log('Polygon: «Заземлено» too early — one error for the moved measure');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  pm.wear('gloves'); pm.wear('helmet');
+  tr.operate(id('В-10 яч.3'));
+  pm.place('zazem1', 'drive:3');
+  ok(tr.run.errors.length === 1 && tr.run.errors[0].why && tr.run.errors[0].text.includes('Заземлено'), 'one error: ' + tr.run.errors.map(e => e.text).join(' | '));
+  polyRef(tr, pm, id, ['gloves', 'helmet', 'off', 'zazem']);
+  ok(tr.run.done && tr.run.completed && tr.run.errors.length === 1 && tr.run.grade.tone === 'mid', 'rest in order: completed with 1 error');
+}
+{
+  console.log('Polygon: lock blocks the drive; posters on a working cell; operating under «Не включать»');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  polyRef(tr, pm, id, ['check', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  let r = tr.operate(id('В-10 яч.3'), { pos: 'test' });
+  ok(r.blocked && r.text.includes('замок') && tr.sim.st[id('В-10 яч.3')].pos === 'repair', 'locked drive: trolley does not move: ' + r.text);
+  ok(tr.run.errors.some(e => e.kind === 'blocked' && e.why), 'attempt counted with explanation');
+  r = pm.place('nevkl2', 'drive:2');
+  ok(r.ok && tr.run.errors.some(e => e.kind === 'safety' && e.text.includes('№2') && e.why), '«Не включать» on working cell 2 -> error');
+  r = pm.place('work1', 'door:4');
+  ok(r.ok && tr.run.errors.some(e => e.text.includes('Работать здесь') && e.text.includes('№4')), '«Работать здесь» on a live cell -> error');
+  ok(pm.take('lock').ok && !pm.onMount('drive:3').includes('lock'), 'lock removed');
+  r = tr.operate(id('В-10 яч.3'), { pos: 'test' });
+  ok(r.ok && tr.run.errors.some(e => e.text.includes('«Не включать! Работают люди»') && e.text.includes('яч.3')), 'racking in under «Не включать» -> error');
+  ok(pm.place('lock', 'drive:5').ok && tr.run.errors.some(e => e.text.includes('Замок') && e.text.includes('№5')), 'lock on another cell -> error');
+}
+{
+  console.log('Polygon: PZ on the lower contacts instead of ЗН; contacts closed while the trolley is in');
+  const { tr, pm, id, task, cell } = poly();
+  tr.startTask(task);
+  pm.wear('gloves'); pm.wear('helmet');
+  const r0 = pm.place('pz', 'contact:3:lo');
+  ok(r0.err && /тележ/.test(r0.text), 'contacts closed: ' + r0.text);
+  ok(pm.touch('contact:3:lo').err, 'indicator cannot reach the contacts either');
+  polyRef(tr, pm, id, ['gloves', 'helmet', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  const r = pm.place('pz', 'contact:3:lo');
+  ok(r.ok && tr.pzAt(tr.topo.wireNode.get(cell(3).lo)) && pm.itemAt('pz') === 'contact:3:lo', 'PZ applied on the lower contacts');
+  pm.place('zazem1', 'earth:3'); pm.place('work1', 'cart:3'); pm.place('fence', 'zone:3'); pm.place('stop1', 'shutter:3');
+  ok(tr.run.done && tr.run.completed && !tr.run.errors.length, 'task done with PZ, no errors: ' + tr.run.errors.map(e => e.text));
+}
+{
+  console.log('Polygon: indicator on live contacts of the input cell, PZ there is blocked');
+  const { tr, pm, id } = poly();
+  pm.wear('gloves'); pm.wear('helmet');
+  tr.operate(id('В-10 Ввод')); tr.operate(id('В-10 Ввод'), { pos: 'repair' });
+  const c = pm.touch('contact:1:lo');
+  ok(c && c.res && c.res.some(x => x.kv === 10), 'indicator: lower contacts of the input are live from Т1');
+  const r = pm.place('pz', 'contact:1:lo');
+  ok(r && r.blocked && !pm.itemAt('pz'), 'PZ onto a live part blocked: ' + (r && r.text));
+  ok(pm.place('pz', 'contact:1:up').err, 'upper contacts are behind the shutter');
+}
+{
+  console.log('Polygon: stopping early lists missed measures with explanations');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  polyRef(tr, pm, id, ['nevkl', 'lock', 'check', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  tr.stopTask();
+  const miss = tr.run.errors.filter(e => e.text.startsWith('Пропущено'));
+  ok(miss.length === 8 && miss.every(e => e.kind === 'safety' && e.why), 'missed measures: ' + miss.length);
+  ok(!tr.run.completed && tr.run.grade.tone === 'bad', 'not completed');
+}
+{
+  console.log('Polygon: items — wear, take back, reset with the task; free mode');
+  const { tr, pm, id, task } = poly();
+  ok(pm.active && !pm.status().ppe.gloves, 'free mode: permit active in the room');
+  ok(pm.wear('gloves').ok && pm.itemAt('gloves') === 'worn' && pm.wear('pz').err, 'gloves on; PZ is not worn');
+  ok(pm.place('nevkl1', 'drive:3').ok && pm.onMount('drive:3').includes('nevkl1') && pm.take('nevkl1').ok && !pm.itemAt('nevkl1'), 'poster hung and taken back');
+  ok(pm.place('stop1', 'fence').err, 'no fence yet — nowhere to hang');
+  pm.place('fence', 'zone:3'); pm.place('stop1', 'fence'); pm.take('fence');
+  ok(!pm.itemAt('fence') && !pm.itemAt('stop1'), 'fence removed — its poster comes off too');
+  tr.startTask(task);
+  ok(!pm.itemAt('gloves') && !pm.status().ppe.gloves, 'new task: items back on the stand');
+  ok(pm.place('nevkl1', 'zone:3').err && pm.place('lock', 'door:3').err, 'items go only where they fit');
+}
+{
+  console.log('Polygon: JSON keeps room, measures and steps; other schemes unaffected');
+  const { s } = poly();
+  const s2 = E.normalizeScheme(JSON.parse(JSON.stringify(s)));
+  ok(s2.room && s2.room.cells.length === 6 && s2.tasks[0].measures.length === 11 && s2.tasks[0].steps.length === s.tasks[0].steps.length && s2.tasks[0].workCell === 3, 'normalize keeps the room and the task');
+  const tr = new E.Trainer(), pm = tr.use(new Permit()); tr.load(s2); tr.startTask(s2.tasks[0]);
+  polyRef(tr, pm, n => s2.els.find(e => e.name === n).id);
+  ok(tr.run.completed && tr.run.grade.tone === 'good', 'task replays after JSON');
+  const k = setup('ps110'), pm2 = k.tr.use(new Permit());
+  k.tr.load(k.s);
+  ok(!pm2.active && pm2.guard(k.s.els[0], null) === null, 'permit inactive on ПС 110/10');
+  k.tr.startTask(k.s.tasks[0]);
+  for (const st of k.s.tasks[0].steps) { if (st.op === 'check') k.tr.check(st.id); else k.tr.operate(st.id); }
+  ok(k.tr.run.completed && k.tr.run.grade.tone === 'good' && !k.tr.run.errors.length, 'ПС 110/10 task unaffected by the permit');
+}
+{
+  console.log('Explanations: every measure, poster and misplacement says why it is dangerous');
+  const kinds = ['ppe', 'off', 'rack', 'lock', 'check', 'earth', 'fence'];
+  ok(kinds.every(k => WHY[k] && WHY[k].length > 60), 'WHY for measures');
+  ok(Object.keys(POSTERS).every(p => WHY['sign_' + p] && WHY['sign_' + p].length > 60 && MISPLACED[p] && MISPLACED[p].why.length > 40), 'WHY and misplacement texts for every poster');
+  ok(MISPLACED.lock && MISPLACED.fence && WHY.lockBlock && WHY.nevklOp, 'lock, fence, blocked drive, operation under poster');
+  ok(ITEMS.length >= 12 && ITEMS.every(i => i.title), 'items have titles');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

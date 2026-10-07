@@ -14,6 +14,8 @@ import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
 import * as Exam from '../src/core/exam.js';
+import * as Models3d from './models3d.js';
+import { readFileSync } from 'node:fs';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -1232,6 +1234,24 @@ function doMeasure(tr, pm, m) {
     k.tr.startTask(t3);
     for (let i = 0; i < 6 && !k.tr.run.done; i++) { const h = k.tr.nextStep(); if (!h) break; if (h.op === 'pos') k.tr.operate(h.id, { pos: h.pos }); else k.tr.operate(h.id); }
     ok(k.tr.run.done && k.tr.run.grade.score === 100 && k.tr.state.loads.size === 7, 'drill by hints — 100, both sections powered');
+  }
+}
+{
+  console.log('3D models: each builds in Node; moving parts, ports, labels, lamps and size as in the base (tests/models3d-base.json); triangles and materials within limits');
+  const base = JSON.parse(readFileSync(new URL('./models3d-base.json', import.meta.url), 'utf8'));
+  // лимиты на модель: треугольники и материалы (материал — вызов отрисовки после слияния по материалам)
+  const LIMIT = { transformer: [6000, 12], tr3: [7000, 12], tsn: [3000, 10], breaker: [4000, 11], cart: [3000, 11], cartdisc: [3000, 11], disconnector: [3500, 10],
+    source: [3000, 9], ct: [2500, 9], vt: [2500, 9], arrester: [2500, 8], bus: [3000, 8] };
+  const near = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => Array.isArray(x) ? near(x, b[i]) : Math.abs(x - b[i]) <= 0.02);
+  for (const t of Object.keys(E.TYPES)) {
+    let m = null;
+    try { m = Models3d.buildModel(t); } catch (e) { ok(false, `${t}: model builds in Node :: ${e.message}`); continue; }
+    const b = base[t], [lt, lm] = LIMIT[t] || [2500, 9];
+    const parts = Object.keys(b.parts).every(k => k === 'spin' ? near(m.parts.spin, b.parts.spin) : m.parts[k] && near(m.parts[k].at, b.parts[k].at) && near(m.parts[k].box, b.parts[k].box));
+    ok(parts && Object.keys(m.parts).length === Object.keys(b.parts).length, `${t}: moving parts in place (${Object.keys(b.parts).join(', ') || 'none'})`);
+    ok(JSON.stringify(m.anim) === JSON.stringify(b.anim) && near(m.ports, b.ports) && near(m.label, b.label) && near(m.lamps, b.lamps), `${t}: animation, ports, label and lamps as before`);
+    ok(near(m.box, b.box), `${t}: overall size as before (the click box and walking around depend on it)`);
+    ok(m.tris <= lt && m.mats <= lm, `${t}: ${m.tris} triangles (≤ ${lt}), ${m.mats} materials (≤ ${lm})`);
   }
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

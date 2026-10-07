@@ -8,7 +8,7 @@
    --shots (снимки в e2e-out/). Через npm: npm run e2e -- --only=poly --shots (или npm run e2e --part=poly --shots).
    Код выхода: 0 — всё прошло, 1 — сбой, 2 — нет браузера. */
 import { build, preview } from 'vite';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { launch, sleep } from './cdp.mjs';
 
 // флаги из командной строки или из npm (npm run e2e --shots кладёт их в npm_config_*)
@@ -21,6 +21,8 @@ const NO_BUILD = argv.includes('--no-build') || env.npm_config_build === '' || e
 const SHOTS = flag('shots');
 const ONLY = (val('only') || val('part')).split(',').map(s => s.trim()).filter(Boolean);
 const OUT = 'e2e-out';
+// --save-scene: записать невидимые коробки и места сцены как базу (tests/scene3d-base.json) — до правки графики
+const SAVE_SCENE = argv.includes('--save-scene');
 const HELPER = readFileSync(new URL('./e2e-page.js', import.meta.url), 'utf8');
 const T0 = Date.now();
 const rows = [];
@@ -519,6 +521,41 @@ SUITES.yard = { perScheme: true, fn: async keys => {
       return `подписи не налезают; ${res.n ? `тележек ${res.n}, к каждой можно подойти` : 'тележек нет'}`;
     });
   }
+} };
+
+// Сцена 3D: невидимые коробки (щелчок, луч, прицел), места для предметов и предметы на стенде — там же, где в базе
+// (tests/scene3d-base.json): графика не должна ломать ходьбу, предметы и автопроходку
+const SCENE_BASE = new URL('../tests/scene3d-base.json', import.meta.url);
+SUITES.scene3d = { perScheme: true, fn: async keys => {
+  const base = existsSync(SCENE_BASE) ? JSON.parse(readFileSync(SCENE_BASE, 'utf8')) : {};
+  for (const key of keys) {
+    await check('scene3d', key, async () => {
+      await page.eval(`(async () => { TS.app.chooseScheme('${key}'); TS.app.setMode('3d'); await TS.app.v3.show(); })()`);
+      const snap = await page.eval(`(() => {
+        const v = TS.app.v3, T = v.kit.T, b = new T.Box3(), c = new T.Vector3(), z = new T.Vector3(), r = x => Math.round(x * 100) / 100, out = {};
+        v.root.updateMatrixWorld(true);
+        for (const o of v.pickables) {
+          const u = o.userData, k = u.dev ? 'dev:' + TS.app.tr.nm(u.dev) : u.item ? 'item:' + u.item : u.mount ? 'mount:' + u.mount : u.wire ? 'wire:' + u.wire : u.board ? 'board' : null;
+          if (!k) continue;
+          b.setFromObject(o); b.getCenter(c); b.getSize(z);
+          out[k] = [r(c.x), r(c.y), r(c.z), r(z.x), r(z.y), r(z.z)];
+        }
+        return out; })()`);
+      const n = Object.keys(snap).length;
+      if (SAVE_SCENE) { base[key] = snap; return `записано в базу: ${n}`; }
+      const was = base[key];
+      if (!was) fail('нет базы сцены — запустите с --save-scene до правки графики');
+      const bad = [];
+      for (const k of new Set([...Object.keys(was), ...Object.keys(snap)])) {
+        const a = was[k], q = snap[k];
+        if (!a || !q) { bad.push(`${k}: ${a ? 'пропал' : 'новый'}`); continue; }
+        if (a.some((x, i) => Math.abs(x - q[i]) > 0.02)) bad.push(`${k}: ${JSON.stringify(a)} → ${JSON.stringify(q)}`);
+      }
+      if (bad.length) fail(`сдвинулось ${bad.length}: ${bad.slice(0, 3).join('; ')}`);
+      return `${n} коробок и мест на месте`;
+    });
+  }
+  if (SAVE_SCENE) writeFileSync(SCENE_BASE, JSON.stringify(base, null, 1) + '\n');
 } };
 
 // ---------- запуск ----------

@@ -1,18 +1,24 @@
 /* ===== VR-полигон на ноутбуке: ходьба и руки, как в играх =====
-   Щелчок по сцене — захват мыши (Esc — отпустить), мышь — смотреть, WASD или стрелки — ходить, Shift — быстрее,
+   Щелчок по сцене — захват мыши (Esc — отпустить), мышь — смотреть, WASD или стрелки — ходить (≈3 м/с, как стиком в шлеме),
    E или щелчок — взять, применить, переключить; Q (или правая кнопка) — положить. Прицел в центре экрана,
    под ним — что под прицелом и что будет. Сквозь стены, ячейки и выкаченные тележки не пройти (room.resolve).
-   Если браузер не даёт захватить мышь — смотреть перетаскиванием, действие — щелчком по месту. */
+   Захват: Chrome около секунды после выхода по Esc отказывает в новом — такие отказы не считаются.
+   Если отказы повторяются и вне этой паузы — смотреть перетаскиванием, действие — щелчком по месту.
+   Состояние захвата меняют только lockChanged и lockFailed: их можно вызвать и без настоящего захвата (проверка в headless). */
 import { store } from '../ui/store.js';
 import { esc } from '../core/elements.js';
 
-const EYE = 1.62, SPEED = 1.6, RUN = 3.1, SENS = 0.0022, R = 0.25;
+const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
+// После выхода из захвата Chrome ~1 с отказывает в новом: отказ в эту паузу не считается, мс
+const LOCK_PAUSE = 1600;
 
 class Walk {
   constructor(v) {
     this.v = v; this.on = false; this.keys = new Set();
     this.x = 0; this.z = 0; this.yaw = 0; this.pitch = 0; this.vx = 0; this.vz = 0;
+    // noLock — смотреть перетаскиванием (нет API или отказы вне паузы); lockReq — запрос захвата ждёт ответа
     this.locked = false; this.noLock = !('requestPointerLock' in HTMLElement.prototype); this.lockFails = 0;
+    this.lockReq = null; this.unlockedAt = -Infinity; this.lockWait = false;
     this.drag = null; this.cursor = null; this.aim = null; this.hudText = {};
     this.makeHud();
     this.bind();
@@ -24,20 +30,21 @@ class Walk {
       <div class="v3-next" hidden></div>
       <div class="v3-hand"><span class="ppe"></span><span class="held"></span></div>
       <div class="v3-keys" aria-label="Управление"><b>Управление</b>
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> ходить · <kbd>Shift</kbd> быстрее</span>
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> ходить</span>
         <span>мышь — смотреть · <kbd>Esc</kbd> отпустить мышь</span>
         <span><kbd>E</kbd> или щелчок — взять, надеть, повесить, переключить</span>
         <span><kbd>Q</kbd> или правая кнопка — положить</span></div>
-      <button class="v3-click" type="button">Щёлкните по сцене, чтобы управлять</button>
+      <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
       <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
         <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
-        <li><b>E — взять предмет, ещё раз E — применить:</b> надеть перчатки и каску, повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять и отпустить у места.</li>
+        <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
         <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
         <button class="btn primary" type="button" data-intro="ok">Понятно</button></div>`;
     host.appendChild(el);
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
-      held: el.querySelector('.held'), click: el.querySelector('.v3-click'), intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'),
+      held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
+      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
     this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
@@ -49,7 +56,7 @@ class Walk {
     document.addEventListener('keydown', e => {
       if (!live() || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       const c = e.code;
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(c)) {
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(c)) {
         this.keys.add(c);
         if (c.startsWith('Arrow')) e.preventDefault();
         return;
@@ -59,18 +66,11 @@ class Walk {
       else if (c === 'KeyQ') { e.preventDefault(); this.drop(); }
     });
     document.addEventListener('keyup', e => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
-    document.addEventListener('pointerlockchange', () => {
-      this.locked = !!cv() && document.pointerLockElement === cv();
-      if (this.locked) this.lockFails = 0;
-      this.hud.root.classList.toggle('locked', this.locked);
-      this.showClick();
-    });
-    document.addEventListener('pointerlockerror', () => {
-      this.lockFails++;
-      // после Esc браузер ненадолго не даёт захват — со второй неудачи смотрим перетаскиванием
-      if (this.lockFails >= 2) { this.noLock = true; this.showClick(); this.v.app.toast('Мышь не захватывается: смотрите, перетаскивая мышью, действие — щелчок по месту.'); }
-    });
+    // ушли из окна или со вкладки — мышь отпускаем сами, чтобы курсор не остался спрятанным
+    window.addEventListener('blur', () => { this.keys.clear(); this.unlock(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { this.keys.clear(); this.unlock(); } });
+    document.addEventListener('pointerlockchange', () => this.lockChanged(!!cv() && document.pointerLockElement === cv()));
+    document.addEventListener('pointerlockerror', () => this.lockFailed());
     document.addEventListener('mousemove', e => {
       if (!this.locked || !live()) return;
       this.look(e.movementX || 0, e.movementY || 0);
@@ -88,21 +88,52 @@ class Walk {
     this.on = false; this.keys.clear();
     this.hud.root.hidden = true;
     delete this.v.host.dataset.fps;
-    if (this.locked) try { document.exitPointerLock(); } catch (e) { /* уже отпущена */ }
+    this.unlock();
+    if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
+    this.cur = null;
   }
   intro(on) {
     this.hud.intro.hidden = !on;
     if (!on) store.set('ts.polyIntro', '1');
     this.showClick();
   }
-  showClick() { this.hud.click.hidden = !this.on || this.locked || this.noLock || !this.hud.intro.hidden; }
+  // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
+  showClick() {
+    const h = this.hud;
+    h.click.hidden = !this.on || this.locked || this.noLock || !h.intro.hidden;
+    h.clickWhy.textContent = this.lockWait ? 'Браузер ещё не отпустил мышь — щёлкните ещё раз' : 'Esc — снова отпустить мышь';
+  }
   lock() {
-    const c = this.v.renderer.domElement;
-    if (this.noLock || this.locked) return;
+    if (this.noLock || this.locked || !this.v.renderer) return;
+    const req = this.lockReq = {};
     try {
-      const p = c.requestPointerLock();
-      if (p && p.catch) p.catch(() => { this.lockFails++; if (this.lockFails >= 2) { this.noLock = true; this.showClick(); } });
-    } catch (e) { this.noLock = true; this.showClick(); }
+      const p = this.v.renderer.domElement.requestPointerLock();
+      // отказ приходит дважды — обещанием и событием pointerlockerror; lockFailed считает его один раз
+      if (p && p.catch) p.catch(() => this.lockFailed(performance.now(), req));
+    } catch (e) { this.lockFailed(performance.now(), req); }
+  }
+  unlock() {
+    const cv = this.v.renderer && this.v.renderer.domElement;
+    if (cv && document.pointerLockElement === cv) try { document.exitPointerLock(); } catch (e) { /* уже отпущена */ }
+  }
+  // Мышь захвачена или отпущена (событие pointerlockchange)
+  lockChanged(on, now = performance.now()) {
+    if (this.locked && !on) this.unlockedAt = now;
+    this.locked = on;
+    if (on) { this.lockFails = 0; this.lockReq = null; this.lockWait = false; }
+    this.hud.root.classList.toggle('locked', on);
+    this.showClick();
+  }
+  // Браузер отказал в захвате. В паузе после выхода — не считаем, просим щёлкнуть ещё раз;
+  // вне паузы два отказа подряд — смотреть перетаскиванием до конца сеанса
+  lockFailed(now = performance.now(), req = this.lockReq) {
+    if (!req || req !== this.lockReq) return;
+    this.lockReq = null;
+    if (now - this.unlockedAt < LOCK_PAUSE) { this.lockWait = true; this.showClick(); return; }
+    this.lockWait = false;
+    if (++this.lockFails < 2) { this.showClick(); return; }
+    this.noLock = true; this.showClick();
+    this.v.app.toast('Мышь не захватывается: смотрите, перетаскивая мышью, действие — щелчок по месту.');
   }
   reset(start) {
     this.x = start.x; this.z = start.z; this.yaw = start.yaw; this.pitch = -0.12; this.vx = 0; this.vz = 0;
@@ -155,7 +186,7 @@ class Walk {
     const k = this.keys, has = (...a) => a.some(c => k.has(c));
     const f = (has('KeyW', 'ArrowUp') ? 1 : 0) - (has('KeyS', 'ArrowDown') ? 1 : 0);
     const s = (has('KeyD', 'ArrowRight') ? 1 : 0) - (has('KeyA', 'ArrowLeft') ? 1 : 0);
-    const sp = has('ShiftLeft', 'ShiftRight') ? RUN : SPEED, sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+    const sp = SPEED, sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
     let tx = -sy * f + cy * s, tz = -cy * f - sy * s;
     const l = Math.hypot(tx, tz);
     if (l > 1) { tx /= l; tz /= l; }
@@ -184,9 +215,13 @@ class Walk {
   drawHud() {
     const v = this.v, it = v.items, pm = v.app.permit, h = this.hud;
     const set = (key, el, html) => { if (this.hudText[key] !== html) { this.hudText[key] = html; el.innerHTML = html; } };
-    const lab = it ? it.label(this.aim, 'desk') : '';
-    set('aim', h.aim, this.aim ? `${esc(lab)}<small>${this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок'}</small>` : '');
-    h.cross.classList.toggle('hot', !!this.aim);
+    // пустая подпись — прицел на заголовке меню: нажимать там нечего
+    const lab = it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
+    set('aim', h.aim, hot ? `${esc(lab)}<small>${this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок'}</small>` : '');
+    h.cross.classList.toggle('hot', hot);
+    // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
+    const cur = this.noLock && hot ? 'pointer' : 'default';
+    if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');

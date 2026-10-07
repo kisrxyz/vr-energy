@@ -3,24 +3,27 @@
    замок, переносное ограждение, плакаты. Здесь — где предмет физически (стенд, рука, пол, место) и что с ним делают руки:
    взять, отпустить, повесить, надеть, коснуться указателем. Надет ли, висит ли, наложено ли и все правила — в Permit
    (src/core/permit.js); 3D только спрашивает его и показывает итог (sync).
-   Руки: 'desk' — ноутбук (предмет перед камерой, E и Q), 0 и 1 — контроллеры шлема (боковая кнопка — взять и отпустить). */
+   Руки: 'desk' — ноутбук (предмет перед камерой, E и Q), 0 и 1 — контроллеры шлема (боковая кнопка — взять и отпустить).
+   Перчатки и каску в руку не берут: их надевают сразу, как взяли со стенда. */
 import { ITEMS, ITEM, TAKES, parseMount, placeText } from '../core/permit.js';
 import { Sound } from '../ui/sound.js';
 
 const PW = 0.32, PH = 0.2;                         // плакат, м (крупнее настоящего 240×130 мм — читается в шлеме)
-const REACH = { desk: 2.6, xr: 1.7, grab: 0.17, snap: 0.3, wear: 0.24, head: 0.32, tip: 0.1 };
+const REACH = { desk: 2.6, xr: 1.7, grab: 0.17, snap: 0.3, tip: 0.1 };
 // Как предмет держат: смещение и поворот относительно камеры (ноутбук) и контроллера (шлем)
 const HOLD = {
   desk: {
-    poster: [[0.17, -0.17, -0.42], [-0.15, -0.35, 0]], gloves: [[0.2, -0.22, -0.45], [0.5, 0.2, 0]], helmet: [[0.2, -0.22, -0.5], [0.2, 0, 0]],
+    poster: [[0.17, -0.17, -0.42], [-0.15, -0.35, 0]],
     uvn: [[0.16, -0.2, -0.28], [0.12, 0.12, 0]], pz: [[0.16, -0.2, -0.3], [0.1, 0.12, 0]], lock: [[0.16, -0.16, -0.38], [0.2, -0.3, 0]],
     fence: [[0.25, -0.95, -0.55], [0, -0.3, 0]],
   },
   xr: {
-    poster: [[0, 0.02, -0.12], [-0.6, 0, 0]], gloves: [[0, 0, -0.08], [0, 0, 0]], helmet: [[0, 0.05, -0.08], [0, 0, 0]],
+    poster: [[0, 0.02, -0.12], [-0.6, 0, 0]],
     uvn: [[0, 0, 0.05], [0, 0, 0]], pz: [[0, 0, 0.05], [0, 0, 0]], lock: [[0, 0, -0.06], [0, 0, 0]], fence: [[0, -0.6, -0.1], [0, 0, 0]],
   },
 };
+const PPE = { gloves: true, helmet: true };        // надевают сразу, в руку не берут
+const GLOVE = 0xe7c65a, CTRL = 0x202428;           // цвет перчаток; коробки контроллеров в шлеме — без перчаток и в перчатках
 // Как предмет лежит на полу: высота и наклон
 const REST = { poster: [0.006, -Math.PI / 2], gloves: [0.03, 0], helmet: [0.0, 0], uvn: [0.03, 0], pz: [0.03, 0], lock: [0.02, 0], fence: [0, 0] };
 
@@ -77,7 +80,7 @@ class Items {
     const tape = new T.CanvasTexture(tc); tape.colorSpace = T.SRGBColorSpace; tape.wrapS = T.RepeatWrapping;
     this.M = {
       poster: new T.MeshBasicMaterial({ map: tex, toneMapped: false }), back: S(0xd9d6cc),
-      glove: S(0xe7c65a, { roughness: 0.75 }), helmet: S(0xf3f3ee, { roughness: 0.35 }),
+      glove: S(GLOVE, { roughness: 0.75 }), helmet: S(0xf3f3ee, { roughness: 0.35 }),
       rod: S(0xb3342a, { roughness: 0.4 }), handle: S(0x1d2124, { roughness: 0.6 }), head: S(0xe6e8e4, { roughness: 0.4 }),
       metal: S(0xc9ced2, { metalness: 0.7, roughness: 0.3 }), pzRod: S(0xe0a020, { roughness: 0.45 }), pzCable: S(0x9b6a3a, { roughness: 0.5 }),
       brass: S(0xc9a43c, { metalness: 0.6, roughness: 0.35 }), post: S(0x2b2f31), tape: new T.MeshStandardMaterial({ map: tape, roughness: 0.6 }),
@@ -241,7 +244,7 @@ class Items {
   // ---------- синхронизация с Permit ----------
   sync(reset) {
     const pm = this.permit;
-    if (reset || !pm || !pm.active) { for (const x of this.list.values()) this.toHome(x); this.updateFenceProxy(); return; }
+    if (reset || !pm || !pm.active) { for (const x of this.list.values()) this.toHome(x); this.updateFenceProxy(); this.gloveGrips(); return; }
     // сначала ограждение: на нём висят плакаты
     const order = [...this.list.values()].sort((a, b) => (a.it.kind === 'fence' ? -1 : 0) - (b.it.kind === 'fence' ? -1 : 0));
     for (const x of order) {
@@ -253,8 +256,14 @@ class Items {
       if (x.state === 'worn') this.toHome(x);
     }
     this.updateFenceProxy();
+    this.gloveGrips();
   }
   updateFenceProxy() { const f = this.list.get('fence'); this.fenceOn = !!(f && f.state === 'mount'); }
+  // В шлеме: перчатки надеты — коробки контроллеров цвета перчаток
+  gloveGrips(off) {
+    const m = this.v.gripMat, pm = this.permit;
+    if (m) m.color.setHex(!off && pm && pm.active && pm.itemAt('gloves') === 'worn' ? GLOVE : CTRL);
+  }
 
   // ---------- что под прицелом или лучом ----------
   // Подходит ли попадание: держим предмет — места для него (и аппараты, щит); пустая рука — предметы, аппараты, щит
@@ -271,6 +280,9 @@ class Items {
   }
   pick(hits, hand, far) {
     const held = this.heldIn(hand);
+    // меню тележки рисуется поверх всего — и ловится первым, даже если стоит дальше аппарата
+    const mh = hits.find(h => h.object.userData.menu);
+    if (mh && mh.distance <= 9) return { h: mh, type: 'menu', id: null };
     for (const h of hits) {
       const u = h.object.userData;
       if (u.ground || u.wire) continue;
@@ -288,7 +300,7 @@ class Items {
     if (!tgt) return held ? `В руке: ${ITEM[held].title}` : '';
     if (tgt.type === 'item') {
       const at = pm.itemAt(tgt.id), it = ITEM[tgt.id];
-      return `${it.title}${at && at !== 'worn' ? ' ' + placeText(at, 1) : ''} — ${at ? 'снять' : 'взять'}`;
+      return `${it.title}${at && at !== 'worn' ? ' ' + placeText(at, 1) : ''} — ${at ? 'снять' : PPE[it.kind] ? 'надеть' : 'взять'}`;
     }
     if (tgt.type === 'mount') {
       const kind = ITEM[held].kind, ms = pm.mountState(tgt.id);
@@ -306,7 +318,9 @@ class Items {
       return `${el.name}${el.t !== 'cartdisc' ? (sw.on ? ' · включён' : ' · отключён') : ''}${pos} — ${acts.length > 1 ? 'меню' : lowFirst(acts[0] ? acts[0].label : 'переключить')}`;
     }
     if (tgt.type === 'board') return 'Щит с заданием — нажать кнопку';
-    return 'Меню — выбрать';
+    // меню: подпись — пункт под прицелом; над заголовком подписи нет, чтобы не закрывать первый пункт
+    const b = this.v.menuBtn(tgt.h.uv);
+    return b ? b.a.label : '';
   }
 
   // ---------- действия ----------
@@ -315,8 +329,6 @@ class Items {
   act(hand, tgt) {
     const held = this.heldIn(hand);
     if (held) {
-      const kind = ITEM[held].kind;
-      if (kind === 'gloves' || kind === 'helmet') { this.wear(held); return true; }
       if (tgt && tgt.type === 'mount') { this.applyAt(held, tgt.id); return true; }
       if (tgt && tgt.type === 'stand') { this.toHome(this.list.get(held)); Sound.play('grab'); return true; }
       if (tgt && (tgt.type === 'dev' || tgt.type === 'board' || tgt.type === 'menu')) return 'pass';
@@ -329,6 +341,8 @@ class Items {
   grab(id, hand) {
     const x = this.list.get(id), pm = this.permit;
     if (!x || x.state === 'worn') return false;
+    // перчатки и каску надевают сразу, как взяли: без второго нажатия и без поднесения к руке или голове
+    if (PPE[x.it.kind]) return this.wear(id);
     const at = pm.itemAt(id);
     this.toHand(x, hand);
     if (at) {
@@ -340,8 +354,9 @@ class Items {
   }
   wear(id) {
     const r = this.permit.wear(id);
-    if (r.err) { this.say(r.text); return; }
+    if (r.err) { this.say(r.text); return false; }
     Sound.play('wear');
+    return true;
   }
   // Повесить, запереть, наложить, поставить — или коснуться указателем
   applyAt(id, mount) {
@@ -419,7 +434,7 @@ class Items {
     const id = this.heldIn(hand);
     if (!id) return null;
     const x = this.list.get(id), kind = ITEM[id].kind;
-    if (kind === 'gloves' || kind === 'helmet' || kind === 'uvn') return null;
+    if (kind === 'uvn') return null;
     const p = x.obj.localToWorld(new this.T.Vector3(...(x.tip || x.center)));
     let best = null, bd = kind === 'fence' ? 1.2 : REACH.snap;
     const consider = (mid, wp) => { const d = wp.distanceTo(p); if (d < bd) { bd = d; best = { type: 'mount', id: mid, wp }; } };
@@ -441,20 +456,13 @@ class Items {
     if (home && home.distanceTo(p) < 0.4) return { type: 'stand' };
     return null;
   }
-  // Каждый кадр в шлеме: надеть, поднеся к руке или голове; коснуться указателем; подсветить место
+  // Каждый кадр в шлеме: коснуться указателем; подсветить место
   xrFrame(ctrls) {
-    const T = this.T, head = this.v.camera.getWorldPosition(new T.Vector3());
     let ghost = null;
     for (const info of ctrls) {
       const id = this.heldIn(info.i);
       if (!id || !info.src) continue;
-      const x = this.list.get(id), kind = ITEM[id].kind, p = x.obj.localToWorld(new T.Vector3(...x.center));
-      if (kind === 'helmet' && p.distanceTo(head) < REACH.head) { this.wear(id); continue; }
-      if (kind === 'gloves') {
-        const other = ctrls.find(o => o !== info && o.src);
-        if (other && other.grip.getWorldPosition(new T.Vector3()).distanceTo(p) < REACH.wear) { this.wear(id); continue; }
-      }
-      if (kind === 'uvn') this.tipTouch(x);
+      if (ITEM[id].kind === 'uvn') this.tipTouch(this.list.get(id));
       const s = this.snapFor(info.i, null);
       if (s && s.wp) ghost = s;
     }
@@ -507,6 +515,7 @@ class Items {
     }
   }
   dispose() {
+    this.gloveGrips(true);
     this.v.scene.remove(this.ghost);
     for (const x of this.list.values()) if (x.obj.parent) x.obj.parent.remove(x.obj);
   }

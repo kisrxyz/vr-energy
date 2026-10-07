@@ -11,6 +11,8 @@ import { makeLibrary } from './ui/myschemes.js';
 import { Diag } from './ui/diag.js';
 import { Sound } from './ui/sound.js';
 import { View3D } from './view3d/view3d.js';
+import { Demo } from './ui/demo.js';
+import { Exam } from './ui/exam.js';
 
 /* ===== Приложение: режимы, правка схемы, связка движка с 2D, 3D и панелями =====
    source — откуда схема: ключ готовой схемы (SAMPLES) или 'my:<id>' — запись в «Моих схемах» (src/ui/myschemes.js).
@@ -38,6 +40,12 @@ const app = Object.assign({
     this.setScheme(SAMPLES[0].make(), 'ps110');
     this.setMode(['edit', 'train', '3d'].includes(hash) ? hash : 'train', true);
     if (moved) this.toast('«Моя схема» перенесена в список «Мои схемы» (кнопка «Схемы»).', 'ok');
+    // экзамен с протоколом (src/ui/exam.js): прерванный перезагрузкой — в журнал «прерван»
+    this.exam = new Exam(this);
+    this.exam.init();
+    // «Показ» для заказчика: кнопка вверху, ?demo=1 и ?demo=auto (src/ui/demo.js)
+    this.demo = new Demo(this);
+    this.demo.init();
     setInterval(() => this.tick(), 1000);
   },
   userGesture() { Sound.init(); },
@@ -53,7 +61,13 @@ const app = Object.assign({
       (my.length ? `<optgroup label="Мои схемы">${my.map(x => opt('my:' + x.id, x.title)).join('')}</optgroup>` : '');
     sel.value = this.source;
   },
+  examLocked() {
+    if (!this.exam || !this.exam.active()) return false;
+    this.toast('Во время экзамена схема и редактор недоступны. Выйти — «Прервать экзамен».', 'warn');
+    return true;
+  },
   chooseScheme(v) {
+    if (this.examLocked()) { this.fillSchemeSelect(); return; }
     if (v.startsWith('my:')) {
       const s = this.lib.load(v.slice(3));
       if (s) this.setScheme(s, v);
@@ -95,7 +109,8 @@ const app = Object.assign({
   },
   // Первая правка готовой схемы: копия в «Моих схемах», дальше правки идут в неё
   markMine() {
-    if (this.isMine()) return;
+    // в показе правки живут только в памяти: «Мои схемы» показ не трогает
+    if (this.isMine() || this.demoOn) return;
     const base = this.scheme.title;
     this.scheme.title = `${base} (копия)`;
     const id = this.lib.add(this.scheme);
@@ -128,6 +143,7 @@ const app = Object.assign({
   // ---------- режимы ----------
   setMode(m, force) {
     if (m === this.mode && !force) return;
+    if (m === 'edit' && this.examLocked()) return;
     const prev = this.mode;
     if (prev === 'edit' && m !== 'edit') this.tr.load(this.scheme);
     if (m === 'edit') {
@@ -291,7 +307,12 @@ const app = Object.assign({
     }
     if (type === 'task') {
       this.renderTask(); this.renderRec();
-      if (d.done && d.run) { Sound.play(d.run.grade.tone === 'good' ? 'ok' : 'fail'); setTimeout(() => this.showReport(d.run), 600); }
+      if (d.done && d.run) {
+        Sound.play(d.run.grade.tone === 'good' ? 'ok' : 'fail');
+        // в экзамене отчёта с эталоном нет: результат — в протокол
+        if (this.exam && this.exam.active()) { const r = d.run; setTimeout(() => this.exam.onDone(r), 500); }
+        else setTimeout(() => this.showReport(d.run), 600);
+      }
       if (this.v3 && this.v3.ready) this.v3.drawBoard();
       return;
     }
@@ -387,7 +408,7 @@ const app = Object.assign({
     const clip = Ed.copyGroup(this.scheme, sel);
     if (!clip) return false;
     this.clip = clip;
-    store.set('ts.clip', JSON.stringify(clip));
+    if (!this.demoOn) store.set('ts.clip', JSON.stringify(clip));
     this.toast(`Скопировано: ${countText(clip.els.length, clip.wires.length)}. Ctrl+V — вставить (и в другую схему).`);
     return true;
   },
@@ -526,10 +547,13 @@ const app = Object.assign({
       case 'ack': if (!tr.ack()) this.toast('Сигналов нет.'); break;
       case 'reset': if (!tr.resetToNormal()) this.toast('Сначала завершите задание.', 'warn'); break;
       case 'task-start': this.startTask(this.scheme.tasks[this.taskIdx]); break;
-      case 'task-hint': if (!tr.hint()) this.toast('Все эталонные шаги выполнены — проверьте положение аппаратов.'); break;
+      case 'task-hint':
+        if (this.exam && this.exam.active()) { this.toast('В экзамене подсказок нет.', 'warn'); break; }
+        if (!tr.hint()) this.toast('Все эталонные шаги выполнены — проверьте положение аппаратов.'); break;
+      case 'exam': case 'exam-next': case 'exam-abort': case 'exam-log': this.exam.action(act); break;
       case 'task-stop': tr.stopTask(); break;
       case 'report': this.showReport(tr.run); break;
-      case 'task-again': if (tr.run) this.startTask(tr.run.task); break;
+      case 'task-again': if (tr.run && !(this.exam && this.exam.active())) this.startTask(tr.run.task); break;
       case 'task-exit': tr.exitTask(); this.renderSide(); break;
       case 'rec-start': tr.startRec(); break;
       case 'rec-save': this.showSaveTask(); break;
@@ -549,6 +573,7 @@ const app = Object.assign({
   },
   modalAction(m, b) {
     if (m === 'close') { this.closeModal(); return; }
+    if (m.startsWith('ex-')) { this.exam.modal(m, b); return; }
     // отчёт VR-теста и журнал ошибок (справка); очистка — только со второго нажатия
     if (m === 'vr-copy') { this.copyText(Diag.report(APP_VER), 'Отчёт VR-теста скопирован — вставьте его в сообщение.'); return; }
     if (m === 'vr-dl') { this.saveFile(`Отчёт VR-теста ${new Date().toISOString().slice(0, 10)}.txt`, Diag.report(APP_VER), 'text/plain'); return; }
@@ -662,6 +687,7 @@ const app = Object.assign({
     store.set('ts.theme', next);
   },
   tick() {
+    if (this.exam) this.exam.tick();
     if (this.tr.run && !this.tr.run.done) {
       this.renderTaskStats();
       if (this.v3 && this.v3.ready && this.mode === '3d') this.v3.drawBoard();

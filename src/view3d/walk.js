@@ -156,6 +156,30 @@ class Walk {
     this.yaw -= dx * SENS;
     this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - dy * SENS));
   }
+  // Откуда смотреть на точку p (мир), чтобы под прицелом было нужное (want(aim) → true): сначала — повернуться на месте,
+  // потом (если не stay) — места вокруг точки на расстояниях dists, где можно стоять. Возвращает { x, z, yaw, pitch } или null.
+  // Место и взгляд не меняет — нужен автопоказу (src/ui/demo.js) и автопроходке (tools/e2e-page.js)
+  seek(p, want, stay, dists = [1.1, 0.8, 1.5, 1.9, 2.3, 3, 4]) {
+    const save = [this.x, this.z, this.yaw, this.pitch];
+    const look = (x, z) => {
+      const dx = p.x - x, dz = p.z - z;
+      this.x = x; this.z = z; this.yaw = Math.atan2(-dx, -dz); this.pitch = Math.atan2(p.y - EYE, Math.hypot(dx, dz));
+      this.apply(); this.updateAim();
+      return want(this.aim) ? { x, z, yaw: this.yaw, pitch: this.pitch } : null;
+    };
+    let pose = look(this.x, this.z);
+    if (!pose && !stay) {
+      search: for (const d of dists) for (let k = 0; k < 24; k++) {
+        const a = k / 24 * Math.PI * 2, x = p.x + Math.sin(a) * d, z = p.z + Math.cos(a) * d;
+        if (this.world.walkable(x, z, R) && (pose = look(x, z))) break search;
+      }
+    }
+    [this.x, this.z, this.yaw, this.pitch] = save;
+    this.apply(); this.updateAim();
+    return pose;
+  }
+  // Встать и посмотреть (прямо, без анимации)
+  pose(q) { this.x = q.x; this.z = q.z; this.yaw = q.yaw; this.pitch = q.pitch; this.vx = 0; this.vz = 0; this.apply(); this.updateAim(); }
 
   // ---------- мышь по холсту (view3d передаёт сюда, пока полигон открыт от первого лица) ----------
   pointer(e) {

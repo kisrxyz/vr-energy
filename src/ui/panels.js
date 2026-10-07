@@ -8,6 +8,8 @@ import { Diag } from './diag.js';
 /* ===== §5. Панели и окна ===== */
 // «5 элементов, 1 провод» — для выделения и буфера
 const plural = (n, f) => f[n % 10 === 1 && n % 100 !== 11 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2];
+// «Авария: …»: вид ошибки не повторяем, если текст им уже начинается («Авария: Авария: …»)
+const errText = (kind, text) => { const t = String(text); return t.startsWith(kind + ':') || (kind === 'Порядок' && t.startsWith('Нарушение порядка:')) ? t : `${kind}: ${t}`; };
 const countText = (ne, nw) => `${ne} ${plural(ne, ['элемент', 'элемента', 'элементов'])}, ${nw} ${plural(nw, ['провод', 'провода', 'проводов'])}`;
 const Panels = {
   // ---------- уведомления ----------
@@ -241,12 +243,13 @@ const Panels = {
         <li>Несколько элементов: Shift или Ctrl + перетаскивание по пустому месту — рамка, Shift или Ctrl + щелчок — добавить или убрать (на телефоне — кнопка «Выделение»). Повторяющиеся ячейки — Ctrl+C, Ctrl+V.</li></ul></div>`;
   },
   trainSideHTML() {
-    const welcome = this.welcomeSeen ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
+    // приветствие — для первого входа; в показе ведущий рассказывает сам
+    const welcome = this.welcomeSeen || this.demoOn ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
       <ol><li>Нажмите на выключатель или разъединитель: он переключится, а цвет шин покажет, где напряжение.</li>
       <li>Выберите задание и нажмите «Начать» — программа оценит переключения.</li>
       <li>Вкладка «3D и VR» — та же схема в объёме, в шлеме Quest — в VR.</li></ol>
       <div class="row"><button class="btn" data-act="welcome-close">Понятно</button><button class="btn" data-act="help">Подробнее</button></div></div></div>`;
-    const o = this.tr.opt;
+    const o = this.tr.opt, exam = !!(this.exam && this.exam.active()), dis = exam ? ' disabled' : '';
     // VR-полигон: предметы берут руками в 3D — на ноутбуке клавишами, в шлеме контроллерами
     const poly = this.scheme.room ? `<div class="sec"><h3>VR-полигон</h3><p>Помещение ЗРУ-10 кВ: ячейки КРУ, у входа — стенд со средствами защиты и плакатами. Предметы берут руками во вкладке «3D и VR»: на ноутбуке WASD и мышь, E — взять или применить, Q — положить; в шлеме — боковая кнопка.</p>
       ${this.mode !== '3d' ? '<div class="row"><button class="btn primary" data-act="go3d">Открыть 3D</button></div>' : ''}</div>` : '';
@@ -258,9 +261,9 @@ const Panels = {
       <div class="sec"><h3>Инструменты</h3>${hands ? '<p class="muted">Указатель напряжения и переносное заземление — предметы на стенде у входа: возьмите их руками (E на ноутбуке, боковая кнопка в шлеме).</p>' : ''}
         <div class="row">${tools}
         <button class="btn" data-act="ack" id="ackBtn" ${this.tr.hasAlarms() ? '' : 'disabled'}>Квитировать</button>
-        <button class="btn" data-act="reset">Нормальный режим</button></div>
-        <label class="switch"><span>Блокировки<small>Не дают выполнить опасную операцию</small></span><input type="checkbox" data-opt="interlocks" ${o.interlocks ? 'checked' : ''}></label>
-        <label class="switch"><span>Проверка напряжения перед ЗН<small>В свободной тренировке; в задании — по эталону</small></span><input type="checkbox" data-opt="requireCheck" ${o.requireCheck ? 'checked' : ''}></label>
+        ${exam ? '' : '<button class="btn" data-act="reset">Нормальный режим</button>'}</div>
+        <label class="switch"><span>Блокировки<small>${exam ? 'Задал экзаменатор' : 'Не дают выполнить опасную операцию'}</small></span><input type="checkbox" data-opt="interlocks" ${o.interlocks ? 'checked' : ''}${dis}></label>
+        <label class="switch"><span>Проверка напряжения перед ЗН<small>В свободной тренировке; в задании — по эталону</small></span><input type="checkbox" data-opt="requireCheck" ${o.requireCheck ? 'checked' : ''}${dis}></label>
       </div>
       <div class="sec"><h3>Журнал <span class="chip" id="logCount">0</span></h3><ul class="log" id="log"></ul></div>
       <div class="sec" id="recSec"></div>`;
@@ -268,6 +271,8 @@ const Panels = {
   renderTask() {
     const box = document.getElementById('taskSec');
     if (!box) return;
+    // экзамен: задание N из M, без подсказок и эталона (src/ui/exam.js)
+    if (this.exam && this.exam.active()) { box.innerHTML = this.exam.taskHTML(); return; }
     const tr = this.tr, run = tr.run, tasks = this.scheme.tasks;
     if (run && !run.done) {
       const g = tr.grade(run);
@@ -286,11 +291,11 @@ const Panels = {
       return;
     }
     if (tr.rec) { box.innerHTML = '<h3>Задание</h3><p>Идёт запись эталона — задания недоступны.</p>'; return; }
-    if (!tasks.length) { box.innerHTML = '<h3>Задание</h3><p>У этой схемы пока нет заданий. Запишите эталон в режиме инструктора ниже.</p>'; return; }
+    if (!tasks.length) { box.innerHTML = '<h3>Задание</h3><p>У этой схемы пока нет заданий. Запишите эталон в режиме инструктора ниже.</p><div class="row"><button class="btn" data-act="exam" title="Экзамен с протоколом: схема, задания, экзаменуемый">Экзамен</button></div>'; return; }
     if (this.taskIdx >= tasks.length) this.taskIdx = 0;
     box.innerHTML = `<h3>Задание</h3><select class="inp" id="taskSel" aria-label="Задание">${tasks.map((t, i) => `<option value="${i}" ${i === this.taskIdx ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select>
       <p>${esc(tasks[this.taskIdx].desc)}</p>
-      <div class="row"><button class="btn primary" data-act="task-start">Начать задание</button></div>
+      <div class="row"><button class="btn primary" data-act="task-start">Начать задание</button><button class="btn" data-act="exam" title="Экзамен с протоколом: схема, задания, экзаменуемый">Экзамен</button></div>
       <p>Или тренируйтесь свободно: нажимайте на аппараты на схеме.</p>`;
   },
   renderTaskStats() {
@@ -330,6 +335,7 @@ const Panels = {
   renderRec() {
     const box = document.getElementById('recSec');
     if (!box) return;
+    if (this.exam && this.exam.active()) { box.innerHTML = ''; return; }
     const r = this.tr.rec;
     if (this.tr.run && !this.tr.run.done) { box.innerHTML = '<h3>Режим инструктора</h3><p>Доступен после завершения задания.</p>'; return; }
     // запись не умеет мероприятия допуска (СИЗ, плакаты, замок, порядок этапов) — задание вышло бы без порядка
@@ -376,10 +382,12 @@ const Panels = {
 
   showReport(run) {
     if (!run || !run.grade) return;
+    // в экзамене эталон не показываем: итог — протокол
+    if (this.exam && this.exam.active()) return;
     const tr = this.tr, g = run.grade, ms = run.measures || null;
     const kindName = { accident: 'Авария', kz: 'КЗ', blocked: 'Блокировка', supply: 'Перерыв питания', proc: 'Порядок', safety: 'Охрана труда' };
     // ошибки полигона объясняют, почему это опасно (тексты — src/core/explain.js, проверяет преподаватель)
-    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${kindName[e.kind] || e.kind}: ${esc(e.text)}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
+    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${esc(errText(kindName[e.kind] || e.kind, e.text))}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
     const mine = run.ops.length ? '<ol>' + run.ops.map(o => `<li><span class="mono">${fmtTime(o.t)}</span> ${esc(capFirst(tr.stepText(o)))}</li>`).join('') + '</ol>' : '<p>Действий не было.</p>';
     const ref = '<ol>' + run.task.steps.map(s => `<li>${esc(capFirst(tr.stepText(s)))}</li>`).join('') + '</ol>';
     const mark = m => (m.sat && !m.flagged ? '✓' : m.sat ? '!' : '—');
@@ -394,7 +402,7 @@ const Panels = {
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
       `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, '', 'Ошибки:',
-      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${kindName[e.kind] || e.kind}: ${e.text}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
+      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
       ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
       '', 'Действия:',
       ...run.ops.map((o, i) => `${i + 1}. ${fmtTime(o.t)} ${capFirst(tr.stepText(o))}`),
@@ -502,6 +510,18 @@ const Panels = {
       <div><b>Три режима</b><ul class="issues"><li><b>Редактор</b> — собрать схему из элементов: палитра слева, провода тянутся от точек подключения.</li>
       <li><b>Тренажёр</b> — переключения по щелчку. Цвет показывает напряжение, землю и положение аппаратов. Задания оцениваются, в конце — отчёт.</li>
       <li><b>3D и VR</b> — та же схема в объёме: щелчок мышью или луч контроллера переключает аппараты. Кнопка «Пешком» — пройти по площадке от первого лица.</li></ul></div>
+      <div><b>Показ для заказчика</b><ol class="issues">
+      <li>Кнопка «Показ» вверху (или ссылка с <span class="mono">?demo=1</span>): шаги на 10 минут, у каждого — «Что сказать» для ведущего.</li>
+      <li>«Дальше» и «Назад» сами ставят схему, вид, задание и блокировки шага; «Подготовить» — вернуть шаг к началу, если нажали не то.</li>
+      <li>Заказчику внизу сцены — короткая подпись. «Что сказать» сворачивается кнопкой ▾.</li>
+      <li>«Автопоказ» (или <span class="mono">?demo=auto</span>) — шаги сами за 2–3 минуты, удобно записать видео с экрана; любое нажатие — пауза.</li>
+      <li>Показ ничего не сохраняет: «Мои схемы» не меняются, после «Выйти» вернутся прежние схема, вид и блокировки.</li>
+      <li>3D-шаги лучше вести с ноутбука; в шлеме Quest — та же ссылка, «Войти в VR».</li></ol></div>
+      <div><b>Экзамен с протоколом</b><ol class="issues">
+      <li>«Экзамен» в панели заданий: схема, 1–3 задания, вид (проверка навыков или противоаварийная тренировка), блокировки, лимит времени, порог, данные экзаменуемого.</li>
+      <li>В экзамене нет подсказок, эталона, «следующего мероприятия» полигона, редактора и смены схемы; выйти — только «Прервать экзамен».</li>
+      <li>В конце — протокол «Сдал / Не сдал»: «Печать или PDF» печатает только его, на лист A4. Журнал экзаменов — там же, «Скачать CSV» открывается в Excel.</li>
+      <li>Журнал и данные экзаменуемых хранятся только в этом браузере. Перезагрузка посреди экзамена — запись «прерван».</li></ol></div>
       <div><b>Пешком (площадка и полигон)</b><ul class="issues">
       <li>На площадке — кнопка «Пешком» вверху (обратно — «Обзор»): вы у ворот ограждения, лицом к подстанции. В VR-полигоне пешком — сразу.</li>
       <li>Щелчок по сцене — управление мышью, WASD — ходить, мышь — смотреть, Esc — отпустить мышь. Сквозь аппараты, ограждение и стены не пройти, под проводами и шинами — можно.</li>
@@ -541,4 +561,4 @@ const Panels = {
   },
 };
 
-export { Panels, countText };
+export { Panels, countText, errText };

@@ -11,6 +11,11 @@ import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 import * as Ed from '../src/core/edit.js';
+import * as Plan from '../src/core/plan.js';
+import * as Demo from '../src/core/demo.js';
+import * as Exam from '../src/core/exam.js';
+import * as Models3d from './models3d.js';
+import { readFileSync } from 'node:fs';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -1025,6 +1030,229 @@ function doMeasure(tr, pm, m) {
   // удаление: группа уходит, провод к шине остаётся
   Ed.deleteGroup(s, sel);
   ok(!s.els.some(e => sel.els.includes(e.id)) && !s.wires.some(w => sel.wires.includes(w.id)) && s.wires.includes(busWire), 'delete: the group goes, the bus wire stays');
+}
+{
+  console.log('Plan (src/core/plan.js): every task of every scheme — all steps and measures covered, run through the engine gives 100');
+  for (const smp of E.SAMPLES) {
+    smp.make().tasks.forEach((t0, ti) => {
+      const s = smp.make(), t = s.tasks[ti], tr = new E.Trainer(), pm = tr.use(new Permit());
+      tr.load(s);
+      const plan = Plan.planTask(s, t), tag = `${smp.key} #${ti + 1}`;
+      ok(plan.length >= t.steps.length && t.steps.every(st => plan.some(a => a.step === st)), `${tag}: every reference step has an action (${plan.length} for ${t.steps.length})`);
+      ok(plan.every(a => ['switch', 'rack', 'check', 'pz', 'wear', 'place', 'take'].includes(a.do)), `${tag}: only known actions`);
+      // тележка — пунктом меню, как у человека
+      ok(plan.filter(a => a.do === 'rack' || (a.do === 'switch' && E.TYPES[s.els.find(e => e.id === a.id).t].cart)).every(a => a.menu && tr.actions(a.id).length > 1), `${tag}: trolley actions go through its menu`);
+      tr.startTask(t);
+      for (const a of plan) {
+        if (a.menu) ok(tr.actions(a.id).some(x => x.label === a.menu), `${tag}: menu has «${a.menu}»`);
+        const r = Plan.runAction(tr, pm, a);
+        if (!r || r.err || r.blocked || (r.viol && r.viol.kind)) ok(false, `${tag}: ${a.do} ${a.id || a.item || a.target} :: ${r && r.text}`);
+      }
+      ok(tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.run.grade.verdict === 'Выполнено без ошибок', `${tag}: 100, «Выполнено без ошибок» (${tr.run.grade.score}, ${tr.run.grade.verdict})`);
+      if (t.measures) ok(t.measures.every(m => pm.sat(m)) || (tr.run.measures || []).every(m => m.sat && !m.flagged), `${tag}: every measure done in order`);
+      ok(Plan.actionText(tr, plan[0]).length > 3 && plan.every(a => !/undefined|NaN/.test(Plan.actionText(tr, a))), `${tag}: action texts read well («${Plan.actionText(tr, plan[0])}»)`);
+    });
+  }
+  // мероприятия без шагов (задание полигона из файла без steps): план по этапам тоже даёт 100
+  const s = E.SAMPLES.find(x => x.key === 'poly').make(), t = Object.assign({}, s.tasks[0], { steps: [] });
+  const tr = new E.Trainer(), pm = tr.use(new Permit());
+  tr.load(s);
+  const plan = Plan.planTask(s, t);
+  ok(t.measures.every(m => plan.some(a => a.step === m)), 'measures-only plan: every measure has an action');
+  tr.startTask(t);
+  plan.forEach(a => Plan.runAction(tr, pm, a));
+  ok(tr.run.done && tr.run.completed && tr.run.errors.length === 0, 'measures-only plan: done without errors');
+  // снять плакат и замок — тот предмет, что висит
+  const p2 = Plan.planTask(s, { steps: [{ op: 'hang', poster: 'nevkl', at: 'drive:3' }, { op: 'hang', poster: 'nevkl', at: 'drive:4' }, { op: 'unhang', poster: 'nevkl', at: 'drive:4' }, { op: 'lock', at: 'drive:3' }, { op: 'unlock', at: 'drive:3' }] });
+  ok(p2.map(a => a.do + ':' + a.item).join() === 'place:nevkl1,place:nevkl2,take:nevkl2,place:lock,take:lock', 'unhang and unlock take the item that hangs there');
+}
+{
+  console.log('Demo (src/core/demo.js): every step refers to a scheme, task and elements that exist; step 3 gives an accident; autoplay 2–3 min');
+  const has = n => E.SAMPLES.some(s => s.key === n);
+  const steps = Demo.demoSteps(has);
+  ok(steps.length >= 7 && steps.length <= 10 && Demo.STEPS.filter(s => !s.needs || has(s.needs)).length === steps.length, `steps shown: ${steps.length} (without missing parts)`);
+  ok(Demo.demoSteps(() => false).every(s => !s.needs), 'a step without its part is not shown');
+  ok(new Set(Demo.STEPS.map(s => s.id)).size === Demo.STEPS.length, 'step ids are unique');
+  const planLen = {};
+  for (const st of steps) {
+    const smp = E.SAMPLES.find(x => x.key === st.prepare.scheme);
+    ok(!!smp, `${st.id}: scheme ${st.prepare.scheme} exists`);
+    if (!smp) continue;
+    const s = smp.make(), names = new Set(s.els.map(e => e.name));
+    ok(['train', '3d', 'edit'].includes(st.prepare.mode) && st.title && st.caption && st.say && st.say.length < 400, `${st.id}: mode, title, caption and a short «что сказать»`);
+    ok(st.caption.length <= 110, `${st.id}: caption fits one line on the stage (${st.caption.length})`);
+    if (st.prepare.task != null) ok(!!s.tasks[st.prepare.task], `${st.id}: task #${st.prepare.task + 1} exists`);
+    for (const n of Object.keys(st.prepare.bus || {})) ok(names.has(n) && E.TYPES[s.els.find(e => e.name === n).t].cls === 'bus', `${st.id}: bus ${n} exists`);
+    for (const a of st.auto || []) for (const n of [a.click, a.menu, a.go && a.go.dev].filter(Boolean)) ok(names.has(n), `${st.id}: element «${n}» exists`);
+    if (st.prepare.select) {
+      for (const [n, len] of Object.entries(st.prepare.bus || {})) s.els.find(e => e.name === n).p.len = len;
+      const r = Ed.inRect(s, ...st.prepare.select);
+      ok(r.els.length + r.wires.length === st.expect.selected, `${st.id}: the frame selects ${st.expect.selected} (${r.els.length} elements, ${r.wires.length} wires)`);
+      // копия ячейки на удлинённую шину — новая нагрузка под напряжением, её выключатель её отключает
+      const clip = Ed.copyGroup(s, r), paste = st.auto.find(a => a.paste).paste;
+      const top = clip.wires.flatMap(w => [w.a, w.b]).reduce((m, q) => (!m || q[1] < m[1] ? q : m), null);
+      const res = Ed.pasteGroup(s, clip, paste[0] - top[0], paste[1] - top[1]);
+      const tr = new E.Trainer(); tr.load(s);
+      const load = res.els.find(id => E.TYPES[s.els.find(e => e.id === id).t].consumer), brk = res.els.find(id => s.els.find(e => e.id === id).t === 'breaker');
+      ok(tr.state.loads.has(load) && tr.state.loads.size === 5, `${st.id}: the pasted cell on the bus is powered right away`);
+      tr.operate(brk);
+      ok(!tr.state.loads.has(load) && tr.state.loads.size === 4, `${st.id}: its breaker switches the new load off`);
+    }
+    if (st.id === 'task') planLen[st.id] = Plan.planTask(s, s.tasks[st.prepare.task]).length;
+  }
+  // шаг 3: подготовленное состояние + операция — авария (с блокировками — блокировка)
+  const acc = steps.find(s => s.id === 'accident');
+  for (const il of [false, true]) {
+    const s = E.SAMPLES.find(x => x.key === acc.prepare.scheme).make(), tr = new E.Trainer(); tr.load(s);
+    tr.opt.interlocks = il === true ? true : acc.prepare.interlocks !== false;
+    const r = tr.operate(s.els.find(e => e.name === acc.auto.find(a => a.click).click).id);
+    if (!il) ok(acc.prepare.interlocks === false && r.ok && r.viol && r.viol.kind === 'accident' && r.tripped.length > 0, 'step 3: prepared state + operation — accident, protection trips');
+    else ok(r.blocked && /Блокировка/.test(r.text), 'step 3 with interlocks — blocked');
+  }
+  // шаг 4: задание по эталону — 100
+  const tk = steps.find(s => s.id === 'task'), s4 = E.SAMPLES.find(x => x.key === tk.prepare.scheme).make(), tr4 = new E.Trainer(), pm4 = tr4.use(new Permit());
+  tr4.load(s4); tr4.startTask(s4.tasks[tk.prepare.task]);
+  Plan.planTask(s4, s4.tasks[tk.prepare.task]).forEach(a => Plan.runAction(tr4, pm4, a));
+  ok(tr4.run.done && tr4.run.grade.score === 100, 'step 4: the task by its reference — 100');
+  const ms = Demo.autoMs(steps, planLen), full = Demo.autoMs(Demo.STEPS, planLen);
+  ok(full >= 120000 && full <= 175000, `autoplay with every part: ${Math.round(full / 1000)} s (2–3 min)`);
+  ok(ms >= 100000, `autoplay now: ${Math.round(ms / 1000)} s`);
+  ok(Demo.pilotLines().every(([k, v]) => k && v) && Demo.pilotLines({ offer: '', term: ' ', contact: 'x@y' }).length === 1, 'pilot: only filled fields are shown');
+}
+{
+  console.log('Exam (src/core/exam.js): verdict by threshold, protocol numbers, protocol text, CSV, journal with a broken record');
+  // настоящие прогоны: задание 1 по эталону, задание 2 с аварией (блокировки выключены) и без выполнения
+  const runTask = (key, ti, mistake) => {
+    const s = E.SAMPLES.find(x => x.key === key).make(), tr = new E.Trainer(); tr.load(s);
+    const t = s.tasks[ti]; tr.startTask(t);
+    if (mistake) { tr.opt.interlocks = false; tr.operate(s.els.find(e => e.name === mistake).id); tr.stopTask(); }
+    else Plan.planTask(s, t).forEach(a => Plan.runAction(tr, null, a));
+    return { s, run: tr.run };
+  };
+  const a = runTask('ps110', 0), b = runTask('ps110', 1, 'ТР-10 Т1');
+  const cfg = { kind: 'skills', schemeTitle: a.s.title, source: 'ps110', person: { fio: 'Петров П. П.', post: 'электромонтёр', dept: 'ОВБ', org: 'ТОО «Сети»' },
+    tasks: a.s.tasks.map(t => ({ id: t.id, title: t.title })), interlocks: true };
+  const t0 = new Date(2026, 9, 7, 14, 5).getTime();
+  const x1 = Exam.newExam(cfg, t0);
+  x1.results = [Exam.taskResult(a.run), Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x1) === 'passed' && Exam.failReasons(x1).length === 0, 'both tasks by reference — «Сдал»');
+  const x2 = Exam.newExam(cfg, t0);
+  x2.results = [Exam.taskResult(a.run), Exam.taskResult(b.run)];
+  ok(Exam.examStatus(x2) === 'failed' && Exam.failReasons(x2).some(r => /авария/.test(r)) && Exam.failReasons(x2).some(r => /не выполнено/.test(r)), 'accident and not completed — «Не сдал» with reasons: ' + Exam.failReasons(x2).join('; '));
+  const x3 = Exam.newExam(Object.assign({}, cfg, { minScore: 95 }), t0);
+  const low = Exam.taskResult(a.run); low.score = 90;
+  x3.results = [low, Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x3) === 'failed' && /ниже 95/.test(Exam.failReasons(x3)[0]), 'score below the threshold — «Не сдал»');
+  const x4 = Exam.newExam(cfg, t0); x4.results = [Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x4) === 'failed' && /не начато/.test(Exam.failReasons(x4).join()), 'a task not started — «Не сдал»');
+  Exam.finishExam(x4, t0 + 600000, true);
+  ok(x4.status === 'aborted' && Exam.protocol(x4).verdict === 'Прерван', 'aborted — «Прерван»');
+  ok(Exam.newExam(cfg).minScore === 80 && Exam.newExam(Object.assign({}, cfg, { tasks: [1, 2, 3, 4].map(i => ({ id: 't' + i, title: 'З' + i })) })).tasks.length === 3, 'threshold 80 by default; at most 3 tasks');
+  // номера протоколов
+  const d = new Date(2026, 9, 7, 9).getTime();
+  ok(Exam.protoNo(d, []) === '20261007-01', 'first protocol of the day: 20261007-01');
+  ok(Exam.protoNo(d, [{ no: '20261007-01' }, { no: '20261007-09' }, { no: '20261006-12' }, { no: 'мусор' }]) === '20261007-10', 'next number of the day, other days ignored');
+  // протокол без «undefined» и пустых полей
+  Exam.finishExam(x2, t0 + 1260000); x2.no = '20261007-01';
+  const P = Exam.protocol(x2), txt = Exam.protocolText(x2);
+  ok(P.verdict === 'Не сдал' && P.rows.length === 2 && P.rows[1].errors.includes('Авария:') && !P.rows[1].errors.includes('Авария: Авария'), 'protocol: «Не сдал», the accident in task 2 (kind not repeated)');
+  ok(!/undefined|NaN|null|\[object/.test(txt) && P.fields.every(([k, v]) => k && String(v).trim()), 'protocol text: no undefined/NaN/null, every field filled');
+  ok(txt.includes('Протокол № 20261007-01') && txt.includes('07.10.2026') && txt.includes('14:05–14:26') && txt.includes('Председатель комиссии') && txt.includes('Предварительная форма'), 'protocol: number, date, time, signatures, footnote');
+  const xe = Exam.newExam({ person: {}, tasks: [{ id: 'a', title: 'А' }] }, t0);
+  ok(!/undefined|NaN|null/.test(Exam.protocolText(xe)) && Exam.protocol(xe).fields.every(([, v]) => String(v).trim()), 'empty examinee fields — dashes, not blanks');
+  ok(Exam.protocol(Exam.newExam(Object.assign({}, cfg, { kind: 'drill' }), t0)).kind === 'Противоаварийная тренировка', 'kind changes only the title');
+  // CSV
+  const xq = Exam.newExam(Object.assign({}, cfg, { person: { fio: 'Иванов; "Ваня"\nмладший', post: 'мастер', dept: '', org: 'АО' } }), t0);
+  xq.results = [Exam.taskResult(a.run), Exam.taskResult(b.run)]; Exam.finishExam(xq, t0 + 60000); xq.no = '20261007-02';
+  const csv = Exam.examsCSV([x2, xq]), lines = csv.slice(1).split('\r\n');
+  ok(csv.charCodeAt(0) === 0xFEFF && lines[0].split(';').length === Exam.CSV_COLS.length && lines[0].startsWith('№ протокола;Дата'), 'CSV: BOM, «;», header columns');
+  ok(csv.includes('"Иванов; ""Ваня""\nмладший"') && csv.includes('Петров П. П.') && csv.includes('Не сдал'), 'CSV: «;», quotes and line breaks escaped, Cyrillic as is');
+  ok(Exam.csvCell('a;b') === '"a;b"' && Exam.csvCell('a"b') === '"a""b"' && Exam.csvCell('ab') === 'ab' && Exam.csvCell(null) === '', 'CSV cells');
+  // журнал: номер при записи, повреждённая запись не роняет список, «прерван» после перезагрузки
+  const m = new Map(), st = { get: k => m.has(k) ? m.get(k) : null, set: (k, v) => { m.set(k, v); return true; }, del: k => m.delete(k) };
+  const log = Exam.makeExamLog(st);
+  const y1 = Exam.newExam(cfg, d), y2 = Exam.newExam(cfg, d + 1000), y3 = Exam.newExam(cfg, d + 2000);
+  y1.results = [Exam.taskResult(a.run), Exam.taskResult(a.run)]; Exam.finishExam(y1, d + 500);
+  ok(log.save(y1) && log.save(y2) && log.save(y3) && y1.no === '20261007-01' && y2.no === '20261007-02' && y3.no === '20261007-03', 'journal numbers protocols in order');
+  m.set('ts.exam.' + y2.id, '{broken');
+  ok(log.list().length === 3 && log.load(y2.id) === null && log.load(y1.id).no === '20261007-01', 'a broken record stays in the list, does not load, others do');
+  ok(log.csv().split('\r\n').length === 1 + 2 + 1, 'CSV skips the broken record');
+  const ab = log.abortRunning(d + 9000);
+  ok(ab.length === 1 && ab[0].id === y3.id && log.load(y3.id).status === 'aborted' && log.list().find(r => r.id === y2.id).status === 'aborted', 'reload in the middle: running exams become «Прерван»');
+  ok(log.remove(y2.id) && log.list().length === 2 && !m.has('ts.exam.' + y2.id), 'delete removes the record');
+  m.set('ts.exams', 'not json');
+  ok(Array.isArray(log.list()) && log.list().length === 0, 'a broken journal index — an empty list, no crash');
+}
+{
+  console.log('RP-10 kV: two sections, inputs by cable from two substations, typical mistakes, emergency drill');
+  const { s, tr, id } = setup('rp10');
+  const T = n => E.TYPES[s.els.find(e => e.name === n).t];
+  ok(s.els.filter(e => e.t === 'bus').length === 2 && T('В-10 Ввод-1').cart && T('В-10 Ввод-2').cart && T('СВ-10').cart && T('СР-10').cart && T('СР-10').sw === 'disconnector', 'two sections; inputs, СВ and СР on trolleys');
+  ok(['КЛ-10 Ввод-1', 'КЛ-10 Ввод-2'].every(n => T(n).cls === 'link') && s.els.filter(e => e.t === 'source').length === 2 && T('В-10 Ф-7 ПС «Северная»').sw === 'breaker', 'inputs by cable from two substations, breaker on the substation side');
+  ok(s.els.filter(e => e.t === 'vt').length === 2 && s.els.some(e => e.t === 'tsn') && s.els.filter(e => E.TYPES[e.t].consumer && /^ТП-/.test(e.name)).length === 6, 'a VT on each section, a station transformer, six cables to TPs');
+  ok(tr.state.loads.size === 7 && tr.state.G.size === 0 && !tr.sim.st[id('СВ-10')].on, 'normal state: everything powered, СВ-10 open');
+  ok(!s.room && s.tasks.length === 3 && s.tasks.every(t => t.requireCheck === (t.steps.some(x => x.op === 'check'))), 'no room (polygon rules off), three tasks');
+  const fresh = () => { const k = setup('rp10'); return k; };
+  // задание 2: ввод 1 отключён раньше, чем включён СВ — перерыв питания
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[1]);
+    const r = k.tr.operate(k.id('В-10 Ввод-1'));
+    ok(r.ok && k.tr.run.errors.some(e => e.kind === 'supply' && /ТП-1 «Школа»/.test(e.text)), 'task 2: input 1 off before СВ-10 — supply interruption');
+  }
+  // правило 10: тележку при включённом выключателе — блокировка; без блокировок — авария (ток нагрузки на разъёмных контактах)
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[0]);
+    const r = k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' });
+    ok(r.blocked && /не перемещается — выключатель включён/.test(r.text) && k.tr.run.errors[0].kind === 'blocked', 'trolley racked with the breaker on — blocked (rule 10)');
+    k.tr.opt.interlocks = false;
+    const r2 = k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' });
+    ok(r2.ok && r2.viol && r2.viol.kind === 'accident' && /при перемещении тележки/.test(r2.text), 'without interlocks — accident on the trolley contacts');
+  }
+  // ЗН на КЛ без проверки указателем — нарушение порядка
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[0]);
+    k.tr.operate(k.id('В-10 Л-1')); k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' }); k.tr.operate(k.id('ВН ТП-1'));
+    const r = k.tr.operate(k.id('ЗН Л-1'));
+    ok(r.ok && r.viol && r.viol.kind === 'proc' && /без проверки отсутствия напряжения/.test(r.text), 'earthing the cable without the indicator — order violation');
+  }
+  // задание 3: в начале первая секция без напряжения; СВ на повреждение — КЗ, отключается ближайший выключатель (В-10 Ввод-1)
+  {
+    const k = fresh(), t3 = k.s.tasks[2];
+    k.tr.startTask(t3);
+    const l1 = ['ТП-1 «Школа»', 'ТП-3 «Рынок»', 'ТП-5 «Мкр. 5»'].map(k.id), l2 = ['ТП-2 «Больница»', 'ТП-4 «Котельная»', 'ТП-6 «Мкр. 6»'].map(k.id);
+    ok(l1.every(i => !k.tr.state.loads.has(i)) && l2.every(i => k.tr.state.loads.has(i)) && Object.keys(t3.init).some(E.isPzId), 'drill: the 1st section is dead, the cable fault is a portable earth in the initial state');
+    const r = k.tr.operate(k.id('СВ-10'));
+    ok(r.blocked && /заземление/.test(r.text), 'drill with interlocks: closing СВ-10 onto the fault is blocked');
+    k.tr.opt.interlocks = false;
+    const r2 = k.tr.operate(k.id('СВ-10'));
+    ok(r2.ok && r2.viol && r2.viol.kind === 'kz' && r2.tripped.includes(k.id('В-10 Ввод-1')) && !r2.tripped.includes(k.id('СВ-10')), 'without interlocks: КЗ, the nearest breaker В-10 Ввод-1 trips (rule 7): ' + r2.tripped.map(k.tr.nm.bind(k.tr)).join(', '));
+    ok(l2.every(i => k.tr.state.loads.has(i)) && k.tr.run.errors.some(e => e.kind === 'kz'), 'the 2nd section keeps power; the КЗ is in the task');
+  }
+  // задание 3 по подсказкам: отделить ввод, выкатить, включить СВ — 100 и обе секции под напряжением
+  {
+    const k = fresh(), t3 = k.s.tasks[2];
+    k.tr.startTask(t3);
+    for (let i = 0; i < 6 && !k.tr.run.done; i++) { const h = k.tr.nextStep(); if (!h) break; if (h.op === 'pos') k.tr.operate(h.id, { pos: h.pos }); else k.tr.operate(h.id); }
+    ok(k.tr.run.done && k.tr.run.grade.score === 100 && k.tr.state.loads.size === 7, 'drill by hints — 100, both sections powered');
+  }
+}
+{
+  console.log('3D models: each builds in Node; moving parts, ports, labels, lamps and size as in the base (tests/models3d-base.json); triangles and materials within limits');
+  const base = JSON.parse(readFileSync(new URL('./models3d-base.json', import.meta.url), 'utf8'));
+  // лимиты на модель: треугольники и материалы (материал — вызов отрисовки после слияния по материалам)
+  const LIMIT = { transformer: [6000, 12], tr3: [7000, 12], tsn: [3000, 10], breaker: [4000, 11], cart: [3000, 13], cartdisc: [3000, 13], disconnector: [3500, 10],
+    source: [3000, 9], ct: [2500, 9], vt: [2500, 9], arrester: [2500, 8], bus: [3000, 8] };
+  const near = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => Array.isArray(x) ? near(x, b[i]) : Math.abs(x - b[i]) <= 0.02);
+  for (const t of Object.keys(E.TYPES)) {
+    let m = null;
+    try { m = Models3d.buildModel(t); } catch (e) { ok(false, `${t}: model builds in Node :: ${e.message}`); continue; }
+    const b = base[t], [lt, lm] = LIMIT[t] || [2500, 9];
+    const parts = Object.keys(b.parts).every(k => k === 'spin' ? near(m.parts.spin, b.parts.spin) : m.parts[k] && near(m.parts[k].at, b.parts[k].at) && near(m.parts[k].box, b.parts[k].box));
+    ok(parts && Object.keys(m.parts).length === Object.keys(b.parts).length, `${t}: moving parts in place (${Object.keys(b.parts).join(', ') || 'none'})`);
+    ok(JSON.stringify(m.anim) === JSON.stringify(b.anim) && near(m.ports, b.ports) && near(m.label, b.label) && near(m.lamps, b.lamps), `${t}: animation, ports, label and lamps as before`);
+    ok(near(m.box, b.box), `${t}: overall size as before (the click box and walking around depend on it)`);
+    ok(m.tris <= lt && m.mats <= lm, `${t}: ${m.tris} triangles (≤ ${lt}), ${m.mats} materials (≤ ${lm})`);
+  }
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

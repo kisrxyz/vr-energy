@@ -15,7 +15,7 @@
     <div class="brand">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)"/><path d="M16 5v6M16 21v6" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/><path d="M16 21l6-9" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="21" r="2.2" fill="var(--accent-ink)"/><path d="M12.5 11h7" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/></svg>
       <b>Тренажёр переключений</b>
-      <span class="beta">демо-бета 0.3</span>
+      <span class="beta">демо-бета 0.4</span>
     </div>
     <nav class="tabs" role="tablist" aria-label="Режим">
       <button class="tab" role="tab" id="tab-edit" data-mode="edit" aria-selected="false">Редактор</button>
@@ -24,6 +24,7 @@
     </nav>
     <div class="spacer"></div>
     <div class="tools">
+      <button class="btn" id="btnDemo" aria-pressed="false" title="Показ для заказчика: шаги с подсказками ведущему и автопоказ">Показ</button>
       <select class="sel" id="schemeSel" aria-label="Схема"></select>
       <button class="btn" id="btnFile" title="Мои схемы: новая, копия, переименовать, удалить; файл .json">Схемы</button>
       <button class="btn icon-btn" id="btnSound" aria-pressed="true" title="Звук" aria-label="Звук">
@@ -35,6 +36,7 @@
       <button class="btn icon-btn" id="btnHelp" title="Как пользоваться" aria-label="Справка">?</button>
     </div>
   </header>
+  <section class="demo" id="demo" hidden aria-label="Показ: панель ведущего"></section>
 
   <main class="work">
     <aside class="palette" id="palette" aria-label="Элементы"></aside>
@@ -58,6 +60,7 @@
         <button class="btn" id="zFit" title="Показать всю схему">Вписать</button>
         <button class="btn" id="zSel" aria-pressed="false" title="Рамкой выделить несколько элементов (на компьютере — Shift или Ctrl + перетаскивание)" hidden>Выделение</button>
       </div>
+      <div class="demo-cap" id="demoCap" hidden aria-live="polite"></div>
       <div class="toasts" id="toasts" aria-live="polite"></div>
       <div class="flash" id="flash"></div>
     </section>

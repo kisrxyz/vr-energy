@@ -1,7 +1,7 @@
 {
   "name": "vr-energy",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Тренажёр оперативных переключений: 2D-редактор схем, логика блокировок и аварий, 3D и VR",
   "type": "module",
   "scripts": {
@@ -9,7 +9,9 @@
     "dev:vr": "vite --mode vr",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/engine.test.js"
+    "test": "node tests/engine.test.js",
+    "check3d": "node tools/check3d.mjs",
+    "e2e": "node tools/e2e.mjs"
   },
   "dependencies": {
     "three": "0.160.0"

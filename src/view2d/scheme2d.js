@@ -206,9 +206,11 @@ class Scheme2D {
     for (const w of s.wires) for (const p of [w.a, w.b]) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
     if (!isFinite(x0)) { this.k = 1; this.tx = r.width / 2; this.ty = r.height / 2; this.applyView(); return; }
     const pad = r.width < 600 ? 24 : 56;
-    this.k = clamp(Math.min((r.width - 2 * pad) / ((x1 - x0) * G), (r.height - 2 * pad) / ((y1 - y0 + 1) * G)), 0.2, 2.2);
+    // в показе внизу сцены — подпись для заказчика (на телефоне она в панели): схему поднимаем над ней
+    const low = this.app.demoOn && !(window.matchMedia && matchMedia('(max-width: 760px)').matches) ? 64 : 0;
+    this.k = clamp(Math.min((r.width - 2 * pad) / ((x1 - x0) * G), (r.height - 2 * pad - low) / ((y1 - y0 + 1) * G)), 0.2, 2.2);
     this.tx = r.width / 2 - (x0 + x1) / 2 * G * this.k;
-    this.ty = r.height / 2 - (y0 + y1) / 2 * G * this.k;
+    this.ty = (r.height - low) / 2 - (y0 + y1) / 2 * G * this.k;
     this.applyView();
   }
 

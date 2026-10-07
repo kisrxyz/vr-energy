@@ -9,7 +9,8 @@
     "dev:vr": "vite --mode vr",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/engine.test.js"
+    "test": "node tests/engine.test.js",
+    "check3d": "node tools/check3d.mjs"
   },
   "dependencies": {
     "three": "0.160.0"

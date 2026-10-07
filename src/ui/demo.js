@@ -99,6 +99,7 @@ class Demo {
     b.setAttribute('aria-expanded', String(now));
     b.textContent = now ? '▾' : '▸';
     this.bar.classList.toggle('folded', !now);
+    this.measure();
   }
 
   // ---------- шаг ----------
@@ -130,6 +131,15 @@ class Demo {
     an.hidden = !this.autoOn;
     an.textContent = this.paused ? 'Автопоказ на паузе: «Продолжить» — дальше сам, «Назад» / «Дальше» — вручную.' : 'Автопоказ: любое нажатие — пауза.';
     this.caption(this.capOv || st.caption);
+    this.measure();
+  }
+  // Высота панели — отступ для окон (отчёт, протокол), чтобы они не заходили под неё
+  measure() {
+    requestAnimationFrame(() => {
+      const r = this.bar.getBoundingClientRect(), st = document.documentElement.style, on = !this.bar.hidden;
+      st.setProperty('--demo-top', (on ? Math.round(r.bottom) : 0) + 'px');
+      st.setProperty('--demo-bot', (on ? Math.round(window.innerHeight - r.top) : 0) + 'px');
+    });
   }
   // Подпись для заказчика: на сцене (на телефоне — в панели); setCap — подпись автопоказа поверх подписи шага
   caption(text) {

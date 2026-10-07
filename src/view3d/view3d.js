@@ -1064,6 +1064,9 @@ class View3D {
       for (const l of this.wrap(x, text, W - 64, maxLines)) { x.fillText(l, 32, y); y += Math.round(size * 1.3); }
     };
     const run = tr.run, tasks = app.scheme.tasks;
+    // экзамен: «задание 1 из 2» и время; подсказок и эталона нет
+    const exam = !!(app.exam && app.exam.active());
+    if (exam) { x.font = F(600, 24); x.fillStyle = '#ffd23f'; x.fillText(this.fit(x, app.exam.boardLine(), W - 64), 32, y); y += 38; }
     if (run) {
       para(run.task.title, 30, 600, '#ffffff', 2);
       if (!run.done) {
@@ -1101,7 +1104,10 @@ class View3D {
     }
     // в полигоне ПЗ — предмет со стенда, а вместо платной подсказки — «следующее мероприятие» (вкл/выкл)
     const btns = [], pz = poly ? [] : [['pz', 'ПЗ']];
-    if (run && !run.done) btns.push(poly && run.task.measures ? ['guide', pm.guide ? 'Подсказки: вкл' : 'Подсказки: выкл'] : ['hint', 'Подсказка'], ['ack', 'Квитировать'], ...pz, ['stop', 'Завершить']);
+    if (exam) {
+      if (run && !run.done) btns.push(['ack', 'Квитировать'], ...pz, ['stop', 'Завершить задание']);
+      else if (app.exam.between) btns.push(['exnext', 'Следующее задание']);
+    } else if (run && !run.done) btns.push(poly && run.task.measures ? ['guide', pm.guide ? 'Подсказки: вкл' : 'Подсказки: выкл'] : ['hint', 'Подсказка'], ['ack', 'Квитировать'], ...pz, ['stop', 'Завершить']);
     else if (run && run.done) btns.push(['again', 'Ещё раз'], ['exit', 'Свободный режим'], ['lock', tr.opt.interlocks ? 'Блокировки: вкл' : 'Блокировки: выкл']);
     else {
       if (tasks.length) btns.push(['prev', '‹'], ['next', '›'], ['start', 'Начать']);
@@ -1162,7 +1168,8 @@ class View3D {
     else if (act === 'start') app.startTask(app.scheme.tasks[app.taskIdx]);
     else if (act === 'again' && tr.run) app.startTask(tr.run.task);
     else if (act === 'stop') tr.stopTask();
-    else if (act === 'hint') { if (!tr.hint()) this.banner('Все эталонные шаги выполнены.', 'info'); }
+    else if (act === 'hint') { if (app.exam && app.exam.active()) this.banner('В экзамене подсказок нет.', 'warn'); else if (!tr.hint()) this.banner('Все эталонные шаги выполнены.', 'info'); }
+    else if (act === 'exnext' && app.exam) app.exam.next();
     else if (act === 'ack') { if (!tr.ack()) this.banner('Сигналов нет.', 'info'); }
     else if (act === 'reset') { if (!tr.resetToNormal()) this.banner('Сначала завершите задание.', 'warn'); }
     else if (act === 'lock') { tr.opt.interlocks = !tr.opt.interlocks; app.toast(`Блокировки: ${tr.opt.interlocks ? 'включены' : 'выключены'}.`); }

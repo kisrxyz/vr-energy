@@ -327,6 +327,151 @@ SUITES.auto = { perScheme: false, fn: async () => {
   });
 } };
 
+// Экзамен: два задания (первое по эталону, второе с аварией) → протокол «Не сдал» с этой ошибкой; подсказку и эталон не открыть;
+// протокол на 3 задания в PDF — одна страница A4; перезагрузка посреди экзамена → «прерван»; CSV с кириллицей
+const pdfPages = buf => (buf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length;
+async function typeIn(sel, text) {
+  await clickBtn(sel, null, 'поле ' + sel);
+  // как Ctrl+A перед набором: поле могло быть заполнено с прошлого экзамена
+  await page.fn(s => document.querySelector(s).select(), sel);
+  await page.type(text);
+}
+async function examSetup({ tasks = 2, locks = true, fio }) {
+  await clickBtn('[data-act="exam"]', null, '«Экзамен»');
+  await page.waitFor('!!document.getElementById("exTasks")', 2000, 'окно экзамена');
+  const boxes = await page.eval('[...document.querySelectorAll("#exTasks input")].map(x => x.checked)');
+  for (let i = 1; i < Math.min(tasks, boxes.length); i++) if (!boxes[i]) await clickBtn(`#exTasks label:nth-child(${i + 1})`, null, 'задание ' + (i + 1));
+  if (!locks) await clickAt(await page.fn(() => { const l = document.getElementById('exLocks').closest('label'); const r = l.getBoundingClientRect(); return { x: r.left + 30, y: r.top + r.height / 2 }; }), 'блокировки');
+  await typeIn('#exFio', fio);
+  await typeIn('#exPost', 'электромонтёр по оперативным переключениям');
+  await typeIn('#exOrg', 'Проверочное предприятие');
+  if (SHOTS) await page.shot(`${OUT}/exam-setup.png`);
+  await clickBtn('#modal footer .btn', 'Начать экзамен');
+  await page.waitFor('TS.app.exam.active() && !!TS.app.tr.run', 3000, 'экзамен начался');
+  if (SHOTS) await page.shot(`${OUT}/exam-running.png`);
+}
+SUITES.exam = { perScheme: false, fn: async () => {
+  await check('exam', '2 задания → «Не сдал»', async () => {
+    await chooseScheme('ps110');
+    await setMode('train');
+    await examSetup({ tasks: 2, locks: false, fio: 'Сидоров Сидор Сидорович' });
+    const lockUi = await page.eval(`({ sel: document.getElementById('schemeSel').disabled, ed: document.getElementById('tab-edit').disabled,
+      demo: !!E2E.box('#btnDemo'), hint: !!E2E.box('[data-act="task-hint"]'), n: document.querySelector('.exam-n') && document.querySelector('.exam-n').textContent })`);
+    if (!lockUi.sel || !lockUi.ed || lockUi.demo) fail('в экзамене доступны смена схемы, редактор или показ');
+    if (lockUi.hint) fail('в экзамене видна кнопка «Подсказка»');
+    if (lockUi.n !== 'Задание 1 из 2') fail('нет «Задание 1 из 2»: ' + lockUi.n);
+    // попытки открыть подсказку и эталон
+    await page.eval(`TS.app.sideAction('task-hint'); TS.app.showReport(TS.app.tr.run); TS.app.setMode('edit'); TS.app.chooseScheme('tp10')`);
+    await sleep(100);
+    const tried = await page.eval(`({ hints: TS.app.tr.run.hints, modal: !document.getElementById('modal').hidden, mode: TS.app.mode, src: TS.app.source })`);
+    if (tried.hints || tried.modal || tried.mode !== 'train' || tried.src !== 'ps110') fail('подсказку, эталон, редактор или другую схему удалось открыть: ' + JSON.stringify(tried));
+    // в 3D и шлеме — так же: на щите «Экзамен: задание 1 из 2», без «Подсказки»
+    await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.boardBtns)', 15000, '3D');
+    await page.eval('TS.app.v3.drawBoard()');
+    const board = await page.eval(`({ acts: TS.app.v3.boardBtns.map(b => b.act), line: TS.app.exam.boardLine() })`);
+    if (board.acts.includes('hint') || board.acts.includes('guide') || !board.acts.includes('stop') || !/^Экзамен: задание 1 из 2/.test(board.line)) fail('щит в 3D во время экзамена: ' + JSON.stringify(board));
+    await setMode('train');
+    const plan = await page.eval('TS.Plan.planTask(TS.app.scheme, TS.app.tr.run.task)');
+    for (let i = 0; i < plan.length; i++) await doAction(plan[i], i, false);
+    await page.waitFor('TS.app.exam.between', 3000, 'задание 1 завершено');
+    if (SHOTS) await page.shot(`${OUT}/exam-between.png`);
+    if (await page.eval('!document.getElementById("modal").hidden')) fail('после задания открылся отчёт с эталоном');
+    await clickBtn('[data-act="exam-next"]', null, '«Начать задание 2»');
+    await page.waitFor('!!TS.app.tr.run && !TS.app.tr.run.done', 2000, 'задание 2');
+    await act2D({ do: 'switch', id: await page.eval(`TS.app.scheme.els.find(e => e.name === 'ТР-10 Т1').id`) });
+    await sleep(100);
+    if (await page.eval('TS.app.tr.hasAlarms()')) await clickBtn('[data-act="ack"]', null, '«Квитировать»');
+    await clickBtn('[data-act="task-stop"]', null, '«Завершить задание»');
+    await page.waitFor('!!document.querySelector("#modal .proto")', 3000, 'протокол');
+    const t = await page.eval('document.querySelector("#modal .proto").innerText');
+    if (SHOTS) await page.shot(`${OUT}/exam-protocol.png`);
+    if (!/Итог:\s*Не сдал/.test(t)) fail('в протоколе нет «Не сдал»');
+    if (!t.includes('Авария: разъединителем ТР-10 Т1')) fail('в протоколе нет ошибки задания 2');
+    if (!t.includes('Сидоров Сидор Сидорович') || !/Протокол № \d{8}-\d{2}/.test(t)) fail('нет ФИО или номера протокола');
+    if (/Эталон/.test(t)) fail('в протоколе эталон');
+    if (SHOTS) { await page.eval('TS.app.toggleTheme()'); await sleep(150); await page.shot(`${OUT}/exam-protocol-dark.png`); await page.eval('TS.app.toggleTheme()'); }
+    await clickBtn('#modal footer .btn', 'Печать или PDF');
+    const pdf = await page.pdf(SHOTS ? `${OUT}/exam-protocol-2.pdf` : null);
+    if (pdfPages(pdf) !== 1) fail(`протокол в PDF — ${pdfPages(pdf)} стр.`);
+    await closeModal();
+    const after = await page.eval(`({ active: TS.app.exam.active(), sel: document.getElementById('schemeSel').disabled, il: TS.app.tr.opt.interlocks })`);
+    if (after.active || after.sel || !after.il) fail('после экзамена не вернулись настройки: ' + JSON.stringify(after));
+    return 'протокол «Не сдал» с аварией задания 2, PDF — 1 страница';
+  });
+  await check('exam', 'протокол на 3 задания — 1 страница A4', async () => {
+    // запись в журнале из настоящих прогонов движка: два задания ПС 110/35/10 и одно ПС 110/10 с ошибками
+    const id = await page.eval(`(() => {
+      const X = TS.ExamCore, runs = [];
+      const go = (key, ti, wrong) => { const s = TS.SAMPLES.find(q => q.key === key).make(), tr = new TS.Trainer(); tr.load(s); const t = s.tasks[ti]; tr.startTask(t);
+        if (wrong) { tr.opt.interlocks = false; for (const n of wrong) tr.operate(s.els.find(e => e.name === n).id); tr.stopTask(); }
+        else TS.Plan.planTask(s, t).forEach(a => TS.Plan.runAction(tr, null, a));
+        runs.push({ t, r: tr.run }); };
+      go('ps35', 0); go('ps35', 1); go('ps110', 1, ['В-10 Т1', 'ТР-10 Т1', 'ШР-10 Т1', 'ЗН-10 Т1', 'В-110 Т1']);
+      const x = X.newExam({ kind: 'drill', schemeTitle: 'ПС 110/35/10 кВ «Степная» и ПС 110/10 кВ «Учебная»', person: { fio: 'Константинопольский Константин Константинович', post: 'старший электромонтёр по оперативным переключениям', dept: 'Оперативно-выездная бригада № 2', org: 'Проверочное предприятие электрических сетей' },
+        tasks: runs.map(q => ({ id: q.t.id, title: q.t.title })), limitMin: 40 }, Date.now() - 30 * 60000);
+      x.results = runs.map(q => X.taskResult(q.r)); X.finishExam(x);
+      TS.app.exam.log.save(x); return x.id; })()`);
+    await clickBtn('[data-act="exam"]', null, '«Экзамен»');
+    await clickBtn('#modal footer .btn', 'Журнал экзаменов');
+    await clickBtn(`[data-m="ex-open"][data-id="${id}"]`, null, '«Протокол»');
+    await page.waitFor('!!document.querySelector("#modal .proto")', 2000, 'протокол');
+    if (SHOTS) await page.shot(`${OUT}/exam-protocol-3.png`);
+    await clickBtn('#modal footer .btn', 'Печать или PDF');
+    const pdf = await page.pdf(SHOTS ? `${OUT}/exam-protocol-3.pdf` : null);
+    const n = pdfPages(pdf);
+    if (n !== 1) fail(`протокол на 3 задания в PDF — ${n} стр.`);
+    await closeModal();
+    return '1 страница A4';
+  });
+  await check('exam', 'перезагрузка → «прерван», CSV', async () => {
+    await chooseScheme('tp10');
+    await examSetup({ tasks: 1, fio: 'Перезагрузкин Пётр' });
+    const no = await page.eval('TS.app.exam.cur.id');
+    await act2D({ do: 'switch', id: await page.eval(`TS.app.scheme.els.find(e => e.name === 'QF-ввод').id`) });
+    await page.goto(page.base);
+    await page.eval(HELPER);
+    await sleep(600);
+    const rec = await page.eval(`TS.app.exam.log.load('${no}')`);
+    if (!rec || rec.status !== 'aborted') fail('после перезагрузки экзамен не «прерван»: ' + (rec && rec.status));
+    if (await page.eval('TS.app.exam.active()')) fail('экзамен идёт после перезагрузки');
+    const csv = await page.eval('TS.app.exam.csv()');
+    const lines = csv.replace(/^﻿/, '').split('\r\n');
+    if (csv.charCodeAt(0) !== 0xFEFF) fail('CSV без BOM');
+    if (!lines[0].startsWith('№ протокола;Дата;Начало;Окончание;Вид;ФИО')) fail('колонки CSV: ' + lines[0]);
+    if (!csv.includes('Перезагрузкин Пётр') || !csv.includes('Прерван') || !csv.includes('Сидоров Сидор Сидорович;')) fail('в CSV нет записей экзаменов');
+    if (lines.filter(l => l).some(l => l.split(';').length < 15)) fail('в строке CSV меньше колонок');
+    await clickBtn('[data-act="exam"]', null, '«Экзамен»');
+    await clickBtn('#modal footer .btn', 'Журнал экзаменов');
+    if (SHOTS) await page.shot(`${OUT}/exam-journal.png`);
+    await clickBtn('[data-m="ex-csv"]', null, '«Скачать CSV»');
+    await closeModal();
+    return `«прерван»; CSV: ${lines.filter(l => l).length - 1} записей, BOM, «;»`;
+  });
+  await check('exam', 'телефон 390×844', async () => {
+    await page.viewport(390, 844, true);
+    try {
+      await page.goto(page.base);
+      await page.eval(HELPER);
+      await clickBtn('[data-act="exam"]', null, '«Экзамен»');
+      await page.waitFor('!!document.getElementById("exTasks")', 2000, 'окно экзамена');
+      const w = await page.eval('document.querySelector("#modal .dialog").scrollWidth <= document.querySelector("#modal .dialog").clientWidth + 1');
+      if (!w) fail('окно экзамена шире экрана');
+      if (SHOTS) await page.shot(`${OUT}/exam-setup-phone.png`);
+      await clickBtn('#modal footer .btn', 'Журнал экзаменов');
+      if (SHOTS) await page.shot(`${OUT}/exam-journal-phone.png`);
+      await clickBtn('[data-m="ex-open"]', null, '«Протокол»');
+      if (SHOTS) await page.shot(`${OUT}/exam-protocol-phone.png`);
+      await closeModal();
+      return 'окно, журнал и протокол помещаются';
+    } finally {
+      await page.viewport(1366, 860);
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
+} };
+
 // ---------- запуск ----------
 async function main() {
   if (!NO_BUILD) {

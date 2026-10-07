@@ -13,6 +13,7 @@ import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
+import * as Exam from '../src/core/exam.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -1115,6 +1116,70 @@ function doMeasure(tr, pm, m) {
   ok(full >= 120000 && full <= 175000, `autoplay with every part: ${Math.round(full / 1000)} s (2–3 min)`);
   ok(ms >= 100000, `autoplay now: ${Math.round(ms / 1000)} s`);
   ok(Demo.pilotLines().every(([k, v]) => k && v) && Demo.pilotLines({ offer: '', term: ' ', contact: 'x@y' }).length === 1, 'pilot: only filled fields are shown');
+}
+{
+  console.log('Exam (src/core/exam.js): verdict by threshold, protocol numbers, protocol text, CSV, journal with a broken record');
+  // настоящие прогоны: задание 1 по эталону, задание 2 с аварией (блокировки выключены) и без выполнения
+  const runTask = (key, ti, mistake) => {
+    const s = E.SAMPLES.find(x => x.key === key).make(), tr = new E.Trainer(); tr.load(s);
+    const t = s.tasks[ti]; tr.startTask(t);
+    if (mistake) { tr.opt.interlocks = false; tr.operate(s.els.find(e => e.name === mistake).id); tr.stopTask(); }
+    else Plan.planTask(s, t).forEach(a => Plan.runAction(tr, null, a));
+    return { s, run: tr.run };
+  };
+  const a = runTask('ps110', 0), b = runTask('ps110', 1, 'ТР-10 Т1');
+  const cfg = { kind: 'skills', schemeTitle: a.s.title, source: 'ps110', person: { fio: 'Петров П. П.', post: 'электромонтёр', dept: 'ОВБ', org: 'ТОО «Сети»' },
+    tasks: a.s.tasks.map(t => ({ id: t.id, title: t.title })), interlocks: true };
+  const t0 = new Date(2026, 9, 7, 14, 5).getTime();
+  const x1 = Exam.newExam(cfg, t0);
+  x1.results = [Exam.taskResult(a.run), Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x1) === 'passed' && Exam.failReasons(x1).length === 0, 'both tasks by reference — «Сдал»');
+  const x2 = Exam.newExam(cfg, t0);
+  x2.results = [Exam.taskResult(a.run), Exam.taskResult(b.run)];
+  ok(Exam.examStatus(x2) === 'failed' && Exam.failReasons(x2).some(r => /авария/.test(r)) && Exam.failReasons(x2).some(r => /не выполнено/.test(r)), 'accident and not completed — «Не сдал» with reasons: ' + Exam.failReasons(x2).join('; '));
+  const x3 = Exam.newExam(Object.assign({}, cfg, { minScore: 95 }), t0);
+  const low = Exam.taskResult(a.run); low.score = 90;
+  x3.results = [low, Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x3) === 'failed' && /ниже 95/.test(Exam.failReasons(x3)[0]), 'score below the threshold — «Не сдал»');
+  const x4 = Exam.newExam(cfg, t0); x4.results = [Exam.taskResult(a.run)];
+  ok(Exam.examStatus(x4) === 'failed' && /не начато/.test(Exam.failReasons(x4).join()), 'a task not started — «Не сдал»');
+  Exam.finishExam(x4, t0 + 600000, true);
+  ok(x4.status === 'aborted' && Exam.protocol(x4).verdict === 'Прерван', 'aborted — «Прерван»');
+  ok(Exam.newExam(cfg).minScore === 80 && Exam.newExam(Object.assign({}, cfg, { tasks: [1, 2, 3, 4].map(i => ({ id: 't' + i, title: 'З' + i })) })).tasks.length === 3, 'threshold 80 by default; at most 3 tasks');
+  // номера протоколов
+  const d = new Date(2026, 9, 7, 9).getTime();
+  ok(Exam.protoNo(d, []) === '20261007-01', 'first protocol of the day: 20261007-01');
+  ok(Exam.protoNo(d, [{ no: '20261007-01' }, { no: '20261007-09' }, { no: '20261006-12' }, { no: 'мусор' }]) === '20261007-10', 'next number of the day, other days ignored');
+  // протокол без «undefined» и пустых полей
+  Exam.finishExam(x2, t0 + 1260000); x2.no = '20261007-01';
+  const P = Exam.protocol(x2), txt = Exam.protocolText(x2);
+  ok(P.verdict === 'Не сдал' && P.rows.length === 2 && P.rows[1].errors.includes('Авария:') && !P.rows[1].errors.includes('Авария: Авария'), 'protocol: «Не сдал», the accident in task 2 (kind not repeated)');
+  ok(!/undefined|NaN|null|\[object/.test(txt) && P.fields.every(([k, v]) => k && String(v).trim()), 'protocol text: no undefined/NaN/null, every field filled');
+  ok(txt.includes('Протокол № 20261007-01') && txt.includes('07.10.2026') && txt.includes('14:05–14:26') && txt.includes('Председатель комиссии') && txt.includes('Предварительная форма'), 'protocol: number, date, time, signatures, footnote');
+  const xe = Exam.newExam({ person: {}, tasks: [{ id: 'a', title: 'А' }] }, t0);
+  ok(!/undefined|NaN|null/.test(Exam.protocolText(xe)) && Exam.protocol(xe).fields.every(([, v]) => String(v).trim()), 'empty examinee fields — dashes, not blanks');
+  ok(Exam.protocol(Exam.newExam(Object.assign({}, cfg, { kind: 'drill' }), t0)).kind === 'Противоаварийная тренировка', 'kind changes only the title');
+  // CSV
+  const xq = Exam.newExam(Object.assign({}, cfg, { person: { fio: 'Иванов; "Ваня"\nмладший', post: 'мастер', dept: '', org: 'АО' } }), t0);
+  xq.results = [Exam.taskResult(a.run), Exam.taskResult(b.run)]; Exam.finishExam(xq, t0 + 60000); xq.no = '20261007-02';
+  const csv = Exam.examsCSV([x2, xq]), lines = csv.slice(1).split('\r\n');
+  ok(csv.charCodeAt(0) === 0xFEFF && lines[0].split(';').length === Exam.CSV_COLS.length && lines[0].startsWith('№ протокола;Дата'), 'CSV: BOM, «;», header columns');
+  ok(csv.includes('"Иванов; ""Ваня""\nмладший"') && csv.includes('Петров П. П.') && csv.includes('Не сдал'), 'CSV: «;», quotes and line breaks escaped, Cyrillic as is');
+  ok(Exam.csvCell('a;b') === '"a;b"' && Exam.csvCell('a"b') === '"a""b"' && Exam.csvCell('ab') === 'ab' && Exam.csvCell(null) === '', 'CSV cells');
+  // журнал: номер при записи, повреждённая запись не роняет список, «прерван» после перезагрузки
+  const m = new Map(), st = { get: k => m.has(k) ? m.get(k) : null, set: (k, v) => { m.set(k, v); return true; }, del: k => m.delete(k) };
+  const log = Exam.makeExamLog(st);
+  const y1 = Exam.newExam(cfg, d), y2 = Exam.newExam(cfg, d + 1000), y3 = Exam.newExam(cfg, d + 2000);
+  y1.results = [Exam.taskResult(a.run), Exam.taskResult(a.run)]; Exam.finishExam(y1, d + 500);
+  ok(log.save(y1) && log.save(y2) && log.save(y3) && y1.no === '20261007-01' && y2.no === '20261007-02' && y3.no === '20261007-03', 'journal numbers protocols in order');
+  m.set('ts.exam.' + y2.id, '{broken');
+  ok(log.list().length === 3 && log.load(y2.id) === null && log.load(y1.id).no === '20261007-01', 'a broken record stays in the list, does not load, others do');
+  ok(log.csv().split('\r\n').length === 1 + 2 + 1, 'CSV skips the broken record');
+  const ab = log.abortRunning(d + 9000);
+  ok(ab.length === 1 && ab[0].id === y3.id && log.load(y3.id).status === 'aborted' && log.list().find(r => r.id === y2.id).status === 'aborted', 'reload in the middle: running exams become «Прерван»');
+  ok(log.remove(y2.id) && log.list().length === 2 && !m.has('ts.exam.' + y2.id), 'delete removes the record');
+  m.set('ts.exams', 'not json');
+  ok(Array.isArray(log.list()) && log.list().length === 0, 'a broken journal index — an empty list, no crash');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

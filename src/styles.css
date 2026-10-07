@@ -8,6 +8,8 @@
   --shadow: 0 1px 2px rgba(16, 24, 20, .06), 0 6px 18px rgba(16, 24, 20, .07);
   /* подсказки поверх 3D (полигон от первого лица): тёмные в обеих темах — сцена светлая */
   --hud-bg: rgba(12, 18, 16, .78); --hud-ink: #F2F6F4; --hud-muted: #B9C7C1; --hud-hot: #FFD23F; --hud-line: rgba(255, 255, 255, .22);
+  /* печать протокола: чёрное на белом в любой теме */
+  --pr-ink: #000000; --pr-bg: #FFFFFF; --pr-line: #000000; --pr-muted: #333333;
   --f-ui: "Golos Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --f-brand: "Unbounded", "Golos Text", system-ui, sans-serif;
@@ -87,6 +89,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 #btnDemo[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .demo-cap { position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%); z-index: 4; width: max-content; max-width: min(860px, calc(100% - 32px)); padding: 10px 18px; border-radius: 12px; background: var(--hud-bg); color: var(--hud-ink); border: 1px solid var(--hud-line); font: 600 18px/1.35 var(--f-ui); text-align: center; pointer-events: none; box-shadow: var(--shadow); }
 body.demo-auto .v3-click { display: none; }
+/* окна в показе (отчёт, образец протокола) не закрывают панель ведущего: она над затемнением, окно — ниже неё */
+.app[data-demo] > .demo { position: relative; z-index: 60; }
+.app[data-demo] ~ .modal { padding-top: calc(var(--demo-top, 0px) + 12px); }
 /* пешком в показе: управление рассказывает ведущий; подпись — над строкой «СИЗ / в руке» */
 .app[data-demo] .v3-keys { display: none; }
 .view3d[data-fps="1"] ~ .demo-cap { bottom: 58px; }
@@ -145,6 +150,56 @@ body.pal-dragging, body.pal-dragging * { cursor: grabbing !important; }
 .field label { font-size: 12px; color: var(--muted); }
 .inp { border: 1px solid var(--line); background: var(--canvas); border-radius: 7px; padding: 6px 8px; font-size: 13px; width: 100%; min-width: 0; }
 .inp.mono { font-family: var(--f-mono); }
+
+/* ---------- экзамен и протокол ---------- */
+.app[data-exam] #btnDemo { display: none; }
+.dialog.wide { width: min(980px, 100%); }
+.ex-tasks { display: grid; gap: 4px; margin-top: 4px; }
+.ex-task, .ex-kind label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.ex-kind { display: flex; flex-wrap: wrap; gap: 6px 18px; border: 0; margin-top: 4px; }
+.ex-opts { align-items: flex-end; gap: 12px 18px; }
+.ex-opts .field { width: 190px; }
+.ex-person { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 4px; }
+.ex-rule { margin-top: -4px; }
+.exam-who { font-size: 12.5px; color: var(--muted); }
+.exam-who b { color: var(--ink); font-family: var(--f-mono); }
+.exam-n { font: 600 12px/1.2 var(--f-mono); color: var(--accent); }
+.proto { display: grid; gap: 12px; font-size: 13px; color: var(--ink); }
+.proto-h h2 { margin: 0; font: 700 18px/1.25 var(--f-ui); }
+.proto-h p { margin: 2px 0 0; color: var(--muted); }
+.proto-f { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; }
+.proto-f dt { color: var(--muted); }
+.proto-f dd { margin: 0; }
+.proto-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.proto-t th, .proto-t td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+.proto-t th { background: var(--panel2); font-weight: 600; }
+.proto-t td:nth-child(1), .proto-t td:nth-child(3), .proto-t td:nth-child(4) { white-space: nowrap; font-family: var(--f-mono); }
+.proto-v { margin: 0; font-size: 14px; }
+.proto-v.ok b { color: var(--ok); }
+.proto-v.bad b { color: var(--fault); }
+.proto-s { display: grid; gap: 14px; margin-top: 6px; }
+.proto-s div { display: grid; grid-template-columns: 170px 1fr 52px 1fr 30px; align-items: end; gap: 6px; }
+.proto-s i { border-bottom: 1px solid var(--ink); height: 16px; }
+.proto-s em { font-style: normal; font-size: 10.5px; color: var(--muted); }
+.proto-n { margin: 4px 0 0; font-size: 11.5px; color: var(--muted); font-style: italic; }
+#print { display: none; }
+@media print {
+  @page { size: A4; margin: 14mm 14mm 12mm; }
+  html, body { height: auto; background: var(--pr-bg); }
+  body > :not(#print) { display: none !important; }
+  #print { display: block; color: var(--pr-ink); background: var(--pr-bg); }
+  #print .proto { color: var(--pr-ink); font-size: 11pt; gap: 9pt; }
+  #print .proto-h h2 { font-size: 15pt; }
+  #print .proto-h p, #print .proto-f dt, #print .proto-n, #print .proto-s em { color: var(--pr-muted); }
+  #print .proto-t { font-size: 10pt; }
+  #print .proto-t th, #print .proto-t td { border-color: var(--pr-line); color: var(--pr-ink); }
+  #print .proto-t th { background: var(--pr-bg); }
+  #print .proto-v b { color: var(--pr-ink) !important; }
+  #print .proto-s i { border-color: var(--pr-line); }
+  #print .proto-s div { grid-template-columns: 46mm 1fr 14mm 1fr 8mm; }
+  /* лист A4 уже 760 px: правила телефона в печати не нужны */
+  #print .proto-s em { display: block; }
+}
 textarea.inp { resize: vertical; min-height: 64px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: var(--panel); padding: 6px 12px; font-size: 13px; cursor: pointer; }
@@ -416,9 +471,14 @@ details.more p.ask { color: var(--warn); }
   .demo-capm { display: block; color: var(--ink) !important; font-weight: 600; }
   .demo.folded .demo-b { display: grid; }
   .demo.folded .demo-b > :not(.demo-capm) { display: none; }
+  .app[data-demo] ~ .modal { padding-top: 16px; padding-bottom: calc(var(--demo-bot, 0px) + 12px); }
   .status { display: none; }
   .cols { grid-template-columns: minmax(0, 1fr); }
   .sel { max-width: 150px; }
+  .ex-person { grid-template-columns: minmax(0, 1fr); }
+  .ex-opts .field { width: 100%; }
+  .proto-s div { grid-template-columns: 1fr 1fr; }
+  .proto-s em { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .trip, .chip.rec::before { animation: none; }

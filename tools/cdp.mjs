@@ -148,6 +148,8 @@ class Page {
     if (down) await this.send('Input.dispatchKeyEvent', Object.assign({ type: 'rawKeyDown' }, base));
     if (up) await this.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, base));
   }
+  // Набрать текст в поле с фокусом (как с клавиатуры)
+  async type(text) { await this.send('Input.insertText', { text }); }
   async shot(path) {
     const r = await this.send('Page.captureScreenshot', { format: 'png' });
     if (!r.result) return false;

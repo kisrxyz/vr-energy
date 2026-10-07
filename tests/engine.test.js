@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
+import * as Demo from '../src/core/demo.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -1061,6 +1062,59 @@ function doMeasure(tr, pm, m) {
   // снять плакат и замок — тот предмет, что висит
   const p2 = Plan.planTask(s, { steps: [{ op: 'hang', poster: 'nevkl', at: 'drive:3' }, { op: 'hang', poster: 'nevkl', at: 'drive:4' }, { op: 'unhang', poster: 'nevkl', at: 'drive:4' }, { op: 'lock', at: 'drive:3' }, { op: 'unlock', at: 'drive:3' }] });
   ok(p2.map(a => a.do + ':' + a.item).join() === 'place:nevkl1,place:nevkl2,take:nevkl2,place:lock,take:lock', 'unhang and unlock take the item that hangs there');
+}
+{
+  console.log('Demo (src/core/demo.js): every step refers to a scheme, task and elements that exist; step 3 gives an accident; autoplay 2–3 min');
+  const has = n => E.SAMPLES.some(s => s.key === n);
+  const steps = Demo.demoSteps(has);
+  ok(steps.length >= 7 && steps.length <= 10 && Demo.STEPS.filter(s => !s.needs || has(s.needs)).length === steps.length, `steps shown: ${steps.length} (without missing parts)`);
+  ok(Demo.demoSteps(() => false).every(s => !s.needs), 'a step without its part is not shown');
+  ok(new Set(Demo.STEPS.map(s => s.id)).size === Demo.STEPS.length, 'step ids are unique');
+  const planLen = {};
+  for (const st of steps) {
+    const smp = E.SAMPLES.find(x => x.key === st.prepare.scheme);
+    ok(!!smp, `${st.id}: scheme ${st.prepare.scheme} exists`);
+    if (!smp) continue;
+    const s = smp.make(), names = new Set(s.els.map(e => e.name));
+    ok(['train', '3d', 'edit'].includes(st.prepare.mode) && st.title && st.caption && st.say && st.say.length < 400, `${st.id}: mode, title, caption and a short «что сказать»`);
+    ok(st.caption.length <= 110, `${st.id}: caption fits one line on the stage (${st.caption.length})`);
+    if (st.prepare.task != null) ok(!!s.tasks[st.prepare.task], `${st.id}: task #${st.prepare.task + 1} exists`);
+    for (const n of Object.keys(st.prepare.bus || {})) ok(names.has(n) && E.TYPES[s.els.find(e => e.name === n).t].cls === 'bus', `${st.id}: bus ${n} exists`);
+    for (const a of st.auto || []) for (const n of [a.click, a.menu, a.go && a.go.dev].filter(Boolean)) ok(names.has(n), `${st.id}: element «${n}» exists`);
+    if (st.prepare.select) {
+      for (const [n, len] of Object.entries(st.prepare.bus || {})) s.els.find(e => e.name === n).p.len = len;
+      const r = Ed.inRect(s, ...st.prepare.select);
+      ok(r.els.length + r.wires.length === st.expect.selected, `${st.id}: the frame selects ${st.expect.selected} (${r.els.length} elements, ${r.wires.length} wires)`);
+      // копия ячейки на удлинённую шину — новая нагрузка под напряжением, её выключатель её отключает
+      const clip = Ed.copyGroup(s, r), paste = st.auto.find(a => a.paste).paste;
+      const top = clip.wires.flatMap(w => [w.a, w.b]).reduce((m, q) => (!m || q[1] < m[1] ? q : m), null);
+      const res = Ed.pasteGroup(s, clip, paste[0] - top[0], paste[1] - top[1]);
+      const tr = new E.Trainer(); tr.load(s);
+      const load = res.els.find(id => E.TYPES[s.els.find(e => e.id === id).t].consumer), brk = res.els.find(id => s.els.find(e => e.id === id).t === 'breaker');
+      ok(tr.state.loads.has(load) && tr.state.loads.size === 5, `${st.id}: the pasted cell on the bus is powered right away`);
+      tr.operate(brk);
+      ok(!tr.state.loads.has(load) && tr.state.loads.size === 4, `${st.id}: its breaker switches the new load off`);
+    }
+    if (st.id === 'task') planLen[st.id] = Plan.planTask(s, s.tasks[st.prepare.task]).length;
+  }
+  // шаг 3: подготовленное состояние + операция — авария (с блокировками — блокировка)
+  const acc = steps.find(s => s.id === 'accident');
+  for (const il of [false, true]) {
+    const s = E.SAMPLES.find(x => x.key === acc.prepare.scheme).make(), tr = new E.Trainer(); tr.load(s);
+    tr.opt.interlocks = il === true ? true : acc.prepare.interlocks !== false;
+    const r = tr.operate(s.els.find(e => e.name === acc.auto.find(a => a.click).click).id);
+    if (!il) ok(acc.prepare.interlocks === false && r.ok && r.viol && r.viol.kind === 'accident' && r.tripped.length > 0, 'step 3: prepared state + operation — accident, protection trips');
+    else ok(r.blocked && /Блокировка/.test(r.text), 'step 3 with interlocks — blocked');
+  }
+  // шаг 4: задание по эталону — 100
+  const tk = steps.find(s => s.id === 'task'), s4 = E.SAMPLES.find(x => x.key === tk.prepare.scheme).make(), tr4 = new E.Trainer(), pm4 = tr4.use(new Permit());
+  tr4.load(s4); tr4.startTask(s4.tasks[tk.prepare.task]);
+  Plan.planTask(s4, s4.tasks[tk.prepare.task]).forEach(a => Plan.runAction(tr4, pm4, a));
+  ok(tr4.run.done && tr4.run.grade.score === 100, 'step 4: the task by its reference — 100');
+  const ms = Demo.autoMs(steps, planLen), full = Demo.autoMs(Demo.STEPS, planLen);
+  ok(full >= 120000 && full <= 175000, `autoplay with every part: ${Math.round(full / 1000)} s (2–3 min)`);
+  ok(ms >= 100000, `autoplay now: ${Math.round(ms / 1000)} s`);
+  ok(Demo.pilotLines().every(([k, v]) => k && v) && Demo.pilotLines({ offer: '', term: ' ', contact: 'x@y' }).length === 1, 'pilot: only filled fields are shown');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

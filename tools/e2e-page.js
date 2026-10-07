@@ -73,49 +73,17 @@ window.E2E = (() => {
 
   // ---------- 3D: прицел пешком ----------
   const v3 = () => app().v3;
-  function proxyOf(key, val) { return v3().pickables.find(o => o.userData[key] === val) || null; }
-  // Повернуться (и при нужде перейти) так, чтобы прицел был на нужном: what = { item | mount | dev | menu }
+  // Повернуться (и при нужде перейти) так, чтобы прицел был на нужном: what = { item | mount | dev | menu }.
+  // Точку и условие даёт view3d.aimTarget, место — walk.seek (меню — только повернуться: отойдёшь — закроется)
   function aim(what) {
-    const v = v3(), w = v.walk, T = v.kit.T;
-    const want = a => {
-      if (!a) return false;
-      if (what.menu) return a.type === 'menu' && !!v.menuBtn(a.h.uv) && v.menuBtn(a.h.uv).a.label === what.menu;
-      if (what.item) return a.type === 'item' && a.id === what.item;
-      if (what.mount) return a.type === 'mount' && a.id === what.mount;
-      if (what.dev) return a.type === 'dev' && a.id === what.dev;
-      return false;
-    };
-    let p;
-    if (what.menu) {
-      const mm = v.menu3d;
-      if (!mm) return { ok: false, why: 'меню не открыто' };
-      const b = mm.btns.find(q => q.a.label === what.menu);
-      if (!b) return { ok: false, why: 'в меню нет пункта' };
-      const ph = mm.m.geometry.parameters.height;
-      mm.m.updateWorldMatrix(true, false);
-      p = mm.m.localToWorld(new T.Vector3(0, (0.5 - (b.y0 + b.y1) / 2 / mm.H) * ph, 0));
-    } else {
-      const o = proxyOf(what.item ? 'item' : what.mount ? 'mount' : 'dev', what.item || what.mount || what.dev);
-      if (!o) return { ok: false, why: 'нет такого объекта в сцене' };
-      o.updateWorldMatrix(true, false);
-      p = o.getWorldPosition(new T.Vector3());
-    }
-    const look = (x, z) => {
-      w.x = x; w.z = z; w.vx = 0; w.vz = 0;
-      const dx = p.x - x, dz = p.z - z;
-      w.yaw = Math.atan2(-dx, -dz); w.pitch = Math.atan2(p.y - 1.62, Math.hypot(dx, dz));
-      w.apply(); w.updateAim();
-      return want(w.aim);
-    };
-    // сначала — повернуться на месте; меню — только так (отойдёшь — закроется)
-    if (look(w.x, w.z)) return { ok: true };
-    if (what.menu) return { ok: false, why: 'прицел не попадает в пункт меню' };
-    for (const d of [1.1, 0.8, 1.5, 1.9, 2.3]) for (let k = 0; k < 24; k++) {
-      const a = k / 24 * Math.PI * 2, x = p.x + Math.sin(a) * d, z = p.z + Math.cos(a) * d;
-      if (!w.world.walkable(x, z)) continue;
-      if (look(x, z)) return { ok: true, x, z };
-    }
-    return { ok: false, why: 'не нашлось места, откуда видно' };
+    const v = v3(), w = v.walk;
+    if (what.menu && !v.menu3d) return { ok: false, why: 'меню не открыто' };
+    const t = v.aimTarget(what);
+    if (!t) return { ok: false, why: what.menu ? 'в меню нет пункта' : 'нет такого объекта в сцене' };
+    const q = w.seek(t.p, t.want, !!what.menu);
+    if (!q) return { ok: false, why: what.menu ? 'прицел не попадает в пункт меню' : 'не нашлось места, откуда видно' };
+    w.pose(q);
+    return t.want(w.aim) ? { ok: true } : { ok: false, why: 'прицел сбился' };
   }
   function held() { const it = v3().items; return it ? it.heldIn('desk') : null; }
 

@@ -21,6 +21,7 @@ const NO_BUILD = argv.includes('--no-build') || env.npm_config_build === '' || e
 const SHOTS = flag('shots');
 const ONLY = (val('only') || val('part')).split(',').map(s => s.trim()).filter(Boolean);
 const OUT = 'e2e-out';
+const HELPER = readFileSync(new URL('./e2e-page.js', import.meta.url), 'utf8');
 const T0 = Date.now();
 const rows = [];
 let page = null;
@@ -225,6 +226,107 @@ SUITES.errors = { perScheme: true, fn: async keys => {
   }
 } };
 
+// «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
+// блокировки и не трогает «Мои схемы»; телефон 390×844 — панель снизу и не закрывает схему
+const demoReady = 'TS.app.demo.on && !TS.app.demo.busy && TS.app.demo.check().length === 0';
+const myStore = `JSON.stringify(Object.keys(localStorage).filter(k => k.startsWith('ts.my')).sort().map(k => [k, localStorage.getItem(k)]))`;
+SUITES.demo = { perScheme: false, fn: async () => {
+  await check('demo', 'вручную', async () => {
+    // до показа: своя схема (копия ТП в «Моих схемах»), вид 3D, блокировки выключены
+    await closeModal();
+    await setMode('train');
+    const id = await page.eval(`(() => { const id = TS.app.lib.add(Object.assign(TS.SAMPLES.find(s => s.key === 'tp10').make(), { title: 'Моя ТП для проверки' })); TS.app.fillSchemeSelect(); return id; })()`);
+    await chooseScheme('my:' + id);
+    await setOpt('interlocks', false);
+    await setMode('3d');
+    const before = { src: 'my:' + id, store: await page.eval(myStore) };
+    await clickBtn('#btnDemo', null, '«Показ»');
+    const n = await page.eval('TS.app.demo.steps.length');
+    const ids = await page.eval('TS.app.demo.steps.map(s => s.id)');
+    for (let i = 0; i < n; i++) {
+      try { await page.waitFor(demoReady, 15000, 'шаг готов'); }
+      catch (e) { fail(`шаг ${i + 1} «${ids[i]}»: не совпало — ${(await page.eval('TS.app.demo.check()')).join(', ')}`); }
+      if ((await page.eval('TS.app.demo.i')) !== i) fail(`ожидали шаг ${i + 1}`);
+      const cap = await page.eval('document.getElementById("demoCap").textContent');
+      if (!cap || (await page.eval('document.getElementById("demoCap").hidden'))) fail(`шаг ${i + 1}: нет подписи для заказчика`);
+      if (SHOTS) await page.shot(`${OUT}/demo-${String(i + 1).padStart(2, '0')}-${ids[i]}.png`);
+      // тёмная тема — снимок шага со схемой и шага в 3D
+      if (SHOTS && (ids[i] === 'accident' || ids[i] === 'poly')) {
+        await clickBtn('#btnTheme', null, 'тема');
+        await sleep(200);
+        await page.shot(`${OUT}/demo-dark-${ids[i]}.png`);
+        await clickBtn('#btnTheme', null, 'тема');
+      }
+      if (i < n - 1) await clickBtn('#demo [data-d="next"]', null, '«Дальше»');
+    }
+    await clickBtn('#demo [data-d="exit"]', null, '«Выйти»');
+    await page.waitFor('!TS.app.demo.on', 3000, 'выход из показа');
+    await sleep(300);
+    const after = await page.eval(`({ src: TS.app.source, mode: TS.app.mode, il: TS.app.tr.opt.interlocks, store: ${myStore}, bar: document.getElementById('demo').hidden })`);
+    if (after.src !== before.src) fail(`после выхода схема ${after.src}, а была ${before.src}`);
+    if (after.mode !== '3d') fail(`после выхода вид ${after.mode}, а был 3d`);
+    if (after.il !== false) fail('после выхода блокировки не как были');
+    if (after.store !== before.store) fail('«Мои схемы» изменились');
+    if (!after.bar) fail('панель показа осталась');
+    await page.eval(`TS.app.lib.remove('${id}')`);
+    await setMode('train');
+    await setOpt('interlocks', true);
+    return `${n} шагов (${ids.join(', ')}); выход вернул схему, вид, блокировки`;
+  });
+  await check('demo', 'телефон 390×844', async () => {
+    await page.viewport(390, 844, true);
+    try {
+      await page.goto(page.base + '?demo=1');
+      await page.eval(HELPER);
+      await page.waitFor(demoReady, 15000, 'показ открыт');
+      const n = await page.eval('TS.app.demo.steps.length');
+      for (let i = 0; i < n; i++) {
+        await page.waitFor(demoReady, 15000, `шаг ${i + 1} готов`);
+        const st = await page.eval(`(() => { const d = TS.app.demo, s = d.step, bar = document.getElementById('demo').getBoundingClientRect(),
+          sch = (TS.app.mode === '3d' ? document.getElementById('view3d') : document.getElementById('sch')).getBoundingClientRect();
+          return { id: s.id, wide: !!s.wide, note: !document.querySelector('#demo .demo-note').hidden, over: bar.top < sch.bottom - 1 && bar.bottom > sch.top + 1, h: Math.round(bar.height), sch: Math.round(sch.height) }; })()`);
+        if (st.over) fail(`шаг ${i + 1}: панель закрывает схему`);
+        if (st.wide !== st.note) fail(`шаг ${i + 1}: пометка «лучше на ноутбуке» ${st.note ? 'лишняя' : 'не показана'}`);
+        if (st.sch < 250) fail(`шаг ${i + 1}: схеме осталось ${st.sch} px`);
+        if (SHOTS && (i < 3 || st.wide)) await page.shot(`${OUT}/demo-phone-${String(i + 1).padStart(2, '0')}-${st.id}.png`);
+        if (i === 1 && SHOTS) {
+          await clickBtn('#demo [data-d="fold"]', null, 'свернуть');
+          await page.shot(`${OUT}/demo-phone-folded.png`);
+          await clickBtn('#demo [data-d="fold"]', null, 'развернуть');
+        }
+        if (i < n - 1) await clickBtn('#demo [data-d="next"]', null, '«Дальше»');
+      }
+      await clickBtn('#demo [data-d="exit"]', null, '«Выйти»');
+      return `${n} шагов, панель снизу не закрывает схему`;
+    } finally {
+      await page.viewport(1366, 860);
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
+} };
+// Автопоказ: ?demo=auto доходит до конца сам за 2–3 минуты, без ошибок
+SUITES.auto = { perScheme: false, fn: async () => {
+  await check('auto', '?demo=auto', async () => {
+    await page.goto(page.base + '?demo=auto');
+    await page.eval(HELPER);
+    const t0 = Date.now();
+    let shot = 0;
+    while (!(await page.eval('TS.app.demo.done'))) {
+      if (Date.now() - t0 > 240000) fail('автопоказ не закончился за 4 минуты');
+      if (!(await page.eval('TS.app.demo.autoOn'))) fail('автопоказ остановился на шаге ' + ((await page.eval('TS.app.demo.i')) + 1));
+      if (SHOTS && Date.now() - t0 > shot * 15000) { await page.shot(`${OUT}/auto-${String(shot).padStart(2, '0')}.png`); shot++; }
+      await sleep(500);
+    }
+    const ms = await page.eval('TS.app.demo.autoMs');
+    if (ms < 120000 || ms > 180000) fail(`автопоказ шёл ${Math.round(ms / 1000)} с — нужно 2–3 минуты`);
+    await clickBtn('#demo [data-d="exit"]', null, '«Выйти»');
+    await page.goto(page.base);
+    await page.eval(HELPER);
+    return `до конца за ${Math.round(ms / 1000)} с`;
+  });
+} };
+
 // ---------- запуск ----------
 async function main() {
   if (!NO_BUILD) {
@@ -238,8 +340,9 @@ async function main() {
   let code = 0;
   try {
     page = await browser.newPage();
+    page.base = url;
     await page.goto(url);
-    await page.eval(readFileSync(new URL('./e2e-page.js', import.meta.url), 'utf8'));
+    await page.eval(HELPER);
     const keys = await page.eval('TS.SAMPLES.map(s => s.key)');
     const su = onlySuites(), ok = onlyKeys();
     for (const [name, s] of Object.entries(SUITES)) {

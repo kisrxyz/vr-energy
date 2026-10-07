@@ -11,6 +11,7 @@ import { makeLibrary } from './ui/myschemes.js';
 import { Diag } from './ui/diag.js';
 import { Sound } from './ui/sound.js';
 import { View3D } from './view3d/view3d.js';
+import { Demo } from './ui/demo.js';
 
 /* ===== Приложение: режимы, правка схемы, связка движка с 2D, 3D и панелями =====
    source — откуда схема: ключ готовой схемы (SAMPLES) или 'my:<id>' — запись в «Моих схемах» (src/ui/myschemes.js).
@@ -38,6 +39,9 @@ const app = Object.assign({
     this.setScheme(SAMPLES[0].make(), 'ps110');
     this.setMode(['edit', 'train', '3d'].includes(hash) ? hash : 'train', true);
     if (moved) this.toast('«Моя схема» перенесена в список «Мои схемы» (кнопка «Схемы»).', 'ok');
+    // «Показ» для заказчика: кнопка вверху, ?demo=1 и ?demo=auto (src/ui/demo.js)
+    this.demo = new Demo(this);
+    this.demo.init();
     setInterval(() => this.tick(), 1000);
   },
   userGesture() { Sound.init(); },
@@ -95,7 +99,8 @@ const app = Object.assign({
   },
   // Первая правка готовой схемы: копия в «Моих схемах», дальше правки идут в неё
   markMine() {
-    if (this.isMine()) return;
+    // в показе правки живут только в памяти: «Мои схемы» показ не трогает
+    if (this.isMine() || this.demoOn) return;
     const base = this.scheme.title;
     this.scheme.title = `${base} (копия)`;
     const id = this.lib.add(this.scheme);
@@ -387,7 +392,7 @@ const app = Object.assign({
     const clip = Ed.copyGroup(this.scheme, sel);
     if (!clip) return false;
     this.clip = clip;
-    store.set('ts.clip', JSON.stringify(clip));
+    if (!this.demoOn) store.set('ts.clip', JSON.stringify(clip));
     this.toast(`Скопировано: ${countText(clip.els.length, clip.wires.length)}. Ctrl+V — вставить (и в другую схему).`);
     return true;
   },

@@ -66,6 +66,31 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn svg { width: 16px; height: 16px; flex: none; }
 .icon-btn { width: 32px; height: 32px; padding: 0; }
 
+/* ---------- «Показ»: панель ведущего (под верхней панелью, на телефоне — снизу) и подпись для заказчика на сцене ---------- */
+.app { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.app > .top { grid-row: 1; }
+.app > .demo { grid-row: 2; }
+.app > .work { grid-row: 3; }
+.app > .status { grid-row: 4; }
+.demo { display: grid; gap: 4px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--accent); }
+.demo-h { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.demo-n { font: 600 11px/1 var(--f-mono); color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 5px 9px; white-space: nowrap; }
+.demo-t { flex: 1; min-width: 180px; font-size: 15px; }
+.demo-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.demo.folded .demo-b { display: none; }
+.demo-b { display: grid; gap: 2px; }
+.demo-b p { margin: 0; font-size: 13px; color: var(--muted); max-width: 1100px; }
+.demo-b b { color: var(--ink); }
+.demo-capm { display: none; }
+.demo-note { color: var(--warn) !important; }
+.demo-auto { color: var(--accent) !important; }
+#btnDemo[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.demo-cap { position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%); z-index: 4; width: max-content; max-width: min(860px, calc(100% - 32px)); padding: 10px 18px; border-radius: 12px; background: var(--hud-bg); color: var(--hud-ink); border: 1px solid var(--hud-line); font: 600 18px/1.35 var(--f-ui); text-align: center; pointer-events: none; box-shadow: var(--shadow); }
+body.demo-auto .v3-click { display: none; }
+/* пешком в показе: управление рассказывает ведущий; подпись — над строкой «СИЗ / в руке» */
+.app[data-demo] .v3-keys { display: none; }
+.view3d[data-fps="1"] ~ .demo-cap { bottom: 58px; }
+
 /* ---------- рабочая область ---------- */
 .work { display: grid; grid-template-columns: 200px minmax(0, 1fr) 340px; min-height: 0; }
 .app:not([data-mode="edit"]) .work { grid-template-columns: minmax(0, 1fr) 340px; }
@@ -379,6 +404,18 @@ details.more p.ask { color: var(--warn); }
   .pal-item .cd { display: none; }
   .pal-empty { margin: 4px 0; white-space: nowrap; }
   .side { border-left: 0; border-top: 1px solid var(--line); max-height: 44vh; }
+  /* показ на телефоне: панель ведущего снизу, в потоке — схему не закрывает; подпись — в панели */
+  .app > .demo { grid-row: 4; border-bottom: 0; border-top: 1px solid var(--line); padding: 6px 12px 8px; }
+  .demo-t { min-width: 0; font-size: 14px; }
+  .demo-btns { width: 100%; }
+  .demo-btns .btn { padding: 6px 8px; }
+  .demo-btns [data-d="auto"] { display: none; }
+  .tools .sel { max-width: 112px; }
+  #btnDemo, #btnFile { padding: 6px 8px; }
+  .demo-cap { display: none; }
+  .demo-capm { display: block; color: var(--ink) !important; font-weight: 600; }
+  .demo.folded .demo-b { display: grid; }
+  .demo.folded .demo-b > :not(.demo-capm) { display: none; }
   .status { display: none; }
   .cols { grid-template-columns: minmax(0, 1fr); }
   .sel { max-width: 150px; }

@@ -1471,6 +1471,24 @@ class View3D {
     const mm = this.menu3d, p = this.camera.getWorldPosition(this.tmp.v2);
     return Math.hypot(p.x - mm.m.position.x, p.z - mm.m.position.z) > mm.far;
   }
+  // Куда смотреть пешком, чтобы под прицелом было нужное: what = { item | mount | dev } или { menu: 'пункт меню' }.
+  // Возвращает { p — точка в мире, want(aim) — то ли под прицелом } или null. Для автопоказа и автопроходки (walk.seek)
+  aimTarget(what) {
+    const T = THREE, p = new T.Vector3();
+    if (what.menu) {
+      const mm = this.menu3d, b = mm && mm.btns.find(q => q.a.label === what.menu);
+      if (!b) return null;
+      mm.m.updateWorldMatrix(true, false);
+      mm.m.localToWorld(p.set(0, (0.5 - (b.y0 + b.y1) / 2 / mm.H) * mm.m.geometry.parameters.height, 0));
+      return { p, want: a => !!a && a.type === 'menu' && (this.menuBtn(a.h.uv) || {}).a === b.a };
+    }
+    const key = what.item ? 'item' : what.mount ? 'mount' : 'dev', id = what[key];
+    const o = this.pickables.find(q => q.userData[key] === id);
+    if (!o) return null;
+    o.updateWorldMatrix(true, false);
+    o.getWorldPosition(p);
+    return { p, want: a => !!a && a.type === key && a.id === id };
+  }
   // Пункт меню под лучом или прицелом (null — заголовок или зазор)
   menuBtn(uv) {
     const mm = this.menu3d;

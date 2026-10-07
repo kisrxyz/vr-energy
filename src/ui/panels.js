@@ -8,6 +8,8 @@ import { Diag } from './diag.js';
 /* ===== §5. Панели и окна ===== */
 // «5 элементов, 1 провод» — для выделения и буфера
 const plural = (n, f) => f[n % 10 === 1 && n % 100 !== 11 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2];
+// «Авария: …»: вид ошибки не повторяем, если текст им уже начинается («Авария: Авария: …»)
+const errText = (kind, text) => String(text).startsWith(kind + ':') ? String(text) : `${kind}: ${text}`;
 const countText = (ne, nw) => `${ne} ${plural(ne, ['элемент', 'элемента', 'элементов'])}, ${nw} ${plural(nw, ['провод', 'провода', 'проводов'])}`;
 const Panels = {
   // ---------- уведомления ----------
@@ -241,7 +243,8 @@ const Panels = {
         <li>Несколько элементов: Shift или Ctrl + перетаскивание по пустому месту — рамка, Shift или Ctrl + щелчок — добавить или убрать (на телефоне — кнопка «Выделение»). Повторяющиеся ячейки — Ctrl+C, Ctrl+V.</li></ul></div>`;
   },
   trainSideHTML() {
-    const welcome = this.welcomeSeen ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
+    // приветствие — для первого входа; в показе ведущий рассказывает сам
+    const welcome = this.welcomeSeen || this.demoOn ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
       <ol><li>Нажмите на выключатель или разъединитель: он переключится, а цвет шин покажет, где напряжение.</li>
       <li>Выберите задание и нажмите «Начать» — программа оценит переключения.</li>
       <li>Вкладка «3D и VR» — та же схема в объёме, в шлеме Quest — в VR.</li></ol>
@@ -379,7 +382,7 @@ const Panels = {
     const tr = this.tr, g = run.grade, ms = run.measures || null;
     const kindName = { accident: 'Авария', kz: 'КЗ', blocked: 'Блокировка', supply: 'Перерыв питания', proc: 'Порядок', safety: 'Охрана труда' };
     // ошибки полигона объясняют, почему это опасно (тексты — src/core/explain.js, проверяет преподаватель)
-    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${kindName[e.kind] || e.kind}: ${esc(e.text)}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
+    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${esc(errText(kindName[e.kind] || e.kind, e.text))}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
     const mine = run.ops.length ? '<ol>' + run.ops.map(o => `<li><span class="mono">${fmtTime(o.t)}</span> ${esc(capFirst(tr.stepText(o)))}</li>`).join('') + '</ol>' : '<p>Действий не было.</p>';
     const ref = '<ol>' + run.task.steps.map(s => `<li>${esc(capFirst(tr.stepText(s)))}</li>`).join('') + '</ol>';
     const mark = m => (m.sat && !m.flagged ? '✓' : m.sat ? '!' : '—');
@@ -394,7 +397,7 @@ const Panels = {
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
       `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, '', 'Ошибки:',
-      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${kindName[e.kind] || e.kind}: ${e.text}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
+      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
       ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
       '', 'Действия:',
       ...run.ops.map((o, i) => `${i + 1}. ${fmtTime(o.t)} ${capFirst(tr.stepText(o))}`),
@@ -502,6 +505,13 @@ const Panels = {
       <div><b>Три режима</b><ul class="issues"><li><b>Редактор</b> — собрать схему из элементов: палитра слева, провода тянутся от точек подключения.</li>
       <li><b>Тренажёр</b> — переключения по щелчку. Цвет показывает напряжение, землю и положение аппаратов. Задания оцениваются, в конце — отчёт.</li>
       <li><b>3D и VR</b> — та же схема в объёме: щелчок мышью или луч контроллера переключает аппараты. Кнопка «Пешком» — пройти по площадке от первого лица.</li></ul></div>
+      <div><b>Показ для заказчика</b><ol class="issues">
+      <li>Кнопка «Показ» вверху (или ссылка с <span class="mono">?demo=1</span>): шаги на 10 минут, у каждого — «Что сказать» для ведущего.</li>
+      <li>«Дальше» и «Назад» сами ставят схему, вид, задание и блокировки шага; «Подготовить» — вернуть шаг к началу, если нажали не то.</li>
+      <li>Заказчику внизу сцены — короткая подпись. «Что сказать» сворачивается кнопкой ▾.</li>
+      <li>«Автопоказ» (или <span class="mono">?demo=auto</span>) — шаги сами за 2–3 минуты, удобно записать видео с экрана; любое нажатие — пауза.</li>
+      <li>Показ ничего не сохраняет: «Мои схемы» не меняются, после «Выйти» вернутся прежние схема, вид и блокировки.</li>
+      <li>3D-шаги лучше вести с ноутбука; в шлеме Quest — та же ссылка, «Войти в VR».</li></ol></div>
       <div><b>Пешком (площадка и полигон)</b><ul class="issues">
       <li>На площадке — кнопка «Пешком» вверху (обратно — «Обзор»): вы у ворот ограждения, лицом к подстанции. В VR-полигоне пешком — сразу.</li>
       <li>Щелчок по сцене — управление мышью, WASD — ходить, мышь — смотреть, Esc — отпустить мышь. Сквозь аппараты, ограждение и стены не пройти, под проводами и шинами — можно.</li>
@@ -541,4 +551,4 @@ const Panels = {
   },
 };
 
-export { Panels, countText };
+export { Panels, countText, errText };

@@ -11,6 +11,7 @@ import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 import * as Ed from '../src/core/edit.js';
+import * as Plan from '../src/core/plan.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -1025,6 +1026,41 @@ function doMeasure(tr, pm, m) {
   // удаление: группа уходит, провод к шине остаётся
   Ed.deleteGroup(s, sel);
   ok(!s.els.some(e => sel.els.includes(e.id)) && !s.wires.some(w => sel.wires.includes(w.id)) && s.wires.includes(busWire), 'delete: the group goes, the bus wire stays');
+}
+{
+  console.log('Plan (src/core/plan.js): every task of every scheme — all steps and measures covered, run through the engine gives 100');
+  for (const smp of E.SAMPLES) {
+    smp.make().tasks.forEach((t0, ti) => {
+      const s = smp.make(), t = s.tasks[ti], tr = new E.Trainer(), pm = tr.use(new Permit());
+      tr.load(s);
+      const plan = Plan.planTask(s, t), tag = `${smp.key} #${ti + 1}`;
+      ok(plan.length >= t.steps.length && t.steps.every(st => plan.some(a => a.step === st)), `${tag}: every reference step has an action (${plan.length} for ${t.steps.length})`);
+      ok(plan.every(a => ['switch', 'rack', 'check', 'pz', 'wear', 'place', 'take'].includes(a.do)), `${tag}: only known actions`);
+      // тележка — пунктом меню, как у человека
+      ok(plan.filter(a => a.do === 'rack' || (a.do === 'switch' && E.TYPES[s.els.find(e => e.id === a.id).t].cart)).every(a => a.menu && tr.actions(a.id).length > 1), `${tag}: trolley actions go through its menu`);
+      tr.startTask(t);
+      for (const a of plan) {
+        if (a.menu) ok(tr.actions(a.id).some(x => x.label === a.menu), `${tag}: menu has «${a.menu}»`);
+        const r = Plan.runAction(tr, pm, a);
+        if (!r || r.err || r.blocked || (r.viol && r.viol.kind)) ok(false, `${tag}: ${a.do} ${a.id || a.item || a.target} :: ${r && r.text}`);
+      }
+      ok(tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.run.grade.verdict === 'Выполнено без ошибок', `${tag}: 100, «Выполнено без ошибок» (${tr.run.grade.score}, ${tr.run.grade.verdict})`);
+      if (t.measures) ok(t.measures.every(m => pm.sat(m)) || (tr.run.measures || []).every(m => m.sat && !m.flagged), `${tag}: every measure done in order`);
+      ok(Plan.actionText(tr, plan[0]).length > 3 && plan.every(a => !/undefined|NaN/.test(Plan.actionText(tr, a))), `${tag}: action texts read well («${Plan.actionText(tr, plan[0])}»)`);
+    });
+  }
+  // мероприятия без шагов (задание полигона из файла без steps): план по этапам тоже даёт 100
+  const s = E.SAMPLES.find(x => x.key === 'poly').make(), t = Object.assign({}, s.tasks[0], { steps: [] });
+  const tr = new E.Trainer(), pm = tr.use(new Permit());
+  tr.load(s);
+  const plan = Plan.planTask(s, t);
+  ok(t.measures.every(m => plan.some(a => a.step === m)), 'measures-only plan: every measure has an action');
+  tr.startTask(t);
+  plan.forEach(a => Plan.runAction(tr, pm, a));
+  ok(tr.run.done && tr.run.completed && tr.run.errors.length === 0, 'measures-only plan: done without errors');
+  // снять плакат и замок — тот предмет, что висит
+  const p2 = Plan.planTask(s, { steps: [{ op: 'hang', poster: 'nevkl', at: 'drive:3' }, { op: 'hang', poster: 'nevkl', at: 'drive:4' }, { op: 'unhang', poster: 'nevkl', at: 'drive:4' }, { op: 'lock', at: 'drive:3' }, { op: 'unlock', at: 'drive:3' }] });
+  ok(p2.map(a => a.do + ':' + a.item).join() === 'place:nevkl1,place:nevkl2,take:nevkl2,place:lock,take:lock', 'unhang and unlock take the item that hangs there');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

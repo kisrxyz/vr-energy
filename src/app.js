@@ -3,8 +3,9 @@ import { GLOSSARY } from './core/glossary.js';
 import { SAMPLES } from './core/samples.js';
 import { buildTopo, makeSim, compute, Trainer } from './core/engine.js';
 import { Permit } from './core/permit.js';
+import * as Ed from './core/edit.js';
 import { elSubtitle, nearestOnWire, Scheme2D } from './view2d/scheme2d.js';
-import { Panels } from './ui/panels.js';
+import { Panels, countText } from './ui/panels.js';
 import { store } from './ui/store.js';
 import { makeLibrary } from './ui/myschemes.js';
 import { Diag } from './ui/diag.js';
@@ -142,6 +143,9 @@ const app = Object.assign({
     document.getElementById('sch').style.display = m === '3d' ? 'none' : '';
     document.getElementById('view3d').hidden = m !== '3d';
     document.getElementById('zoomTools').hidden = m === '3d';
+    // «Выделение» (рамка пальцем) — только в редакторе
+    document.getElementById('zSel').hidden = m !== 'edit';
+    if (m !== 'edit') this.view.setBoxMode(false);
     if (m === '3d') this.show3D(); else if (this.v3) this.v3.hide();
     this.view.render(); this.renderSide(); this.renderLegend(); this.renderStatus();
     try { history.replaceState(null, '', '#' + m); } catch (e) { /* адрес не меняем */ }
@@ -337,16 +341,18 @@ const app = Object.assign({
       steps: t.steps.filter(x => FIELD_OPS.includes(x.op) || ok(x.id) || (x.op === 'check' && wids.has(x.id))), keep: t.keep.filter(k => ids.has(k)),
     }, t.measures ? { measures: t.measures.filter(okMeasure) } : {})).filter(t => Object.keys(t.target).length || Object.keys(t.targetPos).length);
   },
+  // Каждая операция с выделенным — один шаг «Отменить»; после удаления — один cleanTasks
   deleteSel() {
     const sel = this.view.sel;
     if (!sel) return;
     this.history();
-    if (sel.type === 'el') { this.scheme.els = this.scheme.els.filter(e => e.id !== sel.id); this.cleanTasks(); }
-    else { this.scheme.wires = this.scheme.wires.filter(w => w.id !== sel.id); this.cleanTasks(); }
+    Ed.deleteGroup(this.scheme, this.view.selSets());
+    this.cleanTasks();
     this.view.sel = null;
     this.commit();
   },
   rotateSel() {
+    if (this.view.sel && this.view.sel.type === 'group') { this.rotateGroup(); return; }
     const el = this.selEl();
     if (!el) return;
     this.history();
@@ -356,13 +362,46 @@ const app = Object.assign({
     for (const w of this.scheme.wires) for (const end of ['a', 'b']) { const i = old.indexOf(ptKey(w[end])); if (i >= 0) w[end] = now[i].slice(); }
     this.commit();
   },
-  duplicateSel() {
-    const el = this.selEl();
-    if (!el) return;
+  // Группа поворачивается вокруг своего центра; пока после поворота ничего не менялось, центр тот же — 4 поворота вернут на место
+  rotateGroup() {
+    const sel = this.view.selSets(), sig = JSON.stringify(sel), r = this._rot;
+    const pivot = r && r.sig === sig && r.ver === this.schemeVersion ? r.pivot : null;
     this.history();
-    const c = makeEl(this.scheme, el.t, el.x + 3, el.y, { r: el.r, p: JSON.parse(JSON.stringify(el.p)), on: el.on, pos: el.pos });
-    this.view.sel = { type: 'el', id: c.id };
+    const used = Ed.rotateGroup(this.scheme, sel, pivot);
     this.commit();
+    this._rot = { sig, pivot: used, ver: this.schemeVersion };
+  },
+  // Копия рядом (+3 клетки): элемент или группа со своими проводами, новые имена
+  duplicateSel() {
+    if (!this.view.sel || this.view.sel.type === 'wire') return;
+    this.history();
+    const r = Ed.duplicateGroup(this.scheme, this.view.selSets(), 3);
+    this.commit();
+    if (r) this.view.setSel(r.els, r.wires);
+  },
+  selectAll() { this.view.setSel(this.scheme.els.map(e => e.id), this.scheme.wires.map(w => w.id)); },
+  // Буфер: в памяти и в хранилище браузера — вставить можно и в другую схему, и после перезагрузки
+  copySel() {
+    const sel = this.view.selSets();
+    if (!sel.els.length && !sel.wires.length) return false;
+    const clip = Ed.copyGroup(this.scheme, sel);
+    if (!clip) return false;
+    this.clip = clip;
+    store.set('ts.clip', JSON.stringify(clip));
+    this.toast(`Скопировано: ${countText(clip.els.length, clip.wires.length)}. Ctrl+V — вставить (и в другую схему).`);
+    return true;
+  },
+  // Вставка под курсор (центр группы — в клетку под курсором); курсор не над схемой — в середину видимого
+  paste() {
+    let clip = this.clip;
+    if (!clip) { try { clip = JSON.parse(store.get('ts.clip') || 'null'); } catch (e) { clip = null; } }
+    if (!clip || clip.kind !== 'ts-group') { this.toast('Буфер пуст: выделите элементы и нажмите Ctrl+C.'); return; }
+    const v = this.view, r = v.svg.getBoundingClientRect();
+    const at = v.cursorW || v.toWorld(r.left + r.width / 2, r.top + r.height / 2);
+    this.history();
+    const res = Ed.pasteGroup(this.scheme, clip, Math.round(at[0] - clip.w / 2), Math.round(at[1] - clip.h / 2));
+    this.commit();
+    if (res) { v.setSel(res.els, res.wires); this.toast(`Вставлено: ${countText(res.els.length, res.wires.length)}.`); }
   },
   setNormal(on) { const el = this.selEl(); if (!el || !isSwitchable(el)) return; this.history(); el.on = on; this.commit(); },
   setNormalPos(pos) { const el = this.selEl(); if (!el || !TYPES[el.t].cart) return; this.history(); el.pos = pos; this.commit(); },
@@ -423,6 +462,7 @@ const app = Object.assign({
     document.getElementById('zIn').addEventListener('click', () => this.view.zoomCenter(1.25));
     document.getElementById('zOut').addEventListener('click', () => this.view.zoomCenter(0.8));
     document.getElementById('zFit').addEventListener('click', () => this.view.fit());
+    document.getElementById('zSel').addEventListener('click', () => this.view.setBoxMode(!this.view.boxMode));
     document.addEventListener('pointerdown', () => this.userGesture(), true);
 
     const side = document.getElementById('side');
@@ -594,7 +634,10 @@ const app = Object.assign({
       else if (mod && e.code === 'KeyZ') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); }
       else if (mod && e.code === 'KeyY') { e.preventDefault(); this.redo(); }
       else if (mod && e.code === 'KeyD') { e.preventDefault(); this.duplicateSel(); }
-      else if (e.key === 'Escape') { this.view.setPlacing(null); this.paletteState(null); this.view.select(null); }
+      else if (mod && e.code === 'KeyA') { e.preventDefault(); this.selectAll(); }
+      else if (mod && e.code === 'KeyC') { if (this.copySel()) e.preventDefault(); }
+      else if (mod && e.code === 'KeyV') { e.preventDefault(); this.paste(); }
+      else if (e.key === 'Escape') { this.view.setPlacing(null); this.paletteState(null); this.view.select(null); this.view.setBoxMode(false); }
       return;
     }
     if (mod) return;

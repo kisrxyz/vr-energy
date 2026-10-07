@@ -10,6 +10,7 @@ import { WHY, MISPLACED } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
+import * as Ed from '../src/core/edit.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -963,6 +964,67 @@ function doMeasure(tr, pm, m) {
   p = w.resolve(-5, 15.6);
   ok(p[1] < 15 - 0.24 || p[1] > 15 + 0.04, 'fence beside the gate pushes out: ' + p.map(v => v.toFixed(2)));
   ok(!w.walkable(0, 0) && w.walkable(0, 2), 'inside the tank — no; beside — yes');
+}
+/* ===== Редактор: группа элементов (src/core/edit.js) ===== */
+{
+  console.log('Group edit: frame, copy of a feeder cell, move, rotate, delete, paste into another scheme');
+  const s = E.SAMPLES[0].make();                       // ПС 110/10: линия Л-1 — x 4, ЗН справа (x 6), от шины (y 32) до нагрузки (y 49)
+  const nm = id => s.els.find(e => e.id === id).name;
+  const line = ['ШР Л-1', 'ЗН-1 Л-1', 'В-10 Л-1', 'ЗН-2 Л-1', 'ЛР Л-1', 'Цех №1'];
+  const sel = Ed.inRect(s, 2.5, 32.5, 7.5, 50.5);
+  ok(sel.els.length === 6 && line.every(n => sel.els.some(id => nm(id) === n)), 'frame: the whole line, nothing else: ' + sel.els.map(nm));
+  const busWire = s.wires.find(w => w.a[0] === 4 && w.a[1] === 32 && w.b[1] === 33);
+  ok(sel.wires.length === 7 && !sel.wires.includes(busWire.id), 'frame: 7 wires of the line; the wire to the bus has one end outside (' + sel.wires.length + ')');
+  // щелчками — только элементы: провода через узел ответвления ЗН всё равно свои
+  ok(Ed.copyGroup(s, { els: sel.els, wires: [] }).wires.length === 7, 'elements only: own wires found through junctions');
+  const ids0 = new Set(s.els.map(e => e.id)), wids0 = new Set(s.wires.map(w => w.id)), n0 = s.els.length;
+  const dup = Ed.duplicateGroup(s, sel, 4);             // копия — x 8, между Л-1 и Л-2
+  ok(dup.els.length === 6 && dup.wires.length === 7 && dup.els.every(id => !ids0.has(id)) && dup.wires.every(id => !wids0.has(id)), 'copy: 6 elements and 7 wires with new ids');
+  const names = s.els.map(e => e.name);
+  ok(s.els.length === n0 + 6 && new Set(names).size === names.length && dup.els.every(id => !line.includes(nm(id))), 'copy: new unique names: ' + dup.els.map(nm));
+  // связи те же: каждая точка подключения копии совпадает с точкой оригинала, сдвинутой на 4 клетки
+  const topo = E.buildTopo(s), byId = id => s.els.find(e => e.id === id);
+  const same = sel.els.every((id, i) => { const a = E.portPoints(byId(id)), b = E.portPoints(byId(dup.els[i])); return a.length === b.length && a.every((p, j) => p[0] + 4 === b[j][0] && p[1] === b[j][1]); });
+  ok(same, 'copy: elements in the same places and turns, shifted by 4');
+  const node = p => topo.node(E.ptKey(p));
+  const pairs = ids => { const pts = ids.flatMap(id => E.portPoints(byId(id)).map(p => [p, node(p)])); return pts.flatMap((x, i) => pts.slice(i + 1).map(y => x[1] === y[1])); };
+  ok(JSON.stringify(pairs(sel.els)) === JSON.stringify(pairs(dup.els)), 'copy: the same points are connected as in the original');
+  const free = ids => ids.flatMap(id => E.portPoints(byId(id))).filter(p => { const u = topo.use.get(E.ptKey(p)); return u.ports + u.wires < 2 && !u.bus; }).length;
+  ok(free(dup.els) === 1 && free(sel.els) === 0, 'copy: one free point — to the bus, where the original has its external wire (' + free(dup.els) + ')');
+  // подключить копию к шине — в тренажёре новая линия работает
+  E.makeWire(s, [8, 32], [8, 33]);
+  const tr = new E.Trainer(); tr.load(s);
+  const load2 = dup.els.find(id => byId(id).t === 'load'), brk2 = dup.els.find(id => byId(id).t === 'breaker');
+  ok(tr.state.loads.has(load2) && tr.state.loads.size === 5, 'copy on the bus: its load is powered (' + tr.state.loads.size + ' loads)');
+  const r = tr.operate(brk2);
+  ok(r.ok && !r.viol && !tr.state.loads.has(load2) && tr.state.loads.size === 4, 'its breaker switches the new load off');
+  // перенос: свои провода целиком, провод к шине тянется
+  const before = JSON.stringify(s);
+  Ed.moveGroup(s, sel, 0, 2);
+  ok(byId(sel.els[0]).y === 36 && busWire.a[1] === 32 && busWire.b[1] === 35 && s.wires.filter(w => sel.wires.includes(w.id)).every(w => w.a[1] >= 35), 'move: own wires go along, the bus wire stretches');
+  Ed.moveGroup(s, sel, 0, -2);
+  ok(JSON.stringify(s) === before, 'move back: the scheme is as before');
+  // поворот 4 × 90° — как было (на чистой схеме: повёрнутая группа не ложится на чужие провода)
+  {
+    const r0 = E.SAMPLES[0].make(), rs = Ed.inRect(r0, 2.5, 32.5, 7.5, 50.5), rb = JSON.stringify(r0), el = id => r0.els.find(e => e.id === id);
+    const bw = r0.wires.find(w => w.a[0] === 4 && w.a[1] === 32 && w.b[1] === 33);
+    const pv = Ed.rotateGroup(r0, rs);
+    ok(JSON.stringify(r0) !== rb && el(rs.els[2]).r === 1 && E.portPoints(el(rs.els[0])).some(p => E.ptKey(p) === E.ptKey(bw.b)), 'rotate 90°: elements turn, the bus wire follows the port');
+    ok(r0.els.every(e => Number.isInteger(e.x) && Number.isInteger(e.y)) && r0.wires.every(w => [...w.a, ...w.b].every(Number.isInteger)), 'rotate: everything stays on the grid');
+    Ed.rotateGroup(r0, rs, pv); Ed.rotateGroup(r0, rs, pv); Ed.rotateGroup(r0, rs, pv);
+    ok(JSON.stringify(r0) === rb, 'rotate 4 × 90° around the same centre returns the original');
+  }
+  // вставка в другую схему: имена свои, id новые; вторая вставка — новые имена
+  const clip = JSON.parse(JSON.stringify(Ed.copyGroup(s, sel)));
+  const s2 = E.emptyScheme('Другая');
+  const p1 = Ed.pasteGroup(s2, clip, 10, 10), p2 = Ed.pasteGroup(s2, clip, 20, 10);
+  const nm2 = id => s2.els.find(e => e.id === id).name;
+  ok(p1.els.map(nm2).join() === line.join() && p2.els.every(id => !line.includes(nm2(id))) && new Set(s2.els.map(e => e.name)).size === 12, 'paste into another scheme: names kept, second paste renamed');
+  ok(s2.els.every(e => typeof e.id === 'string') && new Set(s2.els.map(e => e.id).concat(s2.wires.map(w => w.id))).size === 12 + 14, 'paste: new unique ids');
+  ok(E.buildTopo(s2).term.size === 12 && JSON.stringify(E.normalizeScheme(JSON.parse(JSON.stringify(s2))).els.map(e => e.name)) === JSON.stringify(s2.els.map(e => e.name)), 'pasted scheme builds and survives a file roundtrip');
+  // удаление: группа уходит, провод к шине остаётся
+  Ed.deleteGroup(s, sel);
+  ok(!s.els.some(e => sel.els.includes(e.id)) && !s.wires.some(w => sel.wires.includes(w.id)) && s.wires.includes(busWire), 'delete: the group goes, the bus wire stays');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

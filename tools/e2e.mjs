@@ -196,6 +196,8 @@ const MISTAKES = {
   tp10: { task: 1, interlocks: false, kind: 'Авария', text: 'включён на участок под напряжением', do: [{ do: 'switch', name: 'ЗН-10' }] },
   ps35: { task: 0, interlocks: true, kind: 'Блокировка', text: 'выключатель включён', do: [{ do: 'rack', name: 'В-10 Л-1', pos: 'test', menu: 'Тележку в контрольное положение' }] },
   poly: { task: 0, interlocks: true, kind: 'Охрана труда', text: 'Операция без СИЗ', do: [{ do: 'switch', name: 'В-10 яч.3', menu: 'Отключить выключатель' }] },
+  // противоаварийное задание РП-10: СВ на повреждённый ввод — КЗ, отключается ближайший выключатель
+  rp10: { task: 2, interlocks: false, kind: 'КЗ', text: 'СВ-10 включён на заземлённый участок', do: [{ do: 'switch', name: 'СВ-10', menu: 'Включить выключатель' }] },
 };
 SUITES.errors = { perScheme: true, fn: async keys => {
   for (const key of keys) {
@@ -470,6 +472,53 @@ SUITES.exam = { perScheme: false, fn: async () => {
       await page.eval(HELPER);
     }
   });
+} };
+
+// Площадка: в 2D на 1366×860 подписи не налезают друг на друга; пешком к каждой тележке можно подойти и навести прицел
+SUITES.yard = { perScheme: true, fn: async keys => {
+  for (const key of keys) {
+    if (await page.eval(`!!TS.SAMPLES.find(s => s.key === '${key}').poly`)) continue;
+    await check('yard', key, async () => {
+      await chooseScheme(key);
+      await setMode('train');
+      await clickBtn('#zFit', null, '«Вписать»');
+      await sleep(100);
+      // пересечения подписей (в клетках схемы), заметные глазу: больше 0,05 клетки по обеим осям
+      const over = await page.eval(`(() => {
+        // рамка строки выше букв (межстрочный запас): берём середину по высоте — высоту строчных и прописных букв
+        const t = [...document.querySelectorAll('#ll text')].map(e => { const b = e.getBBox(); return { s: e.textContent, b: { x: b.x, width: b.width, y: b.y + b.height * 0.22, height: b.height * 0.56 } }; }).filter(q => q.b.width > 0);
+        const out = [];
+        for (let i = 0; i < t.length; i++) for (let j = i + 1; j < t.length; j++) {
+          const a = t[i].b, b = t[j].b, dx = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x), dy = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+          if (dx > 0.05 && dy > 0.05) out.push(t[i].s + ' / ' + t[j].s);
+        }
+        return out; })()`);
+      if (SHOTS) await page.shot(`${OUT}/yard-${key}-2d.png`);
+      if (over.length) fail(`подписи налезают: ${over.slice(0, 4).join('; ')}${over.length > 4 ? ` и ещё ${over.length - 4}` : ''}`);
+      await setMode('3d');
+      await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+      if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+      await page.eval('TS.app.v3.walk.lockChanged(true)');
+      const res = await page.eval(`(() => {
+        const v = TS.app.v3, w = v.walk, carts = TS.app.scheme.els.filter(e => TS.TYPES[e.t].cart), bad = [];
+        for (const el of carts) {
+          const t = v.aimTarget({ dev: el.id }), q = t && w.seek(t.p, t.want, false, [2.5, 3.2, 4, 1.8, 5]);
+          if (!q) bad.push(el.name);
+        }
+        return { n: carts.length, bad };
+      })()`);
+      if (SHOTS && res.n) {
+        const first = await page.eval(`TS.app.scheme.els.find(e => TS.TYPES[e.t].cart).id`);
+        await page.fn(id => { const v = TS.app.v3, t = v.aimTarget({ dev: id }), q = v.walk.seek(t.p, t.want, false, [3.2, 4, 2.5]); if (q) v.walk.pose(q); }, first);
+        await sleep(400);
+        await page.shot(`${OUT}/yard-${key}-walk.png`);
+      }
+      await clickBtn('#btnWalk', null, '«Обзор»');
+      await setMode('train');
+      if (res.bad.length) fail(`пешком не подойти к тележкам: ${res.bad.join(', ')}`);
+      return `подписи не налезают; ${res.n ? `тележек ${res.n}, к каждой можно подойти` : 'тележек нет'}`;
+    });
+  }
 } };
 
 // ---------- запуск ----------

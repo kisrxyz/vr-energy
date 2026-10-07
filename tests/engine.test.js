@@ -1181,5 +1181,58 @@ function doMeasure(tr, pm, m) {
   m.set('ts.exams', 'not json');
   ok(Array.isArray(log.list()) && log.list().length === 0, 'a broken journal index — an empty list, no crash');
 }
+{
+  console.log('RP-10 kV: two sections, inputs by cable from two substations, typical mistakes, emergency drill');
+  const { s, tr, id } = setup('rp10');
+  const T = n => E.TYPES[s.els.find(e => e.name === n).t];
+  ok(s.els.filter(e => e.t === 'bus').length === 2 && T('В-10 Ввод-1').cart && T('В-10 Ввод-2').cart && T('СВ-10').cart && T('СР-10').cart && T('СР-10').sw === 'disconnector', 'two sections; inputs, СВ and СР on trolleys');
+  ok(['КЛ-10 Ввод-1', 'КЛ-10 Ввод-2'].every(n => T(n).cls === 'link') && s.els.filter(e => e.t === 'source').length === 2 && T('В-10 Ф-7 ПС «Северная»').sw === 'breaker', 'inputs by cable from two substations, breaker on the substation side');
+  ok(s.els.filter(e => e.t === 'vt').length === 2 && s.els.some(e => e.t === 'tsn') && s.els.filter(e => E.TYPES[e.t].consumer && /^ТП-/.test(e.name)).length === 6, 'a VT on each section, a station transformer, six cables to TPs');
+  ok(tr.state.loads.size === 7 && tr.state.G.size === 0 && !tr.sim.st[id('СВ-10')].on, 'normal state: everything powered, СВ-10 open');
+  ok(!s.room && s.tasks.length === 3 && s.tasks.every(t => t.requireCheck === (t.steps.some(x => x.op === 'check'))), 'no room (polygon rules off), three tasks');
+  const fresh = () => { const k = setup('rp10'); return k; };
+  // задание 2: ввод 1 отключён раньше, чем включён СВ — перерыв питания
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[1]);
+    const r = k.tr.operate(k.id('В-10 Ввод-1'));
+    ok(r.ok && k.tr.run.errors.some(e => e.kind === 'supply' && /ТП-1 «Школа»/.test(e.text)), 'task 2: input 1 off before СВ-10 — supply interruption');
+  }
+  // правило 10: тележку при включённом выключателе — блокировка; без блокировок — авария (ток нагрузки на разъёмных контактах)
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[0]);
+    const r = k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' });
+    ok(r.blocked && /не перемещается — выключатель включён/.test(r.text) && k.tr.run.errors[0].kind === 'blocked', 'trolley racked with the breaker on — blocked (rule 10)');
+    k.tr.opt.interlocks = false;
+    const r2 = k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' });
+    ok(r2.ok && r2.viol && r2.viol.kind === 'accident' && /при перемещении тележки/.test(r2.text), 'without interlocks — accident on the trolley contacts');
+  }
+  // ЗН на КЛ без проверки указателем — нарушение порядка
+  {
+    const k = fresh(); k.tr.startTask(k.s.tasks[0]);
+    k.tr.operate(k.id('В-10 Л-1')); k.tr.operate(k.id('В-10 Л-1'), { pos: 'test' }); k.tr.operate(k.id('ВН ТП-1'));
+    const r = k.tr.operate(k.id('ЗН Л-1'));
+    ok(r.ok && r.viol && r.viol.kind === 'proc' && /без проверки отсутствия напряжения/.test(r.text), 'earthing the cable without the indicator — order violation');
+  }
+  // задание 3: в начале первая секция без напряжения; СВ на повреждение — КЗ, отключается ближайший выключатель (В-10 Ввод-1)
+  {
+    const k = fresh(), t3 = k.s.tasks[2];
+    k.tr.startTask(t3);
+    const l1 = ['ТП-1 «Школа»', 'ТП-3 «Рынок»', 'ТП-5 «Мкр. 5»'].map(k.id), l2 = ['ТП-2 «Больница»', 'ТП-4 «Котельная»', 'ТП-6 «Мкр. 6»'].map(k.id);
+    ok(l1.every(i => !k.tr.state.loads.has(i)) && l2.every(i => k.tr.state.loads.has(i)) && Object.keys(t3.init).some(E.isPzId), 'drill: the 1st section is dead, the cable fault is a portable earth in the initial state');
+    const r = k.tr.operate(k.id('СВ-10'));
+    ok(r.blocked && /заземление/.test(r.text), 'drill with interlocks: closing СВ-10 onto the fault is blocked');
+    k.tr.opt.interlocks = false;
+    const r2 = k.tr.operate(k.id('СВ-10'));
+    ok(r2.ok && r2.viol && r2.viol.kind === 'kz' && r2.tripped.includes(k.id('В-10 Ввод-1')) && !r2.tripped.includes(k.id('СВ-10')), 'without interlocks: КЗ, the nearest breaker В-10 Ввод-1 trips (rule 7): ' + r2.tripped.map(k.tr.nm.bind(k.tr)).join(', '));
+    ok(l2.every(i => k.tr.state.loads.has(i)) && k.tr.run.errors.some(e => e.kind === 'kz'), 'the 2nd section keeps power; the КЗ is in the task');
+  }
+  // задание 3 по подсказкам: отделить ввод, выкатить, включить СВ — 100 и обе секции под напряжением
+  {
+    const k = fresh(), t3 = k.s.tasks[2];
+    k.tr.startTask(t3);
+    for (let i = 0; i < 6 && !k.tr.run.done; i++) { const h = k.tr.nextStep(); if (!h) break; if (h.op === 'pos') k.tr.operate(h.id, { pos: h.pos }); else k.tr.operate(h.id); }
+    ok(k.tr.run.done && k.tr.run.grade.score === 100 && k.tr.state.loads.size === 7, 'drill by hints — 100, both sections powered');
+  }
+}
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

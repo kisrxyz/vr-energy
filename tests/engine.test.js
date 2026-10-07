@@ -8,6 +8,8 @@ import { MODELS } from '../src/view3d/models/index.js';
 import { Permit, ITEMS, POSTERS } from '../src/core/permit.js';
 import { WHY, MISPLACED } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
+import * as THREE from 'three';
+import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('  FAIL:', m); } else console.log('  ok:', m); };
@@ -934,6 +936,33 @@ function doMeasure(tr, pm, m) {
   ok(Object.keys(POSTERS).every(p => WHY['sign_' + p] && WHY['sign_' + p].length > 60 && MISPLACED[p] && MISPLACED[p].why.length > 40), 'WHY and misplacement texts for every poster');
   ok(MISPLACED.lock && MISPLACED.fence && WHY.lockBlock && WHY.nevklOp, 'lock, fence, blocked drive, operation under poster');
   ok(ITEMS.length >= 12 && ITEMS.every(i => i.title), 'items have titles');
+}
+/* ===== Пешком по площадке: мир для ходьбы (world.js) ===== */
+{
+  console.log('Yard walk: obstacles from model parts, fence with a gate');
+  const box = (w, h, d, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d)); m.position.set(x, y, z); return m; };
+  // шина: труба на 3,4 м и опоры через 3,75 м — под ней можно ходить, опоры — отдельные столбики
+  const bus = new THREE.Group();
+  bus.add(box(15, 0.16, 0.16, 7.5, 3.4, 0));
+  for (const x of [0, 3.75, 7.5, 11.25, 15]) bus.add(box(0.26, 2.3, 0.26, x, 1.15, 0));
+  const fb = footprints(THREE, bus);
+  ok(fb.length === 5 && fb.every(b => b.x1 - b.x0 < 0.3), 'bus: 5 supports, the pipe above the head is not an obstacle (' + fb.length + ')');
+  // трансформатор: бак, радиаторы рядом, вводы над головой; фундамент ниже 0,5 м не мешает
+  const tr = new THREE.Group();
+  tr.add(box(2.4, 2.2, 1.6, 0, 1.4, 0), box(0.3, 1.8, 1.2, 1.45, 1.3, 0), box(0.3, 1.8, 1.2, -1.45, 1.3, 0), box(0.2, 1.2, 0.2, 0, 3.4, 0), box(4, 0.3, 3, 0, 0.15, 0));
+  const ft = footprints(THREE, tr);
+  ok(ft.length === 1 && Math.abs(ft[0].x1 - ft[0].x0 - 3.2) < 1e-6 && Math.abs(ft[0].z1 - ft[0].z0 - 1.6) < 1e-6, 'transformer: tank and radiators merge into one obstacle, foundation ignored: ' + JSON.stringify(ft));
+  ok(footprints(THREE, tr, o => o.position.x === 1.45).length === 1 && footprints(THREE, tr, o => o.position.x === 1.45)[0].x1 < 1.4, 'skipped parts (d.far) are not obstacles');
+  ok(mergeBoxes([{ x0: 0, x1: 1, z0: 0, z1: 1 }, { x0: 1.5, x1: 2, z0: 0, z1: 1 }, { x0: 5, x1: 6, z0: 0, z1: 1 }], 0.7).length === 2, 'boxes closer than the gap merge, far ones stay');
+  const w = makeYardWorld({ hx: 20, hz: 15, gate: 3, blocks: ft.map(b => ({ x0: b.x0, x1: b.x1, z0: b.z0, z1: b.z1 })) });
+  ok(w.kind === 'yard' && w.walkable(w.start.x, w.start.z) && w.start.z > 15 && w.start.yaw === 0, 'start outside the gate, facing the substation');
+  ok(!w.walkable(-5, 16.5) && !w.walkable(0, -16) && !w.walkable(21, 0), 'outside the fence only in front of the gate');
+  let p = [w.start.x, w.start.z];
+  for (let i = 0; i < 200; i++) p = w.resolve(p[0], p[1] - 0.1);
+  ok(Math.abs(p[0]) < 0.01 && Math.abs(p[1] - (0.8 + 0.25)) < 0.01, 'walk in through the gate, stop 0.25 m from the tank: ' + p.map(v => v.toFixed(2)));
+  p = w.resolve(-5, 15.6);
+  ok(p[1] < 15 - 0.24 || p[1] > 15 + 0.04, 'fence beside the gate pushes out: ' + p.map(v => v.toFixed(2)));
+  ok(!w.walkable(0, 0) && w.walkable(0, 2), 'inside the tank — no; beside — yes');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

@@ -473,6 +473,7 @@ const app = Object.assign({
       catch (e) { this.toast('Полноэкранный режим недоступен в этом окне.', 'warn'); }
     });
     document.getElementById('btnCam').addEventListener('click', () => { if (this.v3) this.v3.toggleTopView(); });
+    document.getElementById('btnWalk').addEventListener('click', () => { if (this.v3) this.v3.toggleWalk(); });
   },
   sideAction(act, b) {
     const tr = this.tr;

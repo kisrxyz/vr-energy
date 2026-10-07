@@ -8,6 +8,7 @@ import { wireMid } from '../view2d/scheme2d.js';
 import { buildRoom, ROOM_COL } from './room.js';
 import { Items } from './items.js';
 import { Walk } from './walk.js';
+import { footprints, makeYardWorld } from './world.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
@@ -17,7 +18,9 @@ import { Walk } from './walk.js';
    все подписи — одна сетка, все сигнальные лампы — одна InstancedMesh.
    Управление: мышь (вращать, сдвигать, щелчок по аппарату) и WebXR (луч контроллера, курок, стики).
    VR-полигон (схема с s.room): вместо площадки — помещение ЗРУ (room.js), предметы в руках (items.js),
-   на ноутбуке — ходьба от первого лица (walk.js); «Вид сверху» там — обзор помещения без потолка. */
+   на ноутбуке — ходьба от первого лица (walk.js); «Вид сверху» там — обзор помещения без потолка.
+   Площадка: «Обзор» (облёт мышью, «Вид сверху») или «Пешком» — та же ходьба, мир для неё (граница — ограждение,
+   препятствия — детали моделей) собирает buildYard (world.js). В шлеме стик и телепорт тоже не проходят сквозь препятствия. */
 let THREE = null;
 // three.js подгружается отдельным куском только при входе в 3D
 async function loadThree() {
@@ -25,6 +28,7 @@ async function loadThree() {
   return THREE;
 }
 const RAY = { idle: 0x1f45ff, hot: 0xffd23f };
+const YARD_GATE = 3;                                // ворота ограждения площадки: полуширина, м
 // Меню тележки в 3D: ширина холста (560 = 1 м) от и до, отступ текста, шрифт, строка, высота кнопки с зазором, шапка; закрыть дальше far м
 const MENU = { minW: 560, maxW: 900, pad: 34, font: 28, line: 34, row: 84, top: 70, far: 4 };
 const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d, live: ROOM_COL.live };
@@ -43,6 +47,8 @@ class View3D {
     this.dev = new Map(); this.nodeMats = new Map(); this.pickables = []; this.fxList = [];
     this.builtFor = -1; this.builtTopo = null; this.hover = null; this.top = false; this.geoCache = new Map();
     this.room = null; this.items = null; this.walk = null;
+    // world — где ходить пешком (полигон или площадка); yardWalk — площадка сейчас «Пешком», а не «Обзор»
+    this.world = null; this.yardWalk = false;
   }
   async show() {
     this.active = true;
@@ -58,7 +64,7 @@ class View3D {
       if (!this.active) return;
     }
     if (this.builtFor !== this.app.schemeVersion || this.builtTopo !== this.app.tr.topo) this.build();
-    else if (this.room && !this.top) this.walk.enable(this.room);
+    else if (this.walking()) this.walk.enable(this.world);
     this.resize();
     this.update(true);
     this.renderer.setAnimationLoop((t, f) => this.loop(t, f));
@@ -71,8 +77,10 @@ class View3D {
     this.closeMenu3D();
     this.tip(null);
   }
-  // Полигон от первого лица на ноутбуке (не обзор и не шлем)
-  fpsOn() { return !!(this.room && !this.top && this.walk && this.walk.on && !this.renderer.xr.isPresenting); }
+  // Пешком от первого лица на ноутбуке (не обзор и не шлем)
+  fpsOn() { return !!(this.walk && this.walk.on && !this.renderer.xr.isPresenting); }
+  // Должен ли сейчас работать ходьба: полигон — кроме обзора сверху, площадка — в режиме «Пешком»
+  walking() { return !!this.world && (this.room ? !this.top : this.yardWalk); }
 
   // ---------- сцена ----------
   init() {
@@ -199,9 +207,11 @@ class View3D {
       this.bounds = { hx: 6, hz: 4 };
       this.toWorld = () => new THREE.Vector3();
       this.start = new THREE.Vector3(this.room.start.x, 0, this.room.start.z);
+      this.world = this.room;
       this.makeBoard(this.room.board);
     } else {
-      this.room = null;
+      // новая площадка открывается в «Обзоре»
+      this.room = null; this.yardWalk = false;
       if (this.walk) this.walk.disable();
       this.buildYard(s, topo);
     }
@@ -281,12 +291,21 @@ class View3D {
       g.rotation.y = -el.r * Math.PI / 2;
       this.root.add(g);
     }
-    this.start = new T.Vector3(0, 0, hz + 1.5);
-    this.makeBoard();
+    const board = this.makeBoard();
     this.makeProxies();
+    // Пешком: граница — ограждение с воротами, препятствия — детали моделей (и щита), до которых не дотянуться над головой.
+    // Дальние части (линия от энергосистемы) не мешают; провода и шины на высоте 3,4 м — тоже
+    const blocks = footprints(T, board);
+    for (const d of this.dev.values()) {
+      const far = new Set();
+      for (const f of d.far || []) f.traverse(o => far.add(o));
+      blocks.push(...footprints(T, d.group, o => far.has(o)));
+    }
+    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks });
+    this.start = new T.Vector3(this.world.start.x, 0, this.world.start.z);
   }
   buildFence(hx, hz) {
-    const T = THREE, per = [], step = 3, gate = 3;
+    const T = THREE, per = [], step = 3, gate = YARD_GATE;
     for (let x = -hx; x <= hx + 0.01; x += step) { per.push([x, -hz]); if (Math.abs(x) > gate) per.push([x, hz]); }
     for (let z = -hz + step; z < hz - 0.01; z += step) per.push([-hx, z], [hx, z]);
     const im = new T.InstancedMesh(this.cylGeo(0.05, 2.2), this.M.post, per.length);
@@ -646,8 +665,10 @@ class View3D {
       this.walk.reset(this.room.start);
       if (this.active) this.walk.enable(this.room);
       if (b) b.textContent = 'Обзор';
+      this.camButtons();
       return;
     }
+    this.camButtons();
     o.target.set(0, 1.5, 0);
     o.r = clamp(Math.max(this.bounds.hx, this.bounds.hz) * 1.3, 22, 200);
     o.target.set(0, 1.5, this.bounds.hz * 0.12);
@@ -674,9 +695,26 @@ class View3D {
       b.textContent = this.top ? 'От первого лица' : 'Обзор';
       return;
     }
+    if (this.yardWalk) { this.top = false; return; }
     if (this.top) { o.ph = 0.04; o.th = 0; o.target.set(0, 0, 0); } else { o.ph = 0.98; o.th = 0.42; }
     b.textContent = this.top ? 'Вид сбоку' : 'Вид сверху';
     this.applyOrbit();
+  }
+  // Площадка: «Пешком» — от первого лица у ворот, лицом к подстанции; «Обзор» — облёт мышью, как раньше
+  toggleWalk() {
+    if (!this.ready || this.room || !this.world || this.renderer.xr.isPresenting) return;
+    this.yardWalk = !this.yardWalk;
+    this.closeMenu3D(); this.tip(null); this.setHover(null);
+    if (this.yardWalk) { this.top = false; this.walk.reset(this.world.start); if (this.active) this.walk.enable(this.world); }
+    else { this.walk.disable(); this.applyOrbit(); }
+    this.camButtons();
+  }
+  // Кнопки вида: «Пешком»/«Обзор» — только на площадке; «Вид сверху» пешком на площадке не нужен
+  camButtons() {
+    const w = document.getElementById('btnWalk'), b = document.getElementById('btnCam');
+    if (w) { w.hidden = !!this.room; w.textContent = this.yardWalk ? 'Обзор' : 'Пешком'; w.setAttribute('aria-pressed', String(this.yardWalk)); }
+    if (b) b.hidden = !this.room && this.yardWalk;
+    this.app.renderStatus();
   }
   // Потолок, передняя стена и светильники полигона: в обзоре сверху спрятаны
   showTop(on) { if (this.room && this.room.topMeshes) for (const m of this.room.topMeshes) m.visible = on; }
@@ -768,21 +806,25 @@ class View3D {
     return hits.find(h => h.object.userData.menu) || hits.find(h => { const u = h.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
   }
   hoverAt(cx, cy) {
-    const h = this.pick(cx, cy);
-    const u = h ? h.object.userData : {}, id = u.dev;
-    this.setHover(id || null);
-    const cv = this.renderer.domElement, tr = this.app.tr;
-    if (id) {
-      const el = tr.elOf(id), sw = tr.sim.st[id], T = TYPES[el.t];
-      let t = el.name + (sw ? (T.cart ? ` · тележка: ${{ work: 'рабочее', test: 'контрольное', repair: 'ремонтное' }[sw.pos]}` + (T.sw === 'breaker' ? (sw.on ? ', включён' : ', отключён') : '') : sw.on ? ' · включён' : ' · отключён') : '');
-      if (this.app.tool === 'check') t += ' — проверить напряжение';
-      else if (this.app.tool === 'pz') t += el.t === 'bus' ? ' — наложить ПЗ' : isPzId(id) ? ' — снять ПЗ' : '';
-      else if (sw) t += tr.actions(id).length > 1 ? ' — щелчок: меню' : sw.on ? ' — щелчок: отключить' : ' — щелчок: включить';
-      this.tip(t, cx, cy);
-      cv.style.cursor = 'pointer';
-    } else if (u.wire) { this.tip(this.app.tool === 'pz' ? 'Провод — наложить или снять ПЗ' : 'Провод — проверить напряжение', cx, cy); cv.style.cursor = 'pointer'; }
-    else if (u.board || u.menu) { this.tip(u.menu ? 'Выберите действие' : 'Щит: нажмите кнопку', cx, cy); cv.style.cursor = 'pointer'; }
-    else { this.tip(null); cv.style.cursor = 'grab'; }
+    const h = this.pick(cx, cy), u = h ? h.object.userData : {};
+    this.setHover(u.dev || null);
+    this.tip(h ? this.targetText(h) || null : null, cx, cy);
+    this.renderer.domElement.style.cursor = u.dev || u.wire || u.board || u.menu ? 'pointer' : 'grab';
+  }
+  // Что под курсором или прицелом и что будет по щелчку (пешком — и по E): одна подпись для подсказки мыши и прицела.
+  // Пусто — заголовок меню: нажимать там нечего
+  targetText(h) {
+    const u = h.object.userData, tr = this.app.tr, tool = this.app.tool;
+    if (u.menu) { const b = this.menuBtn(h.uv); return b ? b.a.label : ''; }
+    if (u.board) return 'Щит с заданием — нажать кнопку';
+    if (u.wire) return tool === 'pz' ? 'Провод — наложить или снять ПЗ' : 'Провод — проверить напряжение';
+    if (!u.dev) return '';
+    const id = u.dev, el = tr.elOf(id), sw = tr.sim.st[id], T = TYPES[el.t];
+    let t = el.name + (sw ? (T.cart ? ` · тележка: ${{ work: 'рабочее', test: 'контрольное', repair: 'ремонтное' }[sw.pos]}` + (T.sw === 'breaker' ? (sw.on ? ', включён' : ', отключён') : '') : sw.on ? ' · включён' : ' · отключён') : '');
+    if (tool === 'check') t += ' — проверить напряжение';
+    else if (tool === 'pz') t += el.t === 'bus' ? ' — наложить ПЗ' : isPzId(id) ? ' — снять ПЗ' : '';
+    else if (sw) t += tr.actions(id).length > 1 ? ' — меню' : sw.on ? ' — отключить' : ' — включить';
+    return t;
   }
   setHover(id) {
     if (this.hover === id) return;
@@ -984,6 +1026,7 @@ class View3D {
     this.root.add(g);
     this.pickables.push(panel);
     this.drawBoard();
+    return g;
   }
   wrap(x, text, maxW, maxLines) {
     const words = String(text).split(/\s+/), lines = [];
@@ -1348,7 +1391,7 @@ class View3D {
     if (u.wire) { this.app.pickWire3D(u.wire, false); this.pulse(info, 0.5); return; }
     if (u.ground) {
       // в помещении — только туда, где можно стоять (не в ячейку и не за стену)
-      if (this.room && !this.room.walkable(h.point.x, h.point.z)) { this.banner('Туда не пройти.', 'info'); return; }
+      if (this.world && !this.world.walkable(h.point.x, h.point.z)) { this.banner('Туда не пройти.', 'info'); return; }
       const p = this.tmp.v;
       this.camera.getWorldPosition(p);
       this.rig.position.x += h.point.x - p.x;
@@ -1497,9 +1540,9 @@ class View3D {
     if (f.lengthSq() < 1e-6) return;
     f.normalize();
     const sp = 3.0 * dt, dx = (f.x * -ay + -f.z * ax) * sp, dz = (f.z * -ay + f.x * ax) * sp;
-    if (this.room) {
-      // в помещении стик не проводит сквозь стены, ячейки и выкаченные тележки
-      const p = this.camera.getWorldPosition(this.tmp.v2), [nx, nz] = this.room.resolve(p.x + dx, p.z + dz, 0.22);
+    if (this.world) {
+      // стик не проводит сквозь стены, ячейки, тележки и аппараты площадки
+      const p = this.camera.getWorldPosition(this.tmp.v2), [nx, nz] = this.world.resolve(p.x + dx, p.z + dz, 0.22);
       this.rig.position.x += nx - p.x; this.rig.position.z += nz - p.z;
       return;
     }
@@ -1519,10 +1562,10 @@ class View3D {
   onXRStart() {
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
+    // ходьба на ноутбуке отключается до выхода из шлема; камера — снова в начале координат
+    if (this.walking()) { this.walk.disable(); this.camera.position.set(0, 0, 0); this.camera.rotation.set(0, 0, 0); }
     if (this.room) {
-      // полигон: у входа лицом к стенду; на ноутбуке управление отключается до выхода из шлема
-      this.walk.disable();
-      this.camera.position.set(0, 0, 0); this.camera.rotation.set(0, 0, 0);
+      // полигон: у входа лицом к стенду
       this.rig.rotation.y = this.room.start.yaw;
       if (this.items) this.items.xrStart();
     }
@@ -1547,8 +1590,8 @@ class View3D {
     this.bannerH.m.visible = false;
     document.getElementById('btnVR').textContent = 'Войти в VR';
     if (this.items) this.items.xrEnd();
-    // полигон: снова от первого лица на ноутбуке (или обзор, если он был включён)
-    if (this.room && !this.top) { if (this.active) this.walk.enable(this.room); this.walk.apply(); }
+    // снова пешком на ноутбуке (полигон или площадка «Пешком») или обзор
+    if (this.walking()) { if (this.active) this.walk.enable(this.world); this.walk.apply(); }
     else this.applyOrbit();
     this.resize();
     if (!this.active) this.renderer.setAnimationLoop(null);

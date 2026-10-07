@@ -9,6 +9,8 @@
    Координаты (м): x — вдоль ряда ячеек, z — от задней стены к двери (+z — в коридор), y — вверх.
    Ячейка: начало — середина лицевой стороны на полу; тележка внизу (отсек на всю высоту до 1,5 м), выше — полоса
    с номером, ещё выше — дверь релейного отсека с лампами и ключом управления; ЗН — рукоятка на правой стойке. */
+import { resolveIn, walkableIn } from './world.js';
+
 const CW = 0.9, CD = 1.4, CH = 2.3;               // ячейка КРУ: ширина, глубина, высота
 const ZF = -1.15;                                  // лицевая сторона ряда
 const R = { x0: -4.6, x1: 4.6, z0: -2.7, z1: 3.4, h: 3.6 };
@@ -344,30 +346,10 @@ function buildRoom(v, s, topo) {
       }
       return b;
     },
-    // Сдвинуть точку (круг радиуса r) из стен и препятствий
-    resolve(x, z, r = 0.25) {
-      for (let it = 0; it < 3; it++) {
-        x = Math.min(R.x1 - r, Math.max(R.x0 + r, x));
-        z = Math.min(R.z1 - r, Math.max(R.z0 + r, z));
-        for (const b of this.blocks()) {
-          const px = Math.min(b.x1, Math.max(b.x0, x)), pz = Math.min(b.z1, Math.max(b.z0, z));
-          const dx = x - px, dz = z - pz, d2 = dx * dx + dz * dz;
-          if (d2 >= r * r) continue;
-          if (d2 > 1e-8) { const d = Math.sqrt(d2), k2 = (r - d) / d; x += dx * k2; z += dz * k2; }
-          else {
-            // центр внутри препятствия — выталкиваем к ближайшей грани
-            const opts = [[b.x0 - r - x, 0], [b.x1 + r - x, 0], [0, b.z0 - r - z], [0, b.z1 + r - z]];
-            opts.sort((a, c) => Math.abs(a[0] + a[1]) - Math.abs(c[0] + c[1]));
-            x += opts[0][0]; z += opts[0][1];
-          }
-        }
-      }
-      return [x, z];
-    },
-    walkable(x, z, r = 0.25) {
-      if (x < R.x0 + r || x > R.x1 - r || z < R.z0 + r || z > R.z1 - r) return false;
-      return !this.blocks().some(b => x > b.x0 - r && x < b.x1 + r && z > b.z0 - r && z < b.z1 + r);
-    },
+    // Мир для ходьбы (world.js): сдвинуть человека из стен и препятствий, можно ли тут стоять
+    kind: 'room',
+    resolve(x, z, r = 0.25) { return resolveIn(x, z, r, R, this.blocks()); },
+    walkable(x, z, r = 0.25) { return walkableIn(x, z, r, R, this.blocks()); },
     // Точка эффекта (дуга, «U есть/нет») для аппарата, провода контактов или ПЗ на них
     posOf(id) {
       const wire = String(id).startsWith('pz:') ? String(id).slice(3) : id;

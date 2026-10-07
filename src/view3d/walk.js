@@ -1,7 +1,10 @@
-/* ===== VR-полигон на ноутбуке: ходьба и руки, как в играх =====
-   Щелчок по сцене — захват мыши (Esc — отпустить), мышь — смотреть, WASD или стрелки — ходить (≈3 м/с, как стиком в шлеме),
-   E или щелчок — взять, применить, переключить; Q (или правая кнопка) — положить. Прицел в центре экрана,
-   под ним — что под прицелом и что будет. Сквозь стены, ячейки и выкаченные тележки не пройти (room.resolve).
+/* ===== Пешком на ноутбуке: VR-полигон и площадка, как в играх =====
+   Мир (world.js) — где ходить: полигон (room.js) или площадка (view3d.buildYard). Сквозь стены, ячейки, тележки
+   и аппараты не пройти (world.resolve). Щелчок по сцене — захват мыши (Esc — отпустить), мышь — смотреть,
+   WASD или стрелки — ходить (≈3 м/с, как стиком в шлеме). Прицел в центре экрана, под ним — что под прицелом и что будет.
+   Полигон: E или щелчок — взять, применить, переключить; Q (или правая кнопка) — положить.
+   Площадка: E или щелчок по аппарату — как щелчок мышью в обзоре (у тележки — меню), с указателем (V) или ПЗ (P) —
+   проверить или заземлить аппарат и провод; дальность REACH; щелчок по земле ближе FLOOR — перейти туда.
    Захват: Chrome около секунды после выхода по Esc отказывает в новом — такие отказы не считаются.
    Если отказы повторяются и вне этой паузы — смотреть перетаскиванием, действие — щелчком по месту.
    Состояние захвата меняют только lockChanged и lockFailed: их можно вызвать и без настоящего захвата (проверка в headless). */
@@ -9,6 +12,8 @@ import { store } from '../ui/store.js';
 import { esc } from '../core/elements.js';
 
 const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
+// Площадка: до аппарата и провода (они высокие), до щита и меню, до земли для перехода, м
+const REACH = { dev: 6, board: 9, floor: 25 };
 // После выхода из захвата Chrome ~1 с отказывает в новом: отказ в эту паузу не считается, мс
 const LOCK_PAUSE = 1600;
 
@@ -32,8 +37,9 @@ class Walk {
       <div class="v3-keys" aria-label="Управление"><b>Управление</b>
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> ходить</span>
         <span>мышь — смотреть · <kbd>Esc</kbd> отпустить мышь</span>
-        <span><kbd>E</kbd> или щелчок — взять, надеть, повесить, переключить</span>
-        <span><kbd>Q</kbd> или правая кнопка — положить</span></div>
+        <span><kbd>E</kbd> или щелчок — <i data-w="room">взять, надеть, повесить, </i>переключить</span>
+        <span data-w="room"><kbd>Q</kbd> или правая кнопка — положить</span>
+        <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span></div>
       <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
       <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
         <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
@@ -76,13 +82,14 @@ class Walk {
       this.look(e.movementX || 0, e.movementY || 0);
     });
   }
-  // Вход в полигон и выход
-  enable(room) {
-    this.room = room; this.on = true;
+  // Пешком и обратно. world — полигон или площадка (world.js)
+  enable(world) {
+    this.world = world; this.on = true;
     this.hud.root.hidden = false;
+    this.hud.root.dataset.world = world.kind;
     this.v.host.dataset.fps = '1';
+    if (world.kind === 'room' && store.get('ts.polyIntro') !== '1') this.intro(true); else this.intro(false, true);
     this.showClick();
-    if (store.get('ts.polyIntro') !== '1') this.intro(true);
   }
   disable() {
     this.on = false; this.keys.clear();
@@ -92,9 +99,10 @@ class Walk {
     if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
     this.cur = null;
   }
-  intro(on) {
+  // Карточка «как брать предметы» (полигон); quiet — спрятать, не отмечая «прочитано»
+  intro(on, quiet) {
     this.hud.intro.hidden = !on;
-    if (!on) store.set('ts.polyIntro', '1');
+    if (!on && !quiet) store.set('ts.polyIntro', '1');
     this.showClick();
   }
   // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
@@ -192,8 +200,8 @@ class Walk {
     if (l > 1) { tx /= l; tz /= l; }
     const a = Math.min(1, dt * 10);
     this.vx += (tx * sp - this.vx) * a; this.vz += (tz * sp - this.vz) * a;
-    // стены, ячейки и выкаченные тележки не пускают; тележка, выкаченная туда, где стоишь, отодвигает
-    [this.x, this.z] = this.room.resolve(this.x + this.vx * dt, this.z + this.vz * dt, R);
+    // стены, ячейки, тележки и аппараты не пускают; тележка, выкаченная туда, где стоишь, отодвигает
+    [this.x, this.z] = this.world.resolve(this.x + this.vx * dt, this.z + this.vz * dt, R);
     this.apply();
     this.updateAim();
   }
@@ -206,22 +214,41 @@ class Walk {
     this._ndc.set(nx, ny);
     v.camera.updateMatrixWorld();
     v.ray.setFromCamera(this._ndc, v.camera);
-    v.ray.far = 12;
+    const yard = this.world.kind === 'yard';
+    v.ray.far = yard ? REACH.floor + 1 : 12;
     const hits = v.ray.intersectObjects(v.pickables, false);
-    this.aim = v.items ? v.items.pick(hits, 'desk', 2.6) : null;
-    this.floor = hits.find(h => h.object.userData.ground) || null;
+    if (yard) {
+      this.aim = this.pickYard(hits);
+      // на землю — только если перед ней ничего нет (провода над головой не в счёт) и там можно стоять
+      const first = hits.find(h => !h.object.userData.wire);
+      this.floor = !this.aim && first && first.object.userData.ground && first.distance <= REACH.floor && this.world.walkable(first.point.x, first.point.z) ? first : null;
+    } else {
+      this.aim = v.items ? v.items.pick(hits, 'desk', 2.6) : null;
+      this.floor = hits.find(h => h.object.userData.ground) || null;
+    }
     this.drawHud();
   }
+  // Площадка: аппарат, провод (с указателем или ПЗ), щит или меню под прицелом — как щелчок мышью в обзоре (view3d.firstHit)
+  pickYard(hits) {
+    const h = this.v.firstHit(hits);
+    if (!h) return null;
+    const u = h.object.userData, type = u.menu ? 'menu' : u.board ? 'board' : u.dev ? 'dev' : u.wire ? 'wire' : null;
+    if (!type || h.distance > (type === 'menu' || type === 'board' ? REACH.board : REACH.dev)) return null;
+    return { h, type, id: u.dev || u.wire || null };
+  }
   drawHud() {
-    const v = this.v, it = v.items, pm = v.app.permit, h = this.hud;
+    const v = this.v, it = v.items, pm = v.app.permit, h = this.hud, yard = this.world.kind === 'yard';
     const set = (key, el, html) => { if (this.hudText[key] !== html) { this.hudText[key] = html; el.innerHTML = html; } };
-    // пустая подпись — прицел на заголовке меню: нажимать там нечего
-    const lab = it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
-    set('aim', h.aim, hot ? `${esc(lab)}<small>${this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок'}</small>` : '');
+    // подпись — та же, что у подсказки мыши в обзоре (view3d.targetText); пустая — прицел на заголовке меню
+    const lab = !this.aim ? '' : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
+    const key = !this.aim ? '' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
+    set('aim', h.aim, hot ? `${esc(lab)}<small>${key}</small>` : yard && this.floor ? 'Перейти сюда<small>щелчок или E</small>' : '');
     h.cross.classList.toggle('hot', hot);
     // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
     const cur = this.noLock && hot ? 'pointer' : 'default';
     if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
+    // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
+    if (yard) { v.setHover(this.aim && this.aim.type === 'dev' ? this.aim.id : null); return; }
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');
@@ -234,18 +261,33 @@ class Walk {
   // ---------- действия ----------
   action() {
     const v = this.v, tgt = this.aim;
+    if (this.world.kind === 'yard') { this.actYard(tgt); return; }
     if (!v.items) return;
     const r = v.items.act('desk', tgt);
     if (r !== 'pass') return;
     // без захвата мыши (тачпад, планшет): щелчок по полу — перейти туда, как курок по полу в шлеме
     if (!tgt) {
       const f = this.floor;
-      if (this.noLock && f && f.distance < 9 && this.room.walkable(f.point.x, f.point.z)) { this.x = f.point.x; this.z = f.point.z; this.apply(); }
+      if (this.noLock && f && f.distance < 9 && this.world.walkable(f.point.x, f.point.z)) { this.x = f.point.x; this.z = f.point.z; this.apply(); }
       return;
     }
     if (tgt.type === 'dev') v.app.pickEl(tgt.id, false, { menu3d: acts => v.showMenu3D(tgt.id, acts, tgt.h.point) });
     else if (tgt.type === 'board') v.boardClick(tgt.h.uv);
     else if (tgt.type === 'menu') v.menuClick(tgt.h.uv);
+  }
+  // Площадка: аппарат — как щелчок мышью (с инструментом — проверка или ПЗ, у тележки — меню), провод — с инструментом,
+  // земля — перейти туда (площадка большая, как курок по полу в шлеме)
+  actYard(t) {
+    const v = this.v, app = v.app;
+    if (!t) {
+      const f = this.floor;
+      if (f) { this.x = f.point.x; this.z = f.point.z; this.vx = 0; this.vz = 0; this.apply(); }
+      return;
+    }
+    if (t.type === 'menu') v.menuClick(t.h.uv);
+    else if (t.type === 'board') v.boardClick(t.h.uv);
+    else if (t.type === 'wire') { v.closeMenu3D(); app.pickWire3D(t.id, false); }
+    else { v.closeMenu3D(); app.pick3D(t.id, false, { menu3d: acts => v.showMenu3D(t.id, acts, t.h.point) }); }
   }
   drop() {
     const it = this.v.items;

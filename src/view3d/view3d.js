@@ -25,6 +25,8 @@ async function loadThree() {
   return THREE;
 }
 const RAY = { idle: 0x1f45ff, hot: 0xffd23f };
+// Меню тележки в 3D: ширина холста (560 = 1 м) от и до, отступ текста, шрифт, строка, высота кнопки с зазором, шапка; закрыть дальше far м
+const MENU = { minW: 560, maxW: 900, pad: 34, font: 28, line: 34, row: 84, top: 70, far: 4 };
 const COL3 = { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8, on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d, live: ROOM_COL.live };
 function rr(x, X, Y, W, H, R) {
   x.beginPath();
@@ -45,9 +47,15 @@ class View3D {
   async show() {
     this.active = true;
     if (!this.ready) {
-      await loadThree();
-      try { await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 1500))]); } catch (e) { /* шрифты не обязательны */ }
-      this.init();
+      // смена схемы, пока грузится three.js, снова зовёт show(): сцена и управление создаются один раз
+      // (иначе два холста и два обработчика клавиш и мыши — E срабатывает дважды, захват мыши путается)
+      if (!this.loading) this.loading = (async () => {
+        await loadThree();
+        try { await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 1500))]); } catch (e) { /* шрифты не обязательны */ }
+        this.init();
+      })();
+      try { await this.loading; } catch (e) { this.loading = null; throw e; }
+      if (!this.active) return;
     }
     if (this.builtFor !== this.app.schemeVersion || this.builtTopo !== this.app.tr.topo) this.build();
     else if (this.room && !this.top) this.walk.enable(this.room);
@@ -620,7 +628,7 @@ class View3D {
     if (xr) this.xrFrame(dt);
     else if (this.fpsOn()) this.walk.step(dt);
     if (this.items) this.items.step(dt, time);
-    if (this.menu3d && performance.now() > this.menu3d.until) this.closeMenu3D();
+    if (this.menu3d && (performance.now() > this.menu3d.until || this.menuFar())) this.closeMenu3D();
   }
 
   // ---------- камера и мышь ----------
@@ -756,8 +764,8 @@ class View3D {
   }
   firstHit(hits) {
     const tool = !!this.app.tool;
-    // предметы и места полигона ловит items.js (руки), обычный щелчок и обзор — только аппараты и щит
-    return hits.find(h => { const u = h.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
+    // предметы и места полигона ловит items.js (руки), обычный щелчок и обзор — только аппараты и щит; меню — поверх всего
+    return hits.find(h => h.object.userData.menu) || hits.find(h => { const u = h.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
   }
   hoverAt(cx, cy) {
     const h = this.pick(cx, cy);
@@ -917,8 +925,9 @@ class View3D {
     x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText(this.room ? 'Как брать предметы' : 'Как управлять', 44, 82);
     const steps = this.room ? [
       ['1', 'Подойдите к стенду справа от входа', 'Левый стик — ходьба, правый — поворот, курок по полу — переход. На стенде — СИЗ, указатель, ПЗ, плакаты, замок, ограждение.'],
-      ['2', 'Боковая кнопка — взять и отпустить', 'Поднесите руку к предмету и нажмите боковую кнопку. Ещё раз у нужного места — повесить, запереть, поставить; в стороне — уронить.'],
-      ['3', 'Надеть и коснуться', 'Перчатки поднесите к другой руке, каску — к голове. Указателем коснитесь нижних контактов в отсеке тележки. Курок — переключить аппарат.'],
+      // описание шага — не больше 2 строк, иначе обрезается «…»
+      ['2', 'Боковая кнопка — взять и отпустить', 'Рука у предмета, боковая кнопка — взять. Ещё раз у нужного места — повесить, запереть, поставить; в стороне — уронить.'],
+      ['3', 'СИЗ и указатель', 'Перчатки и каска надеваются сразу. Указатель — к нижним контактам в отсеке тележки. Курок — переключить аппарат.'],
     ] : [
       ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход в эту точку.'],
       ['2', 'Боковая кнопка — указатель', 'Наведите луч и нажмите боковую кнопку (под средним пальцем) — проверка напряжения.'],
@@ -1236,6 +1245,8 @@ class View3D {
     this.ctrls = [];
     // Луч — тонкая полоса насыщенного синего: видна и на светлом небе, и на земле; над аппаратом — жёлтая
     const lineGeo = new T.BoxGeometry(0.007, 0.007, 1).translate(0, 0, -0.5);
+    // коробки контроллеров: свой материал — в полигоне после перчаток он цвета перчаток (items.gloveGrips)
+    this.gripMat = this.M.ctrl.clone();
     for (let i = 0; i < 2; i++) {
       const c = r.xr.getController(i);
       const line = new T.Mesh(lineGeo, new T.MeshBasicMaterial({ color: RAY.idle, transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false }));
@@ -1250,7 +1261,7 @@ class View3D {
       c.addEventListener('squeezestart', () => { try { this.xrSqueeze(info); } catch (e) { this.xrError('боковая кнопка', e); } });
       this.rig.add(c);
       const grip = r.xr.getControllerGrip(i);
-      grip.add(this.box(0.04, 0.035, 0.12, this.M.ctrl, 0, 0, 0.02));
+      grip.add(this.box(0.04, 0.035, 0.12, this.gripMat, 0, 0, 0.02));
       this.rig.add(grip);
       info.grip = grip;
       this.ctrls.push(info);
@@ -1314,7 +1325,8 @@ class View3D {
   }
   // Первое попадание луча для курка: аппарат, щит, меню, провод (с инструментом), земля; предметы и места полигона — у items.js
   xrHit(info, hits) {
-    return (hits || this.xrHits(info)).find(h => { const u = h.object.userData; return (this.app.tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
+    const hs = hits || this.xrHits(info);
+    return hs.find(h => h.object.userData.menu) || hs.find(h => { const u = h.object.userData; return (this.app.tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
   }
   pulse(info, k) {
     const gp = info.src && info.src.gamepad, ha = gp && gp.hapticActuators && gp.hapticActuators[0];
@@ -1350,41 +1362,84 @@ class View3D {
     if (h && h.object.userData.dev) { this.app.pick3D(h.object.userData.dev, true); this.pulse(info, 0.4); }
     else if (h && h.object.userData.wire) { this.app.pickWire3D(h.object.userData.wire, true); this.pulse(info, 0.4); }
   }
-  // Меню аппарата в VR (выкатная тележка): панель перед аппаратом, кнопки нажимаются лучом
+  // Меню аппарата в 3D (выкатная тележка): панель перед аппаратом, кнопки нажимаются лучом, щелчком или E.
+  // Ширина — по самому длинному пункту (шире MENU.maxW — перенос на 2 строки), последняя строка — «Закрыть».
+  // Закрывается само через 12 с или если отойти от него дальше ~4 м (menuFar)
   showMenu3D(id, acts, point) {
     this.closeMenu3D();
-    const T = THREE, w = 560, rowH = 84, top = 70, H = top + acts.length * rowH + 14;
-    const c = document.createElement('canvas'); c.width = w; c.height = H;
-    const x = c.getContext('2d'), F = (wt, sz) => `${wt} ${sz}px "Golos Text", system-ui, sans-serif`;
+    const T = THREE, F = (wt, sz) => `${wt} ${sz}px "Golos Text", system-ui, sans-serif`, K = MENU;
+    const title = this.app.tr.nm(id), items = [...acts, { close: true, label: 'Закрыть' }];
+    const c = document.createElement('canvas'), x = c.getContext('2d');
+    // ширина по тексту: размер холста сбрасывает шрифт, поэтому мерим до него
+    x.font = F(600, 30);
+    let w = x.measureText(title).width + 48;
+    x.font = F(600, K.font);
+    for (const a of items) w = Math.max(w, x.measureText(a.label).width + 2 * K.pad);
+    w = Math.ceil(clamp(w, K.minW, K.maxW));
+    const rows = items.map(a => ({ a, lines: this.wrap(x, a.label, w - 2 * K.pad, 2) }));
+    const H = K.top + rows.reduce((s, r) => s + K.row + (r.lines.length - 1) * K.line, 0) + 14;
+    c.width = w; c.height = H;
     x.fillStyle = 'rgba(16,24,21,0.95)'; rr(x, 0, 0, w, H, 22); x.fill();
-    x.fillStyle = '#93a69e'; x.font = F(600, 30); x.fillText(this.fit(x, this.app.tr.nm(id), w - 48), 24, 46);
-    const btns = acts.map((a, i) => {
-      const y = top + i * rowH;
-      x.fillStyle = '#24332d'; rr(x, 14, y, w - 28, rowH - 12, 14); x.fill();
-      x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
-      x.fillStyle = '#ffffff'; x.font = F(600, 28); x.fillText(this.fit(x, a.label, w - 70), 34, y + 46);
-      return { y0: y, y1: y + rowH - 12, a };
+    x.fillStyle = '#93a69e'; x.font = F(600, 30); x.fillText(this.fit(x, title, w - 48), 24, 46);
+    let y = K.top;
+    const btns = rows.map(({ a, lines }) => {
+      const bh = K.row - 12 + (lines.length - 1) * K.line;
+      // «Закрыть» — без заливки, чтобы не путать с операцией
+      x.fillStyle = a.close ? 'rgba(16,24,21,0.95)' : '#24332d'; rr(x, 14, y, w - 28, bh, 14); x.fill();
+      x.strokeStyle = a.close ? '#93a69e' : '#3d5048'; x.lineWidth = 2; x.stroke();
+      x.fillStyle = a.close ? '#c6d3cd' : '#ffffff'; x.font = F(600, K.font);
+      if (a.close) x.textAlign = 'center';
+      lines.forEach((l, i) => x.fillText(l, a.close ? w / 2 : K.pad, y + 46 + i * K.line));
+      x.textAlign = 'left';
+      const b = { y0: y, y1: y + bh, a };
+      y += bh + 12;
+      return b;
     });
     const tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace;
-    const pw = 1.0, m = new T.Mesh(new T.PlaneGeometry(pw, pw * H / w), new T.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false }));
+    // 560 точек холста = 1 м: шрифт в шлеме того же размера при любой ширине
+    const pw = w / K.minW, m = new T.Mesh(new T.PlaneGeometry(pw, pw * H / w), new T.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false }));
     m.renderOrder = 11;
     const cam = this.camera.getWorldPosition(new T.Vector3()), dir = cam.clone().sub(point);
     dir.y = 0;
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
     dir.normalize();
-    m.position.copy(point).addScaledVector(dir, Math.min(1.2, cam.distanceTo(point) * 0.5));
-    m.position.y = clamp(cam.y - 0.15, 0.8, 2.4);
+    const back = Math.min(1.2, cam.distanceTo(point) * 0.5);
+    if (this.renderer.xr.isPresenting) {
+      // шлем: перед аппаратом, чуть ниже глаз
+      m.position.copy(point).addScaledVector(dir, back);
+      m.position.y = clamp(cam.y - 0.15, 0.8, 2.4);
+    } else {
+      // ноутбук: меню целиком в кадре (обзор камеры уже, чем в шлеме), прицел — на заголовке: второе E не выберет пункт.
+      // Если для этого меню дальше аппарата — не беда: оно рисуется поверх всего и ловится первым (items.pick)
+      const ph = pw * H / w, tY = K.top / 2 / H * ph, th = Math.tan(this.camera.fov * Math.PI / 360);
+      const need = Math.max((ph - tY) / th, pw / 2 / (th * this.camera.aspect)) * 1.15;
+      const hd = Math.hypot(cam.x - point.x, cam.z - point.z), d = clamp(Math.max(hd - back, need), 0.5, 3);
+      const look = this.camera.getWorldDirection(new T.Vector3()), lh = Math.hypot(look.x, look.z) || 1;
+      m.position.set(cam.x + look.x / lh * d, cam.y + d * look.y / lh - (ph / 2 - tY), cam.z + look.z / lh * d);
+    }
     m.lookAt(cam.x, m.position.y, cam.z);
     m.userData.menu = true;
     this.scene.add(m); this.pickables.push(m);
-    this.menu3d = { m, id, btns, H, until: performance.now() + 12000 };
+    // меню, открытое лучом издалека (площадка), закрывается, когда отошли ещё на метр
+    const far = Math.max(K.far, Math.hypot(cam.x - m.position.x, cam.z - m.position.z) + 1);
+    this.menu3d = { m, id, btns, H, w, far, until: performance.now() + 12000 };
+  }
+  menuFar() {
+    const mm = this.menu3d, p = this.camera.getWorldPosition(this.tmp.v2);
+    return Math.hypot(p.x - mm.m.position.x, p.z - mm.m.position.z) > mm.far;
+  }
+  // Пункт меню под лучом или прицелом (null — заголовок или зазор)
+  menuBtn(uv) {
+    const mm = this.menu3d;
+    if (!mm || !uv) return null;
+    const py = (1 - uv.y) * mm.H;
+    return mm.btns.find(q => py >= q.y0 && py <= q.y1) || null;
   }
   menuClick(uv) {
-    const mm = this.menu3d;
-    if (!mm || !uv) return;
-    const py = (1 - uv.y) * mm.H, b = mm.btns.find(q => py >= q.y0 && py <= q.y1);
+    const mm = this.menu3d, b = this.menuBtn(uv);
     if (!b) return;
     this.closeMenu3D();
+    if (b.a.close) return;
     this.app.tr.operate(mm.id, b.a.pos ? { pos: b.a.pos } : undefined);
   }
   closeMenu3D() {

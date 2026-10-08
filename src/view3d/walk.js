@@ -43,7 +43,8 @@ class Walk {
         <span>мышь — смотреть · <kbd>Esc</kbd> отпустить мышь</span>
         <span><kbd>E</kbd> или щелчок — <i data-w="room">взять, надеть, повесить, </i>переключить</span>
         <span data-w="room"><kbd>Q</kbd> или правая кнопка — положить</span>
-        <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span></div>
+        <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span>
+        <span><kbd>Shift</kbd> бегом<i data-w="yard"> · <kbd>G</kbd> к аппарату</i></span></div>
       <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
       <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
         <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
@@ -57,6 +58,8 @@ class Walk {
       intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
+    // «Перейти · G» в строке следующего шага
+    this.hud.next.addEventListener('click', e => { if (e.target.closest('button')) this.v.goNext(); });
     this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
   }
   bind() {
@@ -66,7 +69,7 @@ class Walk {
     document.addEventListener('keydown', e => {
       if (!live() || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       const c = e.code;
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(c)) {
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(c)) {
         this.keys.add(c);
         if (c.startsWith('Arrow')) e.preventDefault();
         return;
@@ -74,6 +77,7 @@ class Walk {
       if (e.repeat) return;
       if (c === 'KeyE') { e.preventDefault(); this.action(); }
       else if (c === 'KeyQ') { e.preventDefault(); this.drop(); }
+      else if (c === 'KeyG' && this.world && this.world.kind === 'yard') { e.preventDefault(); this.v.goG(this.aim); }
     });
     document.addEventListener('keyup', e => this.keys.delete(e.code));
     // ушли из окна или со вкладки — мышь отпускаем сами, чтобы курсор не остался спрятанным
@@ -240,7 +244,8 @@ class Walk {
     const k = this.keys, has = (...a) => a.some(c => k.has(c));
     const f = (has('KeyW', 'ArrowUp') ? 1 : 0) - (has('KeyS', 'ArrowDown') ? 1 : 0);
     const s = (has('KeyD', 'ArrowRight') ? 1 : 0) - (has('KeyA', 'ArrowLeft') ? 1 : 0);
-    const sp = SPEED, sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+    // Shift — бегом, вдвое быстрее
+    const sp = SPEED * (has('ShiftLeft', 'ShiftRight') ? 2 : 1), sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
     let tx = -sy * f + cy * s, tz = -cy * f - sy * s;
     const l = Math.hypot(tx, tz);
     if (l > 1) { tx /= l; tz /= l; }
@@ -280,10 +285,12 @@ class Walk {
     this.drawHud();
   }
   // Площадка: аппарат, провод (с указателем или ПЗ), щит или меню под прицелом — как щелчок мышью в обзоре (view3d.firstHit)
+  // Аппарат дальше REACH.dev — 'far': не переключается, но подписан («подойдите ближе») и щелчком к нему подходят
   pickYard(hits) {
     const h = this.v.firstHit(hits);
     if (!h) return null;
     const u = h.object.userData, type = u.menu ? 'menu' : u.board ? 'board' : u.dev ? 'dev' : u.wire ? 'wire' : null;
+    if (type === 'dev' && h.distance > REACH.dev) return { h, type: 'far', id: u.dev };
     if (!type || h.distance > (type === 'menu' || type === 'board' ? REACH.board : REACH.dev)) return null;
     return { h, type, id: u.dev || u.wire || null };
   }
@@ -291,17 +298,28 @@ class Walk {
     const v = this.v, it = v.items, pm = v.app.permit, h = this.hud, yard = this.world.kind === 'yard';
     const set = (key, el, html) => { if (this.hudText[key] !== html) { this.hudText[key] = html; el.innerHTML = html; } };
     // подпись — та же, что у подсказки мыши в обзоре (view3d.targetText); пустая — прицел на заголовке меню
-    const lab = !this.aim ? '' : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
-    const key = !this.aim ? '' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
+    const far = this.aim && this.aim.type === 'far', exam = !!(v.app.exam && v.app.exam.active());
+    const lab = !this.aim ? '' : far ? `${v.app.tr.nm(this.aim.id)} — подойдите ближе` : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
+    // на телефоне и планшете клавиш нет — «касание»
+    const tap = this.touch, key = !this.aim ? '' : far ? (tap ? 'касание — перейти' : exam ? 'щелчок — перейти' : 'G или щелчок — перейти')
+      : tap ? 'касание' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
     // у места подпись уже начинается с клавиши: «E — поставить ограждение у яч.2»
     const go = !this.floor ? '' : this.floorOk ? `Перейти сюда<small>${this.touch ? 'касание' : 'щелчок или E'}</small>` : 'Туда не пройти';
-    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(lab) : `${esc(lab)}<small>${key}</small>`) : go);
+    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(tap ? lab.replace(/^E — /, 'Касание — ') : lab) : `${esc(lab)}<small>${key}</small>`) : go);
     h.cross.classList.toggle('hot', hot);
     // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
     const cur = this.noLock && hot ? 'pointer' : 'default';
     if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
     // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
-    if (yard) { v.setHover(this.aim && this.aim.type === 'dev' ? this.aim.id : null); return; }
+    if (yard) {
+      v.setHover(this.aim && (this.aim.type === 'dev' || far) ? this.aim.id : null);
+      // с подсказками шагов — следующий шаг и «Перейти · G»
+      const g = v.app.guideNext();
+      const nx = g ? `Следующий шаг: ${esc(g.text)}${g.step.op === 'check' ? '<small>V — указатель, затем E</small>' : String(g.step.id).startsWith('pz:') ? '<small>P — ПЗ, затем E</small>' : ''}<button type="button">${this.touch ? 'Перейти' : 'Перейти · G'}</button>` : '';
+      set('next', h.next, nx);
+      h.next.hidden = !nx;
+      return;
+    }
     if (it) {
       it.hover(this.aim && this.aim.type === 'item' ? this.aim.id : null);
       // призрак предмета — у места под прицелом
@@ -336,6 +354,7 @@ class Walk {
     if (!t) { this.goFloor(); return; }
     if (t.type === 'menu') v.menuClick(t.h.uv);
     else if (t.type === 'board') v.boardClick(t.h.uv);
+    else if (t.type === 'far') v.goTo(t.id);
     else if (t.type === 'wire') { v.closeMenu3D(); app.pickWire3D(t.id, false); }
     else { v.closeMenu3D(); app.pick3D(t.id, false, { menu3d: acts => v.showMenu3D(t.id, acts, t.h.point) }); }
   }
@@ -346,6 +365,20 @@ class Walk {
     if (!this.floorOk) { this.said('Туда не пройти'); return; }
     const from = { x: this.x, z: this.z }, to = { x: f.point.x, z: f.point.z, y: f.point.y };
     tp.go(from, to, (x, z) => { this.x = x; this.z = z; this.vx = 0; this.vz = 0; this.apply(); }, pathFree(this.world, from, to, R) ? 'glide' : 'fade');
+  }
+  // Перейти и встать так, чтобы под прицелом было нужное (q — из seek): путь свободен — плавно, иначе затемнением;
+  // взгляд поворачивается по ходу перехода
+  goPose(q) {
+    const tp = this.v.tp;
+    if (tp.busy) return;
+    const from = { x: this.x, z: this.z }, to = { x: q.x, z: q.z };
+    const y0 = this.yaw, dy = Math.atan2(Math.sin(q.yaw - y0), Math.cos(q.yaw - y0)), p0 = this.pitch;
+    // k — доля перехода: взгляд доворачивается и тогда, когда стоять остаёмся на месте
+    tp.go(from, to, (x, z, k = 1) => {
+      this.x = x; this.z = z; this.vx = 0; this.vz = 0;
+      this.yaw = y0 + dy * k; this.pitch = p0 + (q.pitch - p0) * k;
+      this.apply();
+    }, pathFree(this.world, from, to, R) ? 'glide' : 'fade');
   }
   drop() {
     const it = this.v.items;

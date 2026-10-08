@@ -54,7 +54,8 @@ class Teleport {
     m.position.set(p.x, (p.y || 0) + 0.035, p.z);
     m.visible = true;
   }
-  // Перейти: from, to — точки на полу { x, z }; apply(x, z) двигает человека (камеру или rig); mode — 'fade' или 'glide'
+  // Перейти: from, to — точки на полу { x, z }; apply(x, z, k) двигает человека (камеру или rig), k — доля перехода 0…1
+  // (по ней же поворачивают взгляд); mode — 'fade' или 'glide'
   go(from, to, apply, mode = 'fade') {
     this.finish();
     const d = Math.hypot(to.x - from.x, to.z - from.z);
@@ -67,7 +68,7 @@ class Teleport {
   finish() {
     const j = this.job;
     this.job = null;
-    if (j && !j.moved) { try { j.apply(j.to.x, j.to.z); } catch (e) { /* перенос не обязателен */ } }
+    if (j && !j.moved) { try { j.apply(j.to.x, j.to.z, 1); } catch (e) { /* перенос не обязателен */ } }
     this.fade.visible = false; this.fade.material.opacity = 0;
   }
   cancel() { this.finish(); this.mark.visible = false; this.ring.visible = false; this.arrive = null; this.ok = null; }
@@ -88,11 +89,11 @@ class Teleport {
       try {
         if (j.mode === 'glide') {
           const k = Math.min(1, j.t / j.dur), e = 1 - Math.pow(1 - k, 3);
-          j.apply(j.from.x + (j.to.x - j.from.x) * e, j.from.z + (j.to.z - j.from.z) * e);
+          j.apply(j.from.x + (j.to.x - j.from.x) * e, j.from.z + (j.to.z - j.from.z) * e, e);
           if (k >= 1) { j.moved = true; this.job = null; this.landed(j.to); }
         } else {
           const f = this.fade.material;
-          if (!j.moved && j.t >= FADE.out) { j.apply(j.to.x, j.to.z); j.moved = true; this.landed(j.to); }
+          if (!j.moved && j.t >= FADE.out) { j.apply(j.to.x, j.to.z, 1); j.moved = true; this.landed(j.to); }
           f.opacity = j.t < FADE.out ? j.t / FADE.out : Math.max(0, 1 - (j.t - FADE.out) / FADE.in);
           if (j.t >= FADE.out + FADE.in || j.t > FADE.max) this.finish();
         }

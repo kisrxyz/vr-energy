@@ -169,12 +169,12 @@ const Panels = {
     else st.innerHTML = 'Мышь: левая кнопка — повернуть, правая — сдвинуть, колесо — приблизить, щелчок по аппарату — переключить · «Пешком» — пройти по площадке · В шлеме: курок — операция или телепорт, боковая кнопка — указатель напряжения, стики — ходьба и поворот';
   },
   // Пешком в 3D — общая строка для полигона и площадки, отличаются только действия
+  // Клавиши ходьбы — на сцене (плашка «Управление»): здесь только то, чего там нет
   walkStatus() {
     const k = s => `<kbd>${s}</kbd>`, room = !!this.scheme.room;
-    const what = room ? `${k('E')} или щелчок — взять (перчатки и каска надеваются сразу), применить, переключить · ${k('Q')} положить`
-      : `${k('E')} или щелчок — переключить · ${k('V')} указатель · ${k('P')} ПЗ · щелчок по земле — перейти · «Обзор» — облёт мышью`;
-    const xr = room ? 'боковая кнопка — взять/отпустить, курок — операция' : 'курок — операция или переход, боковая кнопка — указатель, стики — ходьба и поворот';
-    return `Пешком: щелчок по сцене — управление · ${k('W')}${k('A')}${k('S')}${k('D')} ходить · мышь — смотреть · ${what} · ${k('Esc')} отпустить мышь · В шлеме: ${xr}`;
+    const view = room ? '«Обзор» — помещение сверху' : `«Обзор» — облёт мышью${this.guideOn() ? ` · ${k('G')} — к аппарату следующего шага` : ''}`;
+    const xr = room ? 'боковая кнопка — взять/отпустить, курок — операция' : 'курок — операция или переход, боковая кнопка — указатель, B/Y — к следующему шагу';
+    return `Пешком · ${view} · ${k('F')} — отладка · В шлеме: ${xr}`;
   },
 
   // ---------- боковая панель ----------
@@ -244,10 +244,19 @@ const Panels = {
   },
   trainSideHTML() {
     // приветствие — для первого входа; в показе ведущий рассказывает сам
-    const welcome = this.welcomeSeen || this.demoOn ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}</b>
-      <ol><li>Нажмите на выключатель или разъединитель: он переключится, а цвет шин покажет, где напряжение.</li>
-      <li>Выберите задание и нажмите «Начать» — программа оценит переключения.</li>
-      <li>Вкладка «3D и VR» — та же схема в объёме, в шлеме Quest — в VR.</li></ol>
+    // во вкладке «3D и VR» — своя карточка, про 3D (про 2D там не к месту)
+    const d3 = this.mode === '3d', room = !!this.scheme.room;
+    const touch = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches);
+    const steps = !d3 ? ['Нажмите на выключатель или разъединитель: он переключится, а цвет шин покажет, где напряжение.',
+      'Выберите задание и нажмите «Начать» — программа оценит переключения.', 'Вкладка «3D и VR» — та же схема в объёме, в шлеме Quest — в VR.']
+      : room ? [touch ? 'Подойдите к стенду справа от входа: касание пола — перейти, перетаскивание — смотреть.' : 'Подойдите к стенду справа от входа: WASD и мышь, щелчок по сцене — захват мыши.',
+        'E — взять предмет или переключить аппарат, Q — положить. Где можно поставить предмет — подсвечено.', 'Начните задание: вверху — следующее мероприятие. «Войти в VR» — то же в шлеме.']
+      : touch ? ['«Пешком» — пройти по подстанции: касание земли — перейти, перетаскивание — смотреть.',
+        'Касание аппарата — переключить. Указатель напряжения и ПЗ — кнопки в панели ниже.', 'Начните задание: вверху — следующий шаг, «Перейти» — к аппарату.']
+      : ['«Пешком» — пройти по подстанции: WASD и мышь, щелчок по земле — перейти, Shift — бегом.',
+        'Прицел на аппарат и E или щелчок — переключить. V — указатель напряжения, P — ПЗ.', 'Начните задание: вверху — следующий шаг, G — перейти к аппарату. «Войти в VR» — то же в шлеме.'];
+    const welcome = (d3 ? this.welcome3d : this.welcomeSeen) || this.demoOn ? '' : `<div class="sec"><div class="welcome"><b>${esc(this.scheme.title)}${d3 ? ' · 3D' : ''}</b>
+      <ol>${steps.map(t => `<li>${esc(t)}</li>`).join('')}</ol>
       <div class="row"><button class="btn" data-act="welcome-close">Понятно</button><button class="btn" data-act="help">Подробнее</button></div></div></div>`;
     const o = this.tr.opt, exam = !!(this.exam && this.exam.active()), dis = exam ? ' disabled' : '';
     // VR-полигон: предметы берут руками в 3D — на ноутбуке клавишами, в шлеме контроллерами
@@ -280,7 +289,8 @@ const Panels = {
         <div class="task-stats"><div><b id="tTime">${fmtTime(tr.elapsed())}</b><span>время</span></div><div><b id="tOps">${g.myOps}</b><span>операций</span></div>
         <div class="${run.errors.length ? 'bad' : ''}" id="tErrBox"><b id="tErr">${run.errors.length}</b><span>ошибок</span></div></div>
         <div class="row"><button class="btn" data-act="task-hint" ${this.freeHints() ? 'hidden' : ''}>Подсказка</button><button class="btn" data-act="task-stop">Завершить</button></div>
-        <div id="hintBox"></div>${run.task.measures && this.permit.active ? `<div id="measBox" class="meas-box">${this.measuresHTML()}</div>` : ''}</div>`;
+        <div id="hintBox"></div>${run.task.measures && this.permit.active ? `<div id="measBox" class="meas-box">${this.measuresHTML()}</div>` : ''}${this.guideBoxHTML()}</div>`;
+      this.renderGuide();
       return;
     }
     if (run && run.done) {
@@ -327,10 +337,43 @@ const Panels = {
     const h = document.querySelector('[data-act="task-hint"]');
     if (h) h.hidden = this.freeHints();
   },
-  // Задание полигона с включёнными подсказками: «следующее мероприятие» видно бесплатно — платная «Подсказка» (−5) не нужна
+  // Задание полигона с подсказками мероприятий или площадка в 3D с подсказками шагов: следующее видно бесплатно — платная «Подсказка» (−5) не нужна
   freeHints() {
     const run = this.tr.run;
-    return !!(run && !run.done && run.task.measures && this.permit.active && this.permit.guide);
+    return !!(run && !run.done && ((run.task.measures && this.permit.active && this.permit.guide) || this.guideOn()));
+  },
+  // «Подсказки шагов» работают: площадка (не полигон) во вкладке «3D и VR», идёт задание, не экзамен
+  guideOn() {
+    const run = this.tr.run;
+    return !!(this.stepGuide && this.mode === '3d' && !this.scheme.room && run && !run.done && !(this.exam && this.exam.active()));
+  },
+  // Следующий шаг для подсказки (без штрафа — Trainer.peek) или null
+  guideNext() { return this.guideOn() ? this.tr.peek() : null; },
+  setStepGuide(on) {
+    this.stepGuide = !!on;
+    store.set('ts.stepGuide', on ? '1' : '0');
+    this.toast(`Подсказки шагов: ${on ? 'включены' : 'выключены'}.`);
+    this.renderTask(); this.renderStatus(); this.renderGuide();
+    if (this.v3 && this.v3.ready) this.v3.update();
+  },
+  // Блок в карточке задания (площадка в 3D): переключатель «Подсказки шагов» и «Следующий шаг: … — Перейти (G)»
+  guideBoxHTML() {
+    const run = this.tr.run;
+    if (this.mode !== '3d' || this.scheme.room || !run || run.done || (this.exam && this.exam.active())) return '';
+    return `<div class="guide-box"><label class="switch sm"><span>Подсказки шагов</span><input type="checkbox" data-opt="stepGuide" ${this.stepGuide ? 'checked' : ''}></label>
+      <div id="guideLine"></div></div>`;
+  },
+  renderGuide() {
+    const run = this.tr.run;
+    // подсказки шагов включены — так и будет в отчёте (как «подсказки были включены» у полигона)
+    if (this.guideOn()) run.guide = true;
+    const box = document.getElementById('guideLine');
+    if (!box) return;
+    const g = this.guideNext();
+    box.innerHTML = !this.stepGuide ? '<p class="muted">Подсказки выключены: следующий шаг — по памяти или платной «Подсказкой» (−5).</p>'
+      : g ? `<p class="next-step">Следующий шаг: <b>${esc(g.text)}</b></p><div class="row"><button class="btn" data-act="goto-next" title="Перейти к аппарату следующего шага (G)">Перейти к аппарату · G</button></div>` : '';
+    const h = document.querySelector('[data-act="task-hint"]');
+    if (h) h.hidden = this.freeHints();
   },
   renderRec() {
     const box = document.getElementById('recSec');
@@ -354,7 +397,9 @@ const Panels = {
     const ul = document.getElementById('log');
     if (!ul) return;
     const items = this.tr.log.slice(0, 80);
-    ul.innerHTML = items.length ? items.map(e => `<li class="${e.level}"><time>${e.time}</time><span>${esc(e.text)}</span></li>`).join('') : '<li class="none"><span class="empty">Пока пусто. Действия и события появятся здесь.</span></li>';
+    // в 3D с подсказками шагов запись об аппарате — кнопка «перейти к нему»
+    const go = this.guideOn() && this.v3 && this.v3.ready;
+    ul.innerHTML = items.length ? items.map(e => `<li class="${e.level}"><time>${e.time}</time><span>${esc(e.text)}</span>${go && e.id && this.v3.guideTarget(e.id) ? `<button class="lnk" data-act="goto" data-id="${esc(e.id)}" title="Перейти к аппарату">→</button>` : ''}</li>`).join('') : '<li class="none"><span class="empty">Пока пусто. Действия и события появятся здесь.</span></li>';
     const c = document.getElementById('logCount');
     if (c) c.textContent = this.tr.log.length;
   },
@@ -395,13 +440,13 @@ const Panels = {
       <ol class="meas">${ms.map(m => `<li class="${m.sat && !m.flagged ? 'ok' : 'bad'}">${esc(m.title)}${m.flagged ? ` <span class="tag">${m.sat ? 'не по порядку' : 'пропущено'}</span>` : ''}</li>`).join('')}</ol></div>` : '';
     const body = `<div class="verdict ${g.tone}"><span class="score">${g.score}</span><div><b>${esc(g.verdict)}</b><div class="desc">из 100 баллов</div></div></div>
       <dl class="kv"><dt>Время</dt><dd>${fmtTime(g.secs)}</dd><dt>Операций</dt><dd>${g.myOps} (эталон ${g.refOps}${g.extra ? `, лишних ${g.extra}` : ''})</dd>
-      <dt>Аварии и КЗ</dt><dd>${g.acc}</dd><dt>Блокировки</dt><dd>${g.blk}</dd><dt>Перерывы питания</dt><dd>${g.sup}</dd><dt>Нарушения порядка</dt><dd>${g.prc}</dd>${ms ? `<dt>Охрана труда</dt><dd>${g.saf || 0}</dd>` : ''}<dt>Подсказки</dt><dd>${g.hints}</dd></dl>
+      <dt>Аварии и КЗ</dt><dd>${g.acc}</dd><dt>Блокировки</dt><dd>${g.blk}</dd><dt>Перерывы питания</dt><dd>${g.sup}</dd><dt>Нарушения порядка</dt><dd>${g.prc}</dd>${ms ? `<dt>Охрана труда</dt><dd>${g.saf || 0}</dd>` : ''}<dt>Подсказки</dt><dd>${g.hints}${run.guide && !ms ? ' · <span class="chip">подсказки шагов были включены</span>' : ''}</dd></dl>
       <div><h4 style="margin:0 0 6px;font-size:13px">Ошибки</h4>${errs}</div>${meas}
       <div class="cols"><div><h4>Ваши действия (бланк)</h4>${mine}</div><div><h4>Эталон</h4>${ref}</div></div>
       <p class="desc" style="color:var(--muted);font-size:12px">Баллы: −40 за аварию или КЗ, −15 за перерыв питания, −10 за блокировку, нарушение порядка и охраны труда, −5 за подсказку, −2 за лишнюю операцию.</p>`;
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
-      `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, '', 'Ошибки:',
+      `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, ...(run.guide && !ms ? ['Подсказки шагов были включены'] : []), '', 'Ошибки:',
       ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
       ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
       '', 'Действия:',

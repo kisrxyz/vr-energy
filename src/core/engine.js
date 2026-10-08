@@ -703,6 +703,16 @@ class Trainer {
     }
     return null;
   }
+  // Подсмотреть следующий шаг — то же, что даст hint(), но без счёта подсказок, журнала и событий.
+  // Для «Подсказок шагов» в 3D (строка «Следующий шаг», маяк, «Перейти к аппарату»): баллы и правила не меняются
+  peek() {
+    const r = this.run;
+    if (!r || r.done) return null;
+    const ad = this.addon('hint', r);
+    if (ad) return { step: ad.step, text: ad.text };
+    const st = this.nextStep();
+    return st ? { step: st, text: this.stepText(st) } : null;
+  }
   hint() {
     // в задании с мероприятиями (VR-полигон) подсказка — следующее мероприятие
     const ad = this.run && !this.run.done ? this.addon('hint', this.run) : null;

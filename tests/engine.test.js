@@ -905,6 +905,34 @@ function doMeasure(tr, pm, m) {
   }
 }
 
+{
+  console.log('Step hints without cost: peek() = next hint, no score, no log, no events');
+  const fresh = key => { const s = E.SAMPLES.find(x => x.key === key).make(), tr = new E.Trainer(), pm = tr.use(new Permit()); tr.load(s); return { s, tr, pm }; };
+  ok(fresh('ps110').tr.peek() === null, 'no task — nothing to peek');
+  for (const smp of E.SAMPLES) {
+    const n = smp.make().tasks.length;
+    for (let k = 0; k < n; k++) {
+      const { s, tr, pm } = fresh(smp.key), t = s.tasks[k];
+      tr.startTask(t);
+      let events = 0, bad = '';
+      tr.on(() => events++);
+      for (let i = 0; i < 40 && !tr.run.done; i++) {
+        const log = tr.log.length, hints = tr.run.hints, errs = tr.run.errors.length, ev = events;
+        const p = tr.peek(), p2 = tr.peek();
+        if (!p) { bad = 'peek ran out'; break; }
+        if (tr.log.length !== log || tr.run.hints !== hints || tr.run.errors.length !== errs || events !== ev) { bad = 'peek changed the run'; break; }
+        if (JSON.stringify(p) !== JSON.stringify(p2)) { bad = 'peek is not stable'; break; }
+        const h = tr.hint();
+        if (!h || h.text !== 'Подсказка: ' + p.text + '.' || JSON.stringify(h.step) !== JSON.stringify(p.step)) { bad = `peek «${p.text}» ≠ hint «${h && h.text}»`; break; }
+        tr.run.hints--;
+        const r = h.step.op === 'measure' ? doMeasure(tr, pm, t.measures[h.step.i]) : doStep(tr, pm, h.step);
+        if (!r || r.err || r.blocked) { bad = p.text + ' :: ' + (r && r.text); break; }
+      }
+      ok(!bad && tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.peek() === null, `${smp.key} «${t.title}»: peek leads to 100 without cost` + (bad ? ' :: ' + bad : ''));
+    }
+  }
+}
+
 /* ===== Полигон: правки по обзору ===== */
 {
   console.log('Polygon: indicator log names the contacts (addon checkWhere), other schemes unchanged');

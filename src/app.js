@@ -19,12 +19,16 @@ import { Exam } from './ui/exam.js';
    Готовые схемы не меняются: первая правка создаёт копию в «Моих схемах». */
 const app = Object.assign({
   scheme: null, mode: 'train', tool: null, source: 'ps110', schemeVersion: 0, taskIdx: 0,
-  tr: new Trainer(), view: null, v3: null, undoStack: [], redoStack: [], welcomeSeen: false, modalActions: [],
+  tr: new Trainer(), view: null, v3: null, undoStack: [], redoStack: [], welcomeSeen: false, welcome3d: false, modalActions: [],
+  // «Подсказки шагов» на площадках в 3D: строка «Следующий шаг», маяк, «Перейти к аппарату» (G). В обучении по умолчанию включены
+  stepGuide: true,
 
   init() {
     this.dl = null;
     try { if (window.claude && typeof window.claude.use === 'function') window.claude.use('downloads').then(d => { this.dl = d; }, () => {}); } catch (e) { this.dl = null; }
     this.welcomeSeen = store.get('ts.welcome') === '1';
+    this.welcome3d = store.get('ts.welcome3d') === '1';
+    this.stepGuide = store.get('ts.stepGuide') !== '0';
     const th = store.get('ts.theme');
     if (th === 'dark' || th === 'light') document.documentElement.dataset.theme = th;
     this.lib = makeLibrary(store);
@@ -280,6 +284,7 @@ const app = Object.assign({
       if (d.reset && this.v3 && this.v3.ready) this.v3.onField({ reset: true });
       // мероприятия полигона: «отключить» и «выкатить» выполняют аппаратом — список в панели обновляется и после операции
       if (this.permit.active && this.tr.run && !this.tr.run.done) this.renderMeasures();
+      this.renderGuide();
       this.updateAlarmsBtn();
       return;
     }
@@ -497,6 +502,7 @@ const app = Object.assign({
     side.addEventListener('change', e => {
       const t = e.target;
       if (t.dataset.prop) this.setProp(t.dataset.prop, t.type === 'checkbox' ? t.checked : t.value);
+      else if (t.dataset.opt === 'stepGuide') this.setStepGuide(t.checked);
       else if (t.dataset.opt === 'guide') {
         // подсказка «следующее мероприятие» на щите и в панели (VR-полигон)
         this.permit.guide = t.checked;
@@ -541,7 +547,11 @@ const app = Object.assign({
   sideAction(act, b) {
     const tr = this.tr;
     switch (act) {
-      case 'welcome-close': this.welcomeSeen = true; store.set('ts.welcome', '1'); this.renderSide(); break;
+      case 'welcome-close':
+        if (this.mode === '3d') { this.welcome3d = true; store.set('ts.welcome3d', '1'); } else { this.welcomeSeen = true; store.set('ts.welcome', '1'); }
+        this.renderSide(); break;
+      case 'goto-next': if (this.v3) this.v3.goNext(); break;
+      case 'goto': if (this.v3 && b.dataset.id) this.v3.goTo(b.dataset.id); break;
       case 'help': this.showHelp(); break;
       case 'go3d': this.setMode('3d'); break;
       case 'tool-check': this.toggleTool('check'); break;

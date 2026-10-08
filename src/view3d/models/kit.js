@@ -41,7 +41,9 @@ const PAL = {
   ui: { rayIdle: 0x1f45ff, rayHot: 0xffd23f, ring: 0xffd23f, proxy: 0xffffff, lamp: 0xffffff, wireLine: 0x5f666a,
     arc: 0xe6f6ff, sparks: 0xffd27a, arcLight: 0x9fd8ff, beacon: 0xff4d4d, beaconGlow: 0xff2020, window: 0xffcf70,
     // телепорт (teleport.js): метка «можно» и «нельзя», затемнение
-    tpOk: 0x8fe3ff, tpNo: 0xff3b4e, fade: 0x05080a },
+    tpOk: 0x8fe3ff, tpNo: 0xff3b4e, fade: 0x05080a,
+    // маяк над аппаратом следующего шага (подсказки шагов на площадке)
+    guide: 0xffe27a },
   // подписи (холст, CSS-цвета): над аппаратами; итог проверки указателем на площадке — «нет» тёмным, «есть» красным (не зелёным, как плакат)
   label: { bg: 'rgba(14,20,18,0.82)', fg: '#ffffff', dead: 'rgba(14,20,18,0.9)', live: 'rgba(200,22,44,0.94)', edge: 'rgba(255,255,255,0.55)' },
   // свет и окружение: площадка под небом и закрытое помещение полигона

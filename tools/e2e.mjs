@@ -510,6 +510,102 @@ SUITES.teleport = { perScheme: false, fn: async () => {
   });
 } };
 
+// Подсказки шагов на площадках: каждое задание проходится в 3D пешком только по подсказкам — строка «Следующий шаг» верна на всём ходе,
+// G ставит прицел на нужный аппарат (или провод), дальше — как человек: V/P, E, пункт меню. Итог — 100 баллов.
+// В экзамене нет ни строки, ни маяка, ни G. «Обзор»: G наводит камеру на аппарат
+const frames2 = 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))';
+const guideState = `(() => { const v = TS.app.v3, w = v.walk, g = TS.app.guideNext(); return { next: w.hud.next.hidden ? '' : w.hud.next.textContent,
+  peek: g ? g.text : null, id: g ? g.step.id : null, op: g ? g.step.op : null, beacon: v.beacon.visible, aim: w.aim ? { type: w.aim.type, id: w.aim.id } : null,
+  x: w.x, z: w.z, busy: v.tp.busy }; })()`;
+SUITES.guide = { perScheme: true, fn: async keys => {
+  for (const key of keys) {
+    if (await page.eval(`!!TS.SAMPLES.find(s => s.key === '${key}').make().room`)) continue;
+    const n = await page.eval(`TS.SAMPLES.find(s => s.key === '${key}').make().tasks.length`);
+    for (let ti = 0; ti < n; ti++) {
+      await check('guide', `${key} #${ti + 1}`, async () => {
+        await chooseScheme(key);
+        await setMode('3d');
+        await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+        if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+        await page.eval('TS.app.v3.walk.lockChanged(true); TS.app.stepGuide = true');
+        await startTask(ti);
+        await page.eval('TS.app.v3.walk.reset(TS.app.v3.world.start)');
+        let steps = 0;
+        for (let i = 0; i < 40; i++) {
+          if (await page.eval('!TS.app.tr.run || TS.app.tr.run.done')) break;
+          await page.eval(frames2);
+          const st = await page.eval(guideState);
+          if (!st.peek) fail(`шаг ${i + 1}: подсказки нет, а задание идёт`);
+          if (!st.next.startsWith('Следующий шаг: ' + st.peek)) fail(`шаг ${i + 1}: строка «${st.next}», а следующий — «${st.peek}»`);
+          if (!st.beacon) fail(`шаг ${i + 1}: нет маяка над «${st.peek}»`);
+          const before = await page.eval('E2E.run()');
+          await page.key('KeyG');
+          await sleep(30);
+          await page.waitFor('!TS.app.v3.tp.busy', 3000, 'переход по G');
+          await page.eval(frames2);
+          const tool = st.op === 'check' ? 'check' : String(st.id).startsWith('pz:') ? 'pz' : null;
+          if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await page.eval(frames2); }
+          const aim = (await page.eval(guideState)).aim;
+          const want = String(st.id).startsWith('pz:') && aim && aim.type === 'dev' ? st.id : String(st.id).startsWith('pz:') ? st.id.slice(3) : st.id;
+          if (!aim || aim.id !== want) fail(`шаг ${i + 1} «${st.peek}»: после G под прицелом ${aim ? aim.type + ' ' + aim.id : 'ничего'}, а нужен ${want}`);
+          await page.key('KeyE'); await sleep(80);
+          // тележка: меню в 3D — пункт по шагу
+          if (await page.eval('!!TS.app.v3.menu3d')) {
+            const item = await page.eval(`(() => { const st = TS.app.tr.peek().step, el = TS.app.tr.elOf(st.id); return st.op === 'pos' ? TS.Plan.menuPos(st.pos) : TS.Plan.menuOn(st.op === 'on'); })()`);
+            await aimE({ menu: item }, 'пункт «' + item + '»');
+          }
+          if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await sleep(40); }
+          await sleep(60);
+          const after = await page.eval('E2E.run()');
+          if (after.errors.length > before.errors.length) fail(`шаг ${i + 1} «${st.peek}»: ошибка — ${after.errors.slice(before.errors.length).join('; ')}`);
+          if (after.ops !== before.ops + 1) fail(`шаг ${i + 1} «${st.peek}»: E не сработало (операций ${before.ops} → ${after.ops})`);
+          steps++;
+          if (SHOTS && i === 0) await page.shot(`${OUT}/guide-${key}-${ti + 1}.png`);
+        }
+        const r = await waitReport();
+        if (r.score !== 100 || r.verdict !== 'Выполнено без ошибок') fail(`отчёт: ${r.score}, «${r.verdict}»`);
+        if (!r.text.includes('подсказки шагов были включены')) fail('в отчёте нет «подсказки шагов были включены»');
+        await closeModal();
+        await clickBtn('#btnWalk', null, '«Обзор»');
+        return `${steps} шагов по подсказкам и G, 100 баллов`;
+      });
+    }
+  }
+  if (keys.length && keys.includes('ps110')) await check('guide', 'экзамен и «Обзор»', async () => {
+    await chooseScheme('ps110');
+    await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+    // «Обзор»: G — камера на аппарат следующего шага
+    await page.eval('TS.app.stepGuide = true');
+    await startTask(0);
+    const o0 = await page.eval('TS.app.v3.orbit.target.toArray()');
+    await page.eval('TS.app.v3.goNext()');
+    const o1 = await page.eval(`(() => { const v = TS.app.v3, d = v.aimTarget({ dev: TS.app.tr.peek().step.id }).p; return { t: v.orbit.target.toArray(), d: [d.x, d.z] }; })()`);
+    if (Math.hypot(o1.t[0] - o1.d[0], o1.t[2] - o1.d[1]) > 0.5) fail('в «Обзоре» камера не навелась на аппарат: ' + JSON.stringify({ o0, o1 }));
+    await clickBtn('[data-act="task-stop"]', null, '«Завершить»');
+    await waitReport(); await closeModal();
+    // экзамен: ни строки, ни маяка, ни G, ни «Перейти к аппарату» в панели
+    await page.eval(`(() => { const app = TS.app, s = app.scheme; app.exam.start(s, 'ps110', { kind: 'skills', interlocks: true, person: { fio: 'Проверка Подсказок' }, tasks: [s.tasks[0]] }); })()`);
+    await page.waitFor('TS.app.exam.active() && !!TS.app.tr.run', 3000, 'экзамен начался');
+    await setMode('3d');
+    if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+    await page.eval('TS.app.v3.walk.lockChanged(true)');
+    await settle();
+    const ex = await page.eval(guideState);
+    const panel = await page.eval(`({ line: !!document.getElementById('guideLine'), go: !!document.querySelector('[data-act="goto-next"]'), goto: !!document.querySelector('[data-act="goto"]') })`);
+    await page.key('KeyG'); await settle();
+    const ex2 = await page.eval(guideState);
+    await page.eval(`TS.app.exam.stop('abort')`);
+    await page.waitFor('!TS.app.exam.active() && !!document.querySelector("#modal .proto")', 3000, 'протокол');
+    await closeModal();
+    await clickBtn('#btnWalk', null, '«Обзор»');
+    if (ex.next || ex.peek || ex.beacon) fail('в экзамене видна подсказка шага или маяк: ' + JSON.stringify(ex));
+    if (panel.line || panel.go || panel.goto) fail('в экзамене в панели подсказка или «Перейти»');
+    if (Math.hypot(ex2.x - ex.x, ex2.z - ex.z) > 0.01 || ex2.busy) fail('в экзамене G перевело к аппарату');
+    return '«Обзор» — камера на аппарат; в экзамене нет строки, маяка, G';
+  });
+} };
+
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
 // блокировки и не трогает «Мои схемы»; телефон 390×844 — панель снизу и не закрывает схему
 const demoReady = 'TS.app.demo.on && !TS.app.demo.busy && TS.app.demo.check().length === 0';

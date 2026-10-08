@@ -220,6 +220,8 @@ class Items {
     this.showOpen(x, false);
     this.setPose(x, parent, hold[0], hold[1], xr ? 1 : 0.8);
   }
+  // Предмет в руке ноутбука виден, только пока смотришь от первого лица: в «Обзоре» не висит перед камерой
+  handVisible(on) { const id = this.hands.desk; if (id) this.list.get(id).obj.visible = on; }
   toWorn(x) { this.freeHand(x); x.state = 'worn'; x.mount = null; x.obj.visible = false; }
   // Где предмет встанет на месте at: родитель, точка и поворот. Плакаты — по очереди со смещением (slot — номер плаката на месте),
   // замок — на петлю привода, ПЗ — зажимом на контакты, ограждение — вокруг места работ. Тем же считается призрак предпросмотра
@@ -349,7 +351,8 @@ class Items {
     }
     if (tgt.type === 'mount') {
       const kind = ITEM[held].kind, ms = pm.mountState(tgt.id), at = tgt.id;
-      if (!ms.ok) return `${placeText(at, 3)}: ${lowFirst(ms.text)}`;
+      // причина сама называет место («Верхние (шинные) контакты яч.3 закрыты шторкой…») — без повтора
+      if (!ms.ok) return /яч\.\d|№\d/.test(ms.text) ? ms.text : `${placeText(at, 3)}: ${lowFirst(ms.text)}`;
       const to = placeText(at, 0);
       const verb = kind === 'uvn' ? `проверить указателем ${placeText(at, 1)}` : kind === 'pz' ? `наложить ПЗ ${to}` : kind === 'lock' ? `запереть ${to.replace(/^на /, '')} на замок`
         : kind === 'fence' ? `поставить ограждение ${to}` : `повесить плакат ${to}`;

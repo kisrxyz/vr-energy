@@ -215,8 +215,8 @@ class View3D {
       this.world = this.room;
       this.makeBoard(this.room.board);
     } else {
-      // новая площадка открывается в «Обзоре»
-      this.room = null; this.yardWalk = false;
+      // новая площадка открывается в «Обзоре», пешком — от ворот
+      this.room = null; this.yardWalk = false; this.walkPose = null;
       if (this.walk) this.walk.disable();
       this.buildYard(s, topo);
     }
@@ -772,11 +772,13 @@ class View3D {
       this.closeMenu3D();
       if (this.top) {
         this.walk.disable();
+        if (this.items) this.items.handVisible(false);
         this.showTop(false);
         o.target.set(this.room.view.x, 0.8, this.room.view.z); o.r = this.room.view.r; o.th = 0.25; o.ph = 0.72;
         this.applyOrbit();
       } else {
         this.showTop(true);
+        if (this.items) this.items.handVisible(true);
         this.walk.enable(this.room);
         this.walk.apply();
       }
@@ -793,8 +795,10 @@ class View3D {
     if (!this.ready || this.room || !this.world || this.renderer.xr.isPresenting) return;
     this.yardWalk = !this.yardWalk;
     this.closeMenu3D(); this.tip(null); this.setHover(null);
-    if (this.yardWalk) { this.top = false; this.walk.reset(this.world.start); if (this.active) this.walk.enable(this.world); }
-    else { this.walk.disable(); this.applyOrbit(); }
+    // «Обзор» и обратно — на то же место: начало у ворот только у новой площадки
+    const w = this.walk;
+    if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
+    else { this.walkPose = { x: w.x, z: w.z, yaw: w.yaw, pitch: w.pitch }; w.disable(); this.applyOrbit(); }
     this.camButtons();
   }
   // Кнопки вида: «Пешком»/«Обзор» — только на площадке; «Вид сверху» пешком на площадке не нужен
@@ -892,7 +896,27 @@ class View3D {
     // wireAim — «Перейти к проводу» ищет место, откуда провод под прицелом, и без инструмента
     const tool = !!this.app.tool || !!this.wireAim;
     // предметы и места полигона ловит items.js (руки), обычный щелчок и обзор — только аппараты и щит; меню — поверх всего
-    return hits.find(h => h.object.userData.menu) || hits.find(h => { const u = h.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
+    const h = hits.find(q => q.object.userData.menu) || hits.find(q => { const u = q.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
+    return h && h.object.userData.dev ? this.centered(h, hits) : h;
+  }
+  // Коробки соседних аппаратов перекрываются (ЗН у разъединителя, ТТ у выключателя): из аппаратов не дальше 3 м за первым
+  // берём тот, чей центр ближе к лучу (в долях размера коробки) — щелчок по середине аппарата попадает в него, а не в соседа
+  centered(first, hits) {
+    const T = THREE, ray = this.ray.ray, c = this.tmp.v, p = this.tmp.v2, inv = this._inv || (this._inv = new T.Matrix4());
+    let best = first, bk = Infinity;
+    for (const h of hits) {
+      if (h.distance > first.distance + 3) break;
+      const o = h.object;
+      if (!o.userData.dev) continue;
+      o.getWorldPosition(c);
+      ray.closestPointToPoint(c, p);
+      // смещение луча от центра — в местных осях коробки, в долях полуразмера
+      inv.copy(o.matrixWorld).invert();
+      p.applyMatrix4(inv);
+      const g = o.geometry.parameters, k = Math.max(Math.abs(p.x) / (g.width / 2), Math.abs(p.y) / (g.height / 2), Math.abs(p.z) / (g.depth / 2));
+      if (k < bk) { bk = k; best = h; }
+    }
+    return best;
   }
   hoverAt(cx, cy) {
     const h = this.pick(cx, cy), u = h ? h.object.userData : {};
@@ -913,6 +937,9 @@ class View3D {
     if (tool === 'check') t += ' — проверить напряжение';
     else if (tool === 'pz') t += el.t === 'bus' ? ' — наложить ПЗ' : isPzId(id) ? ' — снять ПЗ' : '';
     else if (sw) t += tr.actions(id).length > 1 ? ' — меню' : sw.on ? ' — отключить' : ' — включить';
+    // не переключается (трансформатор, шина, ТТ, нагрузка…): щелчок — справка, что это; энергосистема — включить или отключить
+    else if (tr.sim.src[id]) t += tr.sim.src[id].on ? ' — отключить' : ' — включить';
+    else t += ' — справка';
     return t;
   }
   setHover(id) {

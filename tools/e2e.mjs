@@ -357,12 +357,59 @@ SUITES.items = { perScheme: false, fn: async () => {
     await page.eval('TS.app.tr.resetToNormal(); TS.app.v3.update(true)');
     return 'призрак = место (ограждение, второй плакат), подсвечены места из mountsFor, кольцо и «место работ» — только с подсказками';
   });
+  // Шлем (эмулятор iwer): ограждение рукой — подсветка у руки, взять боковой кнопкой, призрак у яч.2, поставить ровно в призрак,
+  // снова взять у дальней стойки (раньше рука мерилась до угла у фасада — Б2)
+  await check('items', 'шлем (эмулятор iwer): ограждение рукой', async () => {
+    try {
+      if (!(await installIwer())) return 'пропущено: iwer с CDN не загрузился (нет сети)';
+      await openScheme('poly');
+      await page.eval('TS.app.tr.resetToNormal()');
+      await gesture('TS.app.v3.enterVR()');
+      await page.waitFor('TS.app.v3.renderer.xr.isPresenting', 5000, 'вход в VR');
+      const r = await page.eval(`(async () => {
+        const sleep = ms => new Promise(r => setTimeout(r, ms)), d = __iwer, R = d.controllers.right, v = TS.app.v3, it = v.items, T = v.kit.T, out = {};
+        const press = async b => { R.updateButtonValue(b, 1); await sleep(120); R.updateButtonValue(b, 0); await sleep(150); };
+        await sleep(400);
+        for (let i = 0; i < 3 && v.tutor && v.tutor.m.visible; i++) await press('trigger');
+        v.rig.position.set(0, 0, 0); v.rig.rotation.set(0, 0, 0);
+        const fh = v.room.fenceHome, c2 = v.room.cells.find(c => c.n === 2), ZF = v.room.ZF;
+        d.position.set(3.6, 1.6, 1.4); R.position.set(fh.x, 0.6, fh.z); R.quaternion.set(0, 0, 0, 1);
+        await sleep(300); out.hot = it.hot;
+        await press('squeeze'); out.held = it.heldIn(R === d.controllers.right ? 1 : 0) || it.heldIn(0) || it.heldIn(1);
+        d.position.set(c2.x + 0.3, 1.6, ZF + 2.8); R.position.set(c2.x, 1.1, ZF + 1.4);
+        await sleep(400);
+        const g = it.ghostShown, gp = g && g.visible ? g.getWorldPosition(new T.Vector3()) : null;
+        out.ghost = gp ? it.ghostAt : null;
+        await press('squeeze'); out.placed = TS.app.permit.itemAt('fence');
+        out.match = gp ? gp.distanceTo(it.list.get('fence').obj.getWorldPosition(new T.Vector3())) : null;
+        R.position.set(c2.x + 0.62, 0.7, ZF + 2.55);
+        await sleep(300); out.hotPost = it.hot;
+        await press('squeeze'); out.retaken = it.heldIn(0) || it.heldIn(1);
+        return out; })()`);
+      await page.eval('TS.app.v3.renderer.xr.getSession().end()');
+      await page.waitFor('!TS.app.v3.renderer.xr.isPresenting', 3000, 'выход из VR');
+      if (r.hot !== 'fence' || r.held !== 'fence') fail('рука у ограждения на стенде: ' + JSON.stringify(r));
+      if (r.ghost !== 'zone:2' || r.placed !== 'zone:2' || !(r.match < 0.02)) fail('призрак и место у яч.2: ' + JSON.stringify(r));
+      if (r.hotPost !== 'fence' || r.retaken !== 'fence') fail('поставленное ограждение не взять у дальней стойки: ' + JSON.stringify(r));
+      return 'взято рукой, призрак у яч.2 = место, снова взято у дальней стойки';
+    } finally {
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
 } };
 
 // Переход и телепорт: метка на земле видна и прячется на аппарате; щелчок (E) — место сменилось, эффект кончился, экран не тёмный;
 // за ограждением и в ячейке — «Туда не пройти», место прежнее. Площадка — E по прицелу, полигон без захвата мыши — щелчок мышью,
 // телефон — касание пола
 const IWER = 'https://cdn.jsdelivr.net/npm/iwer@2.5.0/+esm';
+// Выражение как действие пользователя (вход в VR требует жеста)
+const gesture = expr => page.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true }).then(r => {
+  if (r.result && r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
+  return r.result && r.result.result.value;
+});
+// Эмулятор шлема iwer (Quest 3) с CDN — только в странице проверки; false — нет сети
+const installIwer = () => gesture(`(async () => { try { const m = await import('${IWER}'); window.__iwer = new m.XRDevice(m.metaQuest3); window.__iwer.installRuntime({ forceInstall: true }); return true; } catch (e) { return false; } })()`);
 const tpState = `(() => { const v = TS.app.v3, w = v.walk, tp = v.tp; return { x: w.x, z: w.z, mark: tp.mark.visible, ok: tp.ok, busy: tp.busy,
   dark: tp.fade.visible && tp.fade.material.opacity > 0.02, aim: w.hud.aim.textContent, said: w.hud.said.hidden ? '' : w.hud.said.textContent,
   fx: w.floor ? w.floor.point.x : null, fz: w.floor ? w.floor.point.z : null }; })()`;
@@ -447,13 +494,8 @@ SUITES.teleport = { perScheme: false, fn: async () => {
   });
   // Шлем — эмулятор WebXR iwer (Quest 3) с CDN, только в странице проверки (в сборку не входит). Нет сети — проверка пропускается
   await check('teleport', 'шлем (эмулятор iwer): курок по земле', async () => {
-    const gesture = expr => page.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true }).then(r => {
-      if (r.result && r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
-      return r.result && r.result.result.value;
-    });
     try {
-      const got = await gesture(`(async () => { try { const m = await import('${IWER}'); window.__iwer = new m.XRDevice(m.metaQuest3); window.__iwer.installRuntime({ forceInstall: true }); return true; } catch (e) { return false; } })()`);
-      if (!got) return 'пропущено: iwer с CDN не загрузился (нет сети)';
+      if (!(await installIwer())) return 'пропущено: iwer с CDN не загрузился (нет сети)';
       await chooseScheme('ps110');
       await setMode('3d');
       await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready)', 15000, '3D');

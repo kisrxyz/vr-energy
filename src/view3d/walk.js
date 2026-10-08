@@ -36,8 +36,9 @@ class Walk {
     el.className = 'v3-fps'; el.hidden = true;
     el.innerHTML = `<div class="v3-cross" aria-hidden="true"></div><div class="v3-aim" aria-live="polite"></div>
       <div class="v3-said" role="status" hidden></div>
+      <div class="v3-tool" hidden></div>
       <div class="v3-next" hidden></div>
-      <div class="v3-hand"><span class="ppe"></span><span class="held"></span></div>
+      <div class="v3-hand"><span class="ppe"></span><span class="held"></span><button class="v3-drop" type="button" hidden>Положить</button></div>
       <div class="v3-keys" aria-label="Управление"><b>Управление</b>
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> ходить</span>
         <span>мышь — смотреть · <kbd>Esc</kbd> отпустить мышь</span>
@@ -55,9 +56,11 @@ class Walk {
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
       held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
-      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'),
+      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
+    // телефон: клавиши Q нет — «Положить» рядом с тем, что в руке
+    this.hud.drop.addEventListener('click', () => this.drop());
     // «Перейти · G» в строке следующего шага
     this.hud.next.addEventListener('click', e => { if (e.target.closest('button')) this.v.goNext(); });
     this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
@@ -313,6 +316,11 @@ class Walk {
     // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
     if (yard) {
       v.setHover(this.aim && (this.aim.type === 'dev' || far) ? this.aim.id : null);
+      // включённый инструмент виден всё время, пока он включён: указатель (V) или ПЗ (P)
+      const tool = v.app.tool, tt = tool === 'check' ? `Указатель напряжения включён · ${this.touch ? 'кнопка в панели' : 'V'} — выключить`
+        : tool === 'pz' ? `Переносное заземление: наложить или снять · ${this.touch ? 'кнопка в панели' : 'P'} — выключить` : '';
+      set('tool', h.tool, tt);
+      h.tool.hidden = !tt;
       // с подсказками шагов — следующий шаг и «Перейти · G»
       const g = v.app.guideNext();
       const nx = g ? `Следующий шаг: ${esc(g.text)}${g.step.op === 'check' ? '<small>V — указатель, затем E</small>' : String(g.step.id).startsWith('pz:') ? '<small>P — ПЗ, затем E</small>' : ''}<button type="button">${this.touch ? 'Перейти' : 'Перейти · G'}</button>` : '';
@@ -328,7 +336,8 @@ class Walk {
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');
-    set('held', h.held, held ? `В руке: <b>${esc(it.list.get(held).it.title)}</b> · E — применить · Q — положить` : 'Руки свободны');
+    set('held', h.held, held ? `В руке: <b>${esc(it.list.get(held).it.title)}</b> · ${this.touch ? 'касание места — применить' : 'E — применить · Q — положить'}` : 'Руки свободны');
+    h.drop.hidden = !(this.touch && held);
     const nx = st.guide && st.next ? `Следующее мероприятие: ${esc(st.next)}` : '';
     set('next', h.next, nx);
     h.next.hidden = !nx;

@@ -7,6 +7,7 @@ import { MODELS, S3, H3, PAL, texture, makeMaterials, makeKit } from './models/i
 import { wireMid } from '../view2d/scheme2d.js';
 import { buildRoom } from './room.js';
 import { Items } from './items.js';
+import { placeText } from '../core/permit.js';
 import { Walk } from './walk.js';
 import { footprints, makeYardWorld } from './world.js';
 
@@ -158,20 +159,23 @@ class View3D {
     if (!this.nodeMats.has(n)) this.nodeMats.set(n, new THREE.MeshStandardMaterial({ color: COL3.dead, roughness: 0.35, metalness: 0.45, emissive: 0x000000 }));
     return this.nodeMats.get(n);
   }
-  labelSprite(text, bg = 'rgba(14,20,18,0.82)', h = 0.36) {
-    const T = THREE, c = document.createElement('canvas'), x = c.getContext('2d');
+  // Подпись-спрайт лицом к камере; kind — фон из PAL.label (bg, dead, live); поверх всего — её не срезают стенки и аппараты
+  // screen — размер постоянный на экране (h — доля высоты кадра), иначе h — высота в метрах
+  labelSprite(text, kind = 'bg', h = 0.36, screen = false) {
+    const T = THREE, L = PAL.label, c = document.createElement('canvas'), x = c.getContext('2d');
     const font = '600 40px "JetBrains Mono", ui-monospace, monospace';
     x.font = font;
     const w = Math.ceil(x.measureText(text).width) + 32;
     c.width = w; c.height = 60;
     x.font = font;
-    x.fillStyle = bg; rr(x, 0, 0, w, 60, 12); x.fill();
-    x.fillStyle = '#ffffff'; x.textBaseline = 'middle'; x.fillText(text, 16, 32);
+    x.fillStyle = L[kind] || L.bg; rr(x, 0, 0, w, 60, 12); x.fill();
+    if (kind !== 'bg') { x.strokeStyle = L.edge; x.lineWidth = 3; rr(x, 1.5, 1.5, w - 3, 57, 11); x.stroke(); }
+    x.fillStyle = L.fg; x.textBaseline = 'middle'; x.fillText(text, 16, 32);
     const tex = new T.CanvasTexture(c);
     tex.colorSpace = T.SRGBColorSpace;
-    const sp = new T.Sprite(new T.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+    const sp = new T.Sprite(new T.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, toneMapped: false, sizeAttenuation: !screen }));
     sp.scale.set(h * w / 60, h, 1);
-    sp.renderOrder = 2;
+    sp.renderOrder = 9;
     return sp;
   }
   winTex() {
@@ -536,8 +540,8 @@ class View3D {
     x.font = font; x.textBaseline = 'middle';
     list.forEach((d, i) => {
       const b = boxes[i];
-      x.fillStyle = 'rgba(14,20,18,0.82)'; rr(x, b.x, b.y, b.w, LH, 18); x.fill();
-      x.fillStyle = '#ffffff'; x.fillText(text(d), b.x + 24, b.y + 48);
+      x.fillStyle = PAL.label.bg; rr(x, b.x, b.y, b.w, LH, 18); x.fill();
+      x.fillStyle = PAL.label.fg; x.fillText(text(d), b.x + 24, b.y + 48);
     });
     const tex = new T.CanvasTexture(c);
     tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 4;
@@ -655,6 +659,8 @@ class View3D {
     const vis = d.slideX > 0.02;
     if (d.inner.visible !== vis) { d.inner.visible = vis; if (d.zn) d.zn.pivot.visible = vis; }
     this.moveLamps(d);
+    // предмет на полу, на который выкатили тележку, отодвигается из-под неё — иначе его не достать
+    if (this.items) this.items.unbury();
   }
   // Предметы, плакаты и мероприятия изменились (событие 'field' движка)
   onField(d = {}) {
@@ -1274,15 +1280,27 @@ class View3D {
     this.arcLight.intensity = 90;
     this.fxList.push({ t: 0, life: 1.6, sph, pts, vel });
   }
+  // Итог проверки указателем. Полигон — как в жизни: при напряжении указатель мигает и пищит (items.lampUntil, звук),
+  // без напряжения молчит; для обучения итог — строкой у прицела (ноутбук) и баннером (шлем), не табличкой в ячейке.
+  // Площадка — подпись над аппаратом или проводом лицом к камере, поверх всего
   checkFx(d) {
     if (!this.active) return;
-    const p = this.posOf(d.target);
-    if (!p) return;
-    const sp = this.labelSprite(d.live ? 'U есть' : 'U нет', d.live ? 'rgba(210,25,50,0.92)' : 'rgba(20,150,80,0.92)', this.room ? 0.2 : 0.5);
-    sp.position.set(p.x, this.room ? p.y + 0.35 : H3 + 1.7, p.z);
-    this.scene.add(sp);
-    this.fxList.push({ t: 0, life: 2.4, mark: sp });
     this.banner(d.text, d.live ? 'warn' : 'info');
+    if (this.room) {
+      const mt = this.app.permit.contactMount(d.target), place = mt ? placeText(mt, 3).replace(/ \(.+?\)/, '') : this.app.tr.nm(d.target);
+      if (this.fpsOn()) this.walk.said(`${d.live ? 'Есть напряжение!' : 'Напряжения нет'} — ${place.charAt(0).toLowerCase() + place.slice(1)}`, d.live);
+      return;
+    }
+    // под подписью аппарата (её видно и пешком, и в обзоре) или над проводом; размер на экране один и тот же издалека и вблизи
+    const dv = this.dev.get(d.target), p = dv && dv.labelPos ? dv.group.localToWorld(new THREE.Vector3(...dv.labelPos)) : this.posOf(d.target);
+    if (!p) return;
+    if (!dv) p.y = H3 + 0.45; else p.y -= 0.5;
+    const sp = this.labelSprite(d.live ? 'Напряжение есть' : 'Напряжения нет', d.live ? 'live' : 'dead', 0.045, true);
+    sp.position.copy(p);
+    // подпись одна: новая проверка убирает прежнюю (иначе «есть» и «нет» лягут друг на друга)
+    for (const f of this.fxList) if (f.mark) f.t = f.life;
+    this.scene.add(sp);
+    this.fxList.push({ t: 0, life: 2.6, mark: sp });
   }
   stepFx(dt) {
     if (this.arcLight.intensity > 0) this.arcLight.intensity = Math.max(0, this.arcLight.intensity - 180 * dt);
@@ -1545,7 +1563,8 @@ class View3D {
       return { p, want: a => !!a && a.type === 'menu' && (this.menuBtn(a.h.uv) || {}).a === b.a };
     }
     const key = what.item ? 'item' : what.mount ? 'mount' : 'dev', id = what[key];
-    const o = this.pickables.find(q => q.userData[key] === id);
+    // у предмета — коробка, которая сейчас ловится (поставленное ограждение — стойка у прохода, а не сложенное у фасада)
+    const o = this.pickables.find(q => q.userData[key] === id && (key !== 'item' || !this.items || this.items.proxyOn(q)));
     if (!o) return null;
     o.updateWorldMatrix(true, false);
     o.getWorldPosition(p);
@@ -1576,10 +1595,13 @@ class View3D {
   }
   xrFrame(dt) {
     let hoverId = null;
+    const rays = this._rays || (this._rays = new Map());
+    rays.clear();
     for (const info of this.ctrls) {
       if (!info.src) continue;
       info.line.visible = true;
       const hits = this.xrHits(info), h = this.xrHit(info, hits);
+      rays.set(info, hits);
       // полигон: луч жёлтый и над предметом или местом, куда можно повесить то, что в руке
       const it = this.room && this.items ? this.items.pick(hits, info.i, 1.7) : null;
       const hp = it && (!h || it.h.distance <= h.distance) ? it.h : h;
@@ -1603,7 +1625,7 @@ class View3D {
       }
     }
     this.setHover(hoverId);
-    if (this.room && this.items) this.items.xrFrame(this.ctrls);
+    if (this.room && this.items) this.items.xrFrame(this.ctrls, rays);
     if (this.bannerH.m.visible && performance.now() > this.bannerUntil) this.bannerH.m.visible = false;
     const now = performance.now();
     if (!this.gazeT || now - this.gazeT > 250) {

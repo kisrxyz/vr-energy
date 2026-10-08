@@ -27,12 +27,16 @@ const PPE = { gloves: true, helmet: true };        // надевают сраз�
 const C = PAL.items, GLOVE = C.glove, CTRL = C.ctrl;   // цвет перчаток; коробки контроллеров в шлеме — без перчаток и в перчатках (цвета — models/kit.js)
 // Как предмет лежит на полу: высота и наклон
 const REST = { poster: [0.006, -Math.PI / 2], gloves: [0.03, 0], helmet: [0.0, 0], uvn: [0.03, 0], pz: [0.03, 0], lock: [0.02, 0], fence: [0, 0] };
+// Поставленное ограждение (местные координаты ячейки): стойки по углам и у входа, лента на высоте пояса
+const FENCE = { Z0: 0.15, Z1: 2.55, X: 0.62, Y: 0.95 };
+FENCE.posts = [[-FENCE.X, FENCE.Z1], [FENCE.X, FENCE.Z1], [0.05, FENCE.Z1], [-FENCE.X, FENCE.Z0], [FENCE.X, FENCE.Z0]];
+const distToSeg = (p, a, b) => { const ab = b.clone().sub(a), t = Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / (ab.lengthSq() || 1))); return a.clone().addScaledVector(ab, t).distanceTo(p); };
 
 class Items {
   constructor(v, room) {
     this.v = v; this.room = room; this.T = v.kit.T;
     this.list = new Map(); this.hands = { desk: null, 0: null, 1: null };
-    this.touching = new Map(); this.lampUntil = 0; this.lastFence = null;
+    this.touching = new Map(); this.lampUntil = 0; this.hot = null; this.hotMats = new Map();
     this.mats();
     for (const it of ITEMS) this.make(it);
     this.ghost = new this.T.Mesh(new this.T.BoxGeometry(1, 1, 1), new this.T.MeshBasicMaterial({ color: C.ghost, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
@@ -150,18 +154,26 @@ class Items {
       size = [0.3, 1.05, 0.3]; center = [0, 0.52, 0];
     }
     // невидимая коробка: по ней ловят предмет щелчком или лучом
+    // у ограждения — своя коробка у сложенного (на стенде, в руке, на полу); у поставленного — коробки стоек и ленты (fenceOpen)
     const px = new T.Mesh(new T.BoxGeometry(size[0] + 0.06, size[1] + 0.06, size[2] + 0.06), this.v._proxyMat);
     px.position.set(center[0], center[1], center[2]); px.visible = false; px.userData.item = it.id; px.userData.proxy = true;
+    if (open) px.userData.part = 'folded';
     g.add(px); this.v.pickables.push(px);
     g.traverse(o => { o.userData.dyn = true; });
     for (const ch of body.children) ch.userData.dyn = true;
     this.v.root.add(g);
     this.list.set(it.id, { id: it.id, it, obj: g, body, proxy: px, center, tip, lamp, folded, open, state: 'home', hand: null, mount: null, fall: null });
   }
-  // Поставленное ограждение: стойки по углам места работ, лента на высоте пояса, вход справа
+  // Поставленное ограждение: стойки по углам места работ, лента на высоте пояса, вход справа.
+  // Снять его можно за любую стойку или ленту: у каждой своя невидимая коробка (part 'open' — ловятся, только пока оно стоит)
   fenceOpen() {
-    const T = this.T, k = this.v.kit, M = this.M, g = new T.Group(), Z0 = 0.15, Z1 = 2.55, X = 0.62, Y = 0.95;
-    for (const [px, pz] of [[-X, Z0], [-X, Z1], [X, Z0], [X, Z1], [0.05, Z1]]) { g.add(k.cyl(0.02, 1.0, M.post, px, 0.5, pz)); g.add(k.box(0.16, 0.02, 0.16, M.post, px, 0.01, pz)); }
+    const T = this.T, k = this.v.kit, M = this.M, g = new T.Group(), { Z0, Z1, X, Y } = FENCE;
+    const grip = (w, h, d, x, y, z) => {
+      const px = new T.Mesh(new T.BoxGeometry(w, h, d), this.v._proxyMat);
+      px.position.set(x, y, z); px.visible = false; Object.assign(px.userData, { item: 'fence', part: 'open', proxy: true });
+      g.add(px); this.v.pickables.push(px);
+    };
+    for (const [px, pz] of FENCE.posts) { g.add(k.cyl(0.02, 1.0, M.post, px, 0.5, pz)); g.add(k.box(0.16, 0.02, 0.16, M.post, px, 0.01, pz)); grip(0.2, 1.06, 0.2, px, 0.52, pz); }
     const tape = (x0, z0, x1, z1) => {
       const len = Math.hypot(x1 - x0, z1 - z0), m = k.box(x0 === x1 ? 0.01 : len, 0.07, x0 === x1 ? len : 0.01, M.tape, (x0 + x1) / 2, Y, (z0 + z1) / 2);
       // полосы ленты не растягиваются с длиной
@@ -169,13 +181,13 @@ class Items {
       const uv = m.geometry.attributes.uv;
       for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * len / 0.25);
       g.add(m);
+      grip(x0 === x1 ? 0.12 : len, 0.2, x0 === x1 ? len : 0.12, (x0 + x1) / 2, Y, (z0 + z1) / 2);
     };
     tape(-X, Z0, -X, Z1); tape(X, Z0, X, Z1); tape(-X, Z1, 0.05, Z1);
     // место для плаката «Стой! Напряжение» — на ленте слева, лицом внутрь
     const px = new T.Mesh(new T.BoxGeometry(0.08, 0.34, 0.9), this.v._proxyMat);
     px.position.set(-X + 0.02, Y, 1.4); px.visible = false; px.userData.mount = 'fence'; px.userData.proxy = true;
     g.add(px); this.v.pickables.push(px);
-    this.fenceProxy = px;
     return g;
   }
 
@@ -242,6 +254,15 @@ class Items {
     x.fall = { y: y0, to: rest[0], v: 0 };
   }
 
+  // Предметы на полу — не под тележкой и не в стене (тележку выкатили на лежащий предмет)
+  unbury() {
+    for (const x of this.list.values()) {
+      if (x.state !== 'floor') continue;
+      const p = x.obj.position, [fx, fz] = this.room.resolve(p.x, p.z, 0.12);
+      if (Math.abs(fx - p.x) > 1e-4 || Math.abs(fz - p.z) > 1e-4) { p.x = fx; p.z = fz; }
+    }
+  }
+
   // ---------- синхронизация с Permit ----------
   sync(reset) {
     const pm = this.permit;
@@ -269,7 +290,11 @@ class Items {
   // ---------- что под прицелом или лучом ----------
   // Подходит ли попадание: держим предмет — места для него (и аппараты, щит); пустая рука — предметы, аппараты, щит
   usable(u, held) {
-    if (u.item) { const x = this.list.get(u.item); return !held && x && x.state !== 'worn' && x.state !== 'hand'; }
+    if (u.item) {
+      const x = this.list.get(u.item);
+      if (held || !x || x.state === 'worn' || x.state === 'hand') return false;
+      return !u.part || (u.part === 'open') === (x.state === 'mount');
+    }
     if (u.mount) {
       if (!held) return false;
       if (u.mount === 'fence' && !this.fenceOn) return false;
@@ -301,7 +326,7 @@ class Items {
     if (!tgt) return held ? `В руке: ${ITEM[held].title}` : '';
     if (tgt.type === 'item') {
       const at = pm.itemAt(tgt.id), it = ITEM[tgt.id];
-      return `${it.title}${at && at !== 'worn' ? ' ' + placeText(at, 1) : ''} — ${at ? 'снять' : PPE[it.kind] ? 'надеть' : 'взять'}`;
+      return `${it.title}${at && at !== 'worn' ? ' ' + placeText(at, 1) : ''} — ${at ? (it.kind === 'fence' ? 'убрать' : 'снять') : PPE[it.kind] ? 'надеть' : 'взять'}`;
     }
     if (tgt.type === 'mount') {
       const kind = ITEM[held].kind, ms = pm.mountState(tgt.id);
@@ -406,20 +431,59 @@ class Items {
   squeeze(info, rayHits) {
     const hand = info.i, held = this.heldIn(hand);
     if (held) { this.release(hand, this.snapFor(hand, rayHits)); this.ghost.visible = false; return true; }
-    const gp = info.grip.getWorldPosition(new this.T.Vector3());
-    let best = null, bd = REACH.grab;
-    for (const x of this.list.values()) {
-      if (x.state === 'worn' || x.state === 'hand') continue;
-      // расстояние до края предмета, а не до центра: длинный указатель берут за любую часть
-      const c = x.obj.localToWorld(new this.T.Vector3(x.center[0], x.center[1], x.center[2])), pr = x.proxy.geometry.parameters;
-      const d = c.distanceTo(gp) - Math.max(pr.width, pr.height, pr.depth) * 0.35;
-      if (d < bd) { bd = d; best = x; }
-    }
+    let best = this.nearest(info.grip.getWorldPosition(new this.T.Vector3()));
     if (!best && rayHits) { const t = this.pick(rayHits, hand, REACH.xr); if (t && t.type === 'item') best = this.list.get(t.id); }
     if (!best) return false;
     this.grab(best.id, hand);
     this.v.pulse(info, 0.5);
     return true;
+  }
+  // Предмет у руки (шлем): ближе REACH.grab до края; поставленное ограждение — до любой стойки
+  nearest(gp) {
+    let best = null, bd = REACH.grab;
+    for (const x of this.list.values()) {
+      if (x.state === 'worn' || x.state === 'hand') continue;
+      const d = this.grabDist(x, gp);
+      if (d < bd) { bd = d; best = x; }
+    }
+    return best;
+  }
+  grabDist(x, gp) {
+    const T = this.T;
+    if (x.open && x.state === 'mount') {
+      let d = Infinity;
+      for (const [px, pz] of FENCE.posts) d = Math.min(d, distToSeg(gp, x.open.localToWorld(new T.Vector3(px, 0.05, pz)), x.open.localToWorld(new T.Vector3(px, 1.0, pz))) - 0.05);
+      return d;
+    }
+    // расстояние до края предмета, а не до центра: длинный указатель берут за любую часть
+    const c = x.obj.localToWorld(new T.Vector3(x.center[0], x.center[1], x.center[2])), pr = x.proxy.geometry.parameters;
+    return c.distanceTo(gp) - Math.max(pr.width, pr.height, pr.depth) * 0.35;
+  }
+  // Невидимая коробка предмета сейчас ловится (у ограждения — сложенного или поставленного)
+  proxyOn(o) { const u = o.userData, x = this.list.get(u.item); return !!x && (!u.part || (u.part === 'open') === (x.state === 'mount')); }
+  // Подсветка предмета под прицелом, лучом или у руки: весь предмет чуть светится (материалы — копии с подсветкой, вызовов не прибавляется)
+  hover(id) {
+    if (this.hot === id) return;
+    if (this.hot && this.list.has(this.hot)) this.tint(this.list.get(this.hot), false);
+    this.hot = id || null;
+    if (this.hot && this.list.has(this.hot)) this.tint(this.list.get(this.hot), true);
+  }
+  tint(x, on) {
+    x.obj.traverse(o => {
+      if (!o.isMesh || o.userData.proxy || o === x.lamp) return;
+      if (on && !o.userData.mat0) { o.userData.mat0 = o.material; o.material = this.hotMat(o.material); }
+      else if (!on && o.userData.mat0) { o.material = o.userData.mat0; delete o.userData.mat0; }
+    });
+  }
+  hotMat(m) {
+    let h = this.hotMats.get(m);
+    if (!h) {
+      h = m.clone();
+      if (h.emissive) { h.emissive.setHex(C.hot); h.emissiveIntensity = 0.45; }
+      else h.color.lerp(new this.T.Color(C.hot), 0.25);
+      this.hotMats.set(m, h);
+    }
+    return h;
   }
   // Курок с предметом в руке: применить по лучу (надеть, повесить, коснуться); иначе — обычный курок
   select(info, rayHits) {
@@ -458,15 +522,23 @@ class Items {
     return null;
   }
   // Каждый кадр в шлеме: коснуться указателем; подсветить место
-  xrFrame(ctrls) {
-    let ghost = null;
+  xrFrame(ctrls, rays) {
+    let ghost = null, hot = null;
     for (const info of ctrls) {
+      if (!info.src) continue;
       const id = this.heldIn(info.i);
-      if (!id || !info.src) continue;
+      if (!id) {
+        // пустая рука: подсветить предмет у руки, иначе — под лучом
+        const near = this.nearest(info.grip.getWorldPosition(new this.T.Vector3()));
+        const t = near || !rays || !rays.get(info) ? null : this.pick(rays.get(info), info.i, REACH.xr);
+        hot = hot || (near ? near.id : t && t.type === 'item' ? t.id : null);
+        continue;
+      }
       if (ITEM[id].kind === 'uvn') this.tipTouch(this.list.get(id));
       const s = this.snapFor(info.i, null);
       if (s && s.wp) ghost = s;
     }
+    this.hover(hot);
     this.showGhost(ghost);
   }
   // Наконечник указателя у контактов: одна проверка на касание, следующая — когда отвели и снова коснулись
@@ -516,6 +588,8 @@ class Items {
     }
   }
   dispose() {
+    this.hover(null);
+    for (const m of this.hotMats.values()) m.dispose();
     this.gloveGrips(true);
     this.v.scene.remove(this.ghost);
     for (const x of this.list.values()) if (x.obj.parent) x.obj.parent.remove(x.obj);

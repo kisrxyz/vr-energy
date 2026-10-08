@@ -8,6 +8,7 @@
   --shadow: 0 1px 2px rgba(16, 24, 20, .06), 0 6px 18px rgba(16, 24, 20, .07);
   /* подсказки поверх 3D (полигон от первого лица): тёмные в обеих темах — сцена светлая */
   --hud-bg: rgba(12, 18, 16, .78); --hud-ink: #F2F6F4; --hud-muted: #B9C7C1; --hud-hot: #FFD23F; --hud-line: rgba(255, 255, 255, .22);
+  --hud-live: rgba(196, 22, 44, .92);
   /* печать протокола: чёрное на белом в любой теме */
   --pr-ink: #000000; --pr-bg: #FFFFFF; --pr-line: #000000; --pr-muted: #333333;
   --f-ui: "Golos Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -272,6 +273,8 @@ details.more p.ask { color: var(--warn); }
 .v3-aim { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); max-width: min(560px, calc(100% - 32px)); text-align: center; padding: 5px 10px; border-radius: 8px; background: var(--hud-bg); font-weight: 500; line-height: 1.35; }
 .v3-aim:empty { display: none; }
 .v3-aim small { display: inline-block; margin-left: 8px; padding: 1px 6px; border: 1px solid var(--hud-line); border-radius: 4px; font: 600 11px/1.4 var(--f-mono); color: var(--hud-hot); }
+.v3-said { position: absolute; left: 50%; top: calc(50% + 62px); transform: translateX(-50%); max-width: min(560px, calc(100% - 32px)); text-align: center; padding: 6px 12px; border-radius: 8px; background: var(--hud-bg); border: 1px solid var(--hud-line); font-weight: 600; line-height: 1.35; }
+.v3-said.live { background: var(--hud-live); }
 .v3-next { position: absolute; left: 12px; top: 12px; max-width: min(460px, calc(100% - 330px)); padding: 7px 10px; border-radius: 8px; background: var(--hud-bg); border-left: 3px solid var(--hud-hot); line-height: 1.35; }
 .v3-hand { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); }
 .v3-hand span { padding: 5px 10px; border-radius: 8px; background: var(--hud-bg); white-space: nowrap; }

@@ -32,6 +32,7 @@ class Walk {
     const host = this.v.host, el = document.createElement('div');
     el.className = 'v3-fps'; el.hidden = true;
     el.innerHTML = `<div class="v3-cross" aria-hidden="true"></div><div class="v3-aim" aria-live="polite"></div>
+      <div class="v3-said" role="status" hidden></div>
       <div class="v3-next" hidden></div>
       <div class="v3-hand"><span class="ppe"></span><span class="held"></span></div>
       <div class="v3-keys" aria-label="Управление"><b>Управление</b>
@@ -50,7 +51,7 @@ class Walk {
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
       held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
-      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'),
+      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
     this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
@@ -93,11 +94,19 @@ class Walk {
   }
   disable() {
     this.on = false; this.keys.clear();
+    if (this.v.items) this.v.items.hover(null);
     this.hud.root.hidden = true;
     delete this.v.host.dataset.fps;
     this.unlock();
     if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
     this.cur = null;
+  }
+  // Итог действия у прицела на 2,6 с (проверка указателем): туда, куда человек смотрит; live — красным
+  said(text, live) {
+    const el = this.hud.said;
+    el.textContent = text; el.classList.toggle('live', !!live); el.hidden = false;
+    clearTimeout(this._saidT);
+    this._saidT = setTimeout(() => { el.hidden = true; }, 2600);
   }
   // Карточка «как брать предметы» (полигон); quiet — спрятать, не отмечая «прочитано»
   intro(on, quiet) {
@@ -273,6 +282,7 @@ class Walk {
     if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
     // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
     if (yard) { v.setHover(this.aim && this.aim.type === 'dev' ? this.aim.id : null); return; }
+    if (it) it.hover(this.aim && this.aim.type === 'item' ? this.aim.id : null);
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');

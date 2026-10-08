@@ -786,6 +786,28 @@ function polyRef(tr, pm, id, skip = []) {
   ok(pm.place('nevkl1', 'zone:3').err && pm.place('lock', 'door:3').err, 'items go only where they fit');
 }
 {
+  console.log('Polygon: fence at the wrong cell — one error, take it back, put at cell 3 — measure done');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  polyRef(tr, pm, id, ['fence', 'stop']);
+  const miss = () => tr.run.errors.filter(e => e.text.startsWith('Ограждение у ячейки №2'));
+  ok(pm.place('fence', 'zone:2').ok && miss().length === 1 && miss()[0].why, 'fence at cell 2 -> «not at the work place» error');
+  ok(pm.place('stop1', 'fence').ok && pm.itemAt('stop1') === 'fence', 'poster hung on the wrong fence');
+  const r = pm.take('fence');
+  ok(r.ok && r.from === 'zone:2' && !pm.itemAt('fence') && !pm.itemAt('stop1'), 'fence taken back (its poster comes off)');
+  ok(!pm.status().measures.find(m => m.title.includes('Оградить')).sat, 'fence measure not done while in hand');
+  ok(pm.place('fence', 'zone:2').ok && pm.take('fence').ok && miss().length === 1, 'same wrong place again: still one error');
+  ok(pm.place('fence', 'zone:3').ok && pm.status().measures.find(m => m.title.includes('Оградить')).sat, 'fence at cell 3 -> measure done');
+  ok(pm.place('stop1', 'fence').ok && tr.run.done && tr.run.completed, 'task completed after fixing the place');
+  ok(tr.run.errors.length === 1 && miss().length === 1, 'exactly one error — the misplaced fence: ' + tr.run.errors.map(e => e.text).join(' | '));
+  // перенос с места на место (без «в руку») — то же: place переносит сам
+  const k = poly();
+  k.tr.startTask(k.task);
+  polyRef(k.tr, k.pm, k.id, ['fence', 'stop', 'lock']);
+  ok(k.pm.place('lock', 'drive:2').ok && k.pm.place('lock', 'drive:3').ok && k.pm.itemAt('lock') === 'drive:3', 'lock moved from cell 2 to cell 3');
+  ok(k.tr.run.errors.filter(e => e.text.startsWith('Замок')).length === 1, 'one «lock not here» error');
+}
+{
   console.log('Polygon: JSON keeps room, measures and steps; other schemes unaffected');
   const { s } = poly();
   const s2 = E.normalizeScheme(JSON.parse(JSON.stringify(s)));

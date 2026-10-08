@@ -230,6 +230,65 @@ SUITES.errors = { perScheme: true, fn: async keys => {
   }
 } };
 
+// Предметы полигона через интерфейс (прицел, E и Q), свободный режим: каждый вид поставить не туда → снять → поставить туда;
+// плакат на ограждении → убрать ограждение → поднять плакат с пола. Подпись под прицелом у поставленного — «… — снять/убрать»
+const ITEM_MOVES = [
+  { item: 'nevkl1', wrong: 'drive:2', right: 'drive:3', verb: 'снять' },
+  { item: 'lock', wrong: 'drive:2', right: 'drive:3', verb: 'снять' },
+  { item: 'fence', wrong: 'zone:2', right: 'zone:3', verb: 'убрать', label: 'Переносное ограждение у яч.2 — убрать' },
+  { item: 'pz', wrong: 'contact:4:lo', right: 'contact:3:lo', verb: 'снять' },
+];
+async function aimLabel(what) {
+  const r = await page.fn(w => E2E.aim(w), what);
+  if (!r.ok) fail(`прицел на ${JSON.stringify(what)}: ${r.why}`);
+  return page.eval('TS.app.v3.walk.hud.aim.textContent');
+}
+SUITES.items = { perScheme: false, fn: async () => {
+  await check('items', 'не туда → снять → туда', async () => {
+    await openScheme('poly');
+    await page.eval('TS.app.tr.resetToNormal()');
+    await act3D({ do: 'wear', item: 'gloves' }); await act3D({ do: 'wear', item: 'helmet' });
+    // отсеки яч.3 и яч.4 открыты: выключатель отключён, тележка в ремонтном положении (линия 4 без напряжения — ПЗ туда можно)
+    for (const n of ['В-10 яч.3', 'В-10 яч.4']) {
+      const id = await page.eval(`TS.app.scheme.els.find(e => e.name === ${JSON.stringify(n)}).id`);
+      await act3D({ do: 'switch', id, menu: 'Отключить выключатель' });
+      await act3D({ do: 'rack', id, menu: 'Тележку в ремонтное положение' });
+      await sleep(2800);   // тележка едет
+    }
+    const out = [];
+    for (const m of ITEM_MOVES) {
+      await act3D({ do: 'place', item: m.item, at: m.wrong });
+      await sleep(80);
+      let st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), s: TS.app.v3.items.list.get('${m.item}').state, held: E2E.held() })`);
+      if (st.at !== m.wrong || st.s !== 'mount' || st.held) fail(`${m.item}: не встал ${m.wrong} — ${JSON.stringify(st)}`);
+      const lab = await aimLabel({ item: m.item });
+      if (!lab.includes('— ' + m.verb) || (m.label && !lab.startsWith(m.label))) fail(`${m.item}: подпись под прицелом «${lab}»`);
+      if (SHOTS && m.item === 'fence') await page.shot(`${OUT}/items-fence-aim.png`);
+      await page.key('KeyE'); await sleep(80);
+      st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), held: E2E.held() })`);
+      if (st.held !== m.item || st.at) fail(`${m.item}: не снялся с ${m.wrong} — ${JSON.stringify(st)}`);
+      await aimE({ mount: m.right }, 'место ' + m.right);
+      st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), s: TS.app.v3.items.list.get('${m.item}').state, held: E2E.held() })`);
+      if (st.at !== m.right || st.s !== 'mount' || st.held) fail(`${m.item}: не встал ${m.right} — ${JSON.stringify(st)}`);
+      out.push(m.item);
+    }
+    // плакат на ограждении → убрать ограждение (плакат падает) → поднять плакат с пола
+    await act3D({ do: 'place', item: 'stop1', at: 'fence' });
+    if ((await page.eval(`TS.app.permit.itemAt('stop1')`)) !== 'fence') fail('плакат не повешен на ограждение');
+    await aimE({ item: 'fence' }, 'ограждение');
+    await page.waitFor(`E2E.held() === 'fence'`, 1500, 'ограждение в руке');
+    await sleep(700);   // плакат падает на пол
+    const fl = await page.eval(`({ s: TS.app.v3.items.list.get('stop1').state, at: TS.app.permit.itemAt('stop1') })`);
+    if (fl.s !== 'floor' || fl.at) fail('плакат с ограждения не упал на пол: ' + JSON.stringify(fl));
+    await page.key('KeyQ'); await sleep(60);
+    await aimE({ item: 'stop1' }, 'плакат на полу');
+    await page.waitFor(`E2E.held() === 'stop1'`, 1500, 'плакат с пола в руке');
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval('TS.app.tr.resetToNormal()');
+    return `${out.join(', ')} переставлены; плакат с упавшего ограждения поднят с пола`;
+  });
+} };
+
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
 // блокировки и не трогает «Мои схемы»; телефон 390×844 — панель снизу и не закрывает схему
 const demoReady = 'TS.app.demo.on && !TS.app.demo.busy && TS.app.demo.check().length === 0';
@@ -535,8 +594,11 @@ SUITES.scene3d = { perScheme: true, fn: async keys => {
         const v = TS.app.v3, T = v.kit.T, b = new T.Box3(), c = new T.Vector3(), z = new T.Vector3(), r = x => Math.round(x * 100) / 100, out = {};
         v.root.updateMatrixWorld(true);
         for (const o of v.pickables) {
-          const u = o.userData, k = u.dev ? 'dev:' + TS.app.tr.nm(u.dev) : u.item ? 'item:' + u.item : u.mount ? 'mount:' + u.mount : u.wire ? 'wire:' + u.wire : u.board ? 'board' : null;
+          const u = o.userData;
+          let k = u.dev ? 'dev:' + TS.app.tr.nm(u.dev) : u.item ? 'item:' + u.item : u.mount ? 'mount:' + u.mount : u.wire ? 'wire:' + u.wire : u.board ? 'board' : null;
           if (!k) continue;
+          // поставленное ограждение: коробки стоек и ленты — каждая под своим номером
+          if (u.part === 'open') { let i = 1; while (out[k + ':open' + i]) i++; k += ':open' + i; }
           b.setFromObject(o); b.getCenter(c); b.getSize(z);
           out[k] = [r(c.x), r(c.y), r(c.z), r(z.x), r(z.y), r(z.z)];
         }

@@ -10,6 +10,7 @@
    Состояние захвата меняют только lockChanged и lockFailed: их можно вызвать и без настоящего захвата (проверка в headless). */
 import { store } from '../ui/store.js';
 import { esc } from '../core/elements.js';
+import { pathFree } from './teleport.js';
 
 const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
 // Площадка: до аппарата и провода (они высокие), до щита и меню, до земли для перехода, м
@@ -25,6 +26,8 @@ class Walk {
     this.locked = false; this.noLock = !('requestPointerLock' in HTMLElement.prototype); this.lockFails = 0;
     this.lockReq = null; this.unlockedAt = -Infinity; this.lockWait = false;
     this.drag = null; this.cursor = null; this.aim = null; this.hudText = {};
+    // touch — касание (телефон, планшет): мышь не захватывают, смотрят перетаскиванием, действие — касанием по месту
+    this.touch = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches);
     this.makeHud();
     this.bind();
   }
@@ -32,14 +35,17 @@ class Walk {
     const host = this.v.host, el = document.createElement('div');
     el.className = 'v3-fps'; el.hidden = true;
     el.innerHTML = `<div class="v3-cross" aria-hidden="true"></div><div class="v3-aim" aria-live="polite"></div>
+      <div class="v3-said" role="status" hidden></div>
+      <div class="v3-tool" hidden></div>
       <div class="v3-next" hidden></div>
-      <div class="v3-hand"><span class="ppe"></span><span class="held"></span></div>
+      <div class="v3-hand"><span class="ppe"></span><span class="held"></span><button class="v3-drop" type="button" hidden>Положить</button></div>
       <div class="v3-keys" aria-label="Управление"><b>Управление</b>
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> ходить</span>
         <span>мышь — смотреть · <kbd>Esc</kbd> отпустить мышь</span>
         <span><kbd>E</kbd> или щелчок — <i data-w="room">взять, надеть, повесить, </i>переключить</span>
         <span data-w="room"><kbd>Q</kbd> или правая кнопка — положить</span>
-        <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span></div>
+        <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span>
+        <span><kbd>Shift</kbd> бегом<i data-w="yard"> · <kbd>G</kbd> к аппарату</i></span></div>
       <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
       <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
         <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
@@ -50,9 +56,13 @@ class Walk {
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
       held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
-      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'),
+      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
+    // телефон: клавиши Q нет — «Положить» рядом с тем, что в руке
+    this.hud.drop.addEventListener('click', () => this.drop());
+    // «Перейти · G» в строке следующего шага
+    this.hud.next.addEventListener('click', e => { if (e.target.closest('button')) this.v.goNext(); });
     this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
   }
   bind() {
@@ -62,7 +72,7 @@ class Walk {
     document.addEventListener('keydown', e => {
       if (!live() || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       const c = e.code;
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(c)) {
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(c)) {
         this.keys.add(c);
         if (c.startsWith('Arrow')) e.preventDefault();
         return;
@@ -70,6 +80,7 @@ class Walk {
       if (e.repeat) return;
       if (c === 'KeyE') { e.preventDefault(); this.action(); }
       else if (c === 'KeyQ') { e.preventDefault(); this.drop(); }
+      else if (c === 'KeyG' && this.world && this.world.kind === 'yard') { e.preventDefault(); this.v.goG(this.aim); }
     });
     document.addEventListener('keyup', e => this.keys.delete(e.code));
     // ушли из окна или со вкладки — мышь отпускаем сами, чтобы курсор не остался спрятанным
@@ -93,11 +104,20 @@ class Walk {
   }
   disable() {
     this.on = false; this.keys.clear();
+    if (this.v.tp) this.v.tp.aim(null);
+    if (this.v.items) { this.v.items.hover(null); this.v.items.preview(null); }
     this.hud.root.hidden = true;
     delete this.v.host.dataset.fps;
     this.unlock();
     if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
     this.cur = null;
+  }
+  // Итог действия у прицела на 2,6 с (проверка указателем): туда, куда человек смотрит; live — красным
+  said(text, live) {
+    const el = this.hud.said;
+    el.textContent = text; el.classList.toggle('live', !!live); el.hidden = false;
+    clearTimeout(this._saidT);
+    this._saidT = setTimeout(() => { el.hidden = true; }, 2600);
   }
   // Карточка «как брать предметы» (полигон); quiet — спрятать, не отмечая «прочитано»
   intro(on, quiet) {
@@ -108,7 +128,7 @@ class Walk {
   // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
   showClick() {
     const h = this.hud;
-    h.click.hidden = !this.on || this.locked || this.noLock || !h.intro.hidden;
+    h.click.hidden = !this.on || this.locked || this.noLock || this.touch || !h.intro.hidden;
     h.clickWhy.textContent = this.lockWait ? 'Браузер ещё не отпустил мышь — щёлкните ещё раз' : 'Esc — снова отпустить мышь';
   }
   lock() {
@@ -187,8 +207,11 @@ class Walk {
     if (t === 'pointerdown') {
       this.v.app.userGesture();
       if (!this.hud.intro.hidden) return;
+      if (e.pointerType === 'touch' && !this.touch) { this.touch = true; this.showClick(); }
       if (this.locked) { if (e.button === 0) this.action(); else if (e.button === 2) this.drop(); return; }
-      if (!this.noLock) { this.lock(); return; }
+      // касание — не захват: щелчок по месту там, где коснулись
+      if (e.pointerType === 'touch') this.cursor = { x: e.clientX, y: e.clientY };
+      if (!this.noLock && e.pointerType !== 'touch') { this.lock(); return; }
       this.drag = { x: e.clientX, y: e.clientY, moved: false, btn: e.button };
       try { e.target.setPointerCapture(e.pointerId); } catch (_) { /* без захвата */ }
       return;
@@ -207,7 +230,11 @@ class Walk {
     if (t === 'pointerup' || t === 'pointercancel') {
       const d = this.drag;
       this.drag = null;
-      if (d && !d.moved && t === 'pointerup') { if (d.btn === 0) this.action(); else if (d.btn === 2) this.drop(); }
+      if (d && !d.moved && t === 'pointerup') {
+        // действие — по тому, что под пальцем или курсором сейчас (касание не двигало курсор до нажатия)
+        this.cursor = { x: e.clientX, y: e.clientY }; this.updateAim();
+        if (d.btn === 0) this.action(); else if (d.btn === 2) this.drop();
+      }
     }
     if (t === 'pointerleave') this.cursor = null;
   }
@@ -215,10 +242,13 @@ class Walk {
   // ---------- каждый кадр ----------
   step(dt) {
     if (!this.on) return;
+    // идёт переход (teleport.js): место меняет он, клавиши ждут
+    if (this.v.tp && this.v.tp.busy) { this.vx = 0; this.vz = 0; this.updateAim(); return; }
     const k = this.keys, has = (...a) => a.some(c => k.has(c));
     const f = (has('KeyW', 'ArrowUp') ? 1 : 0) - (has('KeyS', 'ArrowDown') ? 1 : 0);
     const s = (has('KeyD', 'ArrowRight') ? 1 : 0) - (has('KeyA', 'ArrowLeft') ? 1 : 0);
-    const sp = SPEED, sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+    // Shift — бегом, вдвое быстрее
+    const sp = SPEED * (has('ShiftLeft', 'ShiftRight') ? 2 : 1), sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
     let tx = -sy * f + cy * s, tz = -cy * f - sy * s;
     const l = Math.hypot(tx, tz);
     if (l > 1) { tx /= l; tz /= l; }
@@ -233,7 +263,7 @@ class Walk {
   updateAim() {
     const v = this.v, T = v.kit.T, cv = v.renderer.domElement, r = cv.getBoundingClientRect();
     let nx = 0, ny = 0;
-    if (!this.locked && this.noLock && this.cursor) { nx = ((this.cursor.x - r.left) / r.width) * 2 - 1; ny = -((this.cursor.y - r.top) / r.height) * 2 + 1; }
+    if (!this.locked && (this.noLock || this.touch) && this.cursor) { nx = ((this.cursor.x - r.left) / r.width) * 2 - 1; ny = -((this.cursor.y - r.top) / r.height) * 2 + 1; }
     this._ndc = this._ndc || new T.Vector2();
     this._ndc.set(nx, ny);
     v.camera.updateMatrixWorld();
@@ -243,20 +273,27 @@ class Walk {
     const hits = v.ray.intersectObjects(v.pickables, false);
     if (yard) {
       this.aim = this.pickYard(hits);
-      // на землю — только если перед ней ничего нет (провода над головой не в счёт) и там можно стоять
+      // на землю — только если перед ней ничего нет (провода над головой не в счёт); можно ли там стоять — метка покажет
       const first = hits.find(h => !h.object.userData.wire);
-      this.floor = !this.aim && first && first.object.userData.ground && first.distance <= REACH.floor && this.world.walkable(first.point.x, first.point.z) ? first : null;
+      this.floor = !this.aim && first && first.object.userData.ground && first.distance <= REACH.floor ? first : null;
     } else {
       this.aim = v.items ? v.items.pick(hits, 'desk', 2.6) : null;
-      this.floor = hits.find(h => h.object.userData.ground) || null;
+      // полигон: переход по полу — без захвата мыши (тачпад, телефон); с захватом ходят клавишами.
+      // Места для предметов на полу (коробки ограждения перед ячейками) пол не закрывают
+      const first = hits.find(h => !h.object.userData.mount);
+      this.floor = !this.aim && (this.noLock || this.touch) && first && first.object.userData.ground && first.distance < 9 ? first : null;
     }
+    this.floorOk = !!this.floor && this.world.walkable(this.floor.point.x, this.floor.point.z);
+    if (v.tp) v.tp.aim(this.floor && !v.tp.busy ? this.floor.point : null, this.floorOk);
     this.drawHud();
   }
   // Площадка: аппарат, провод (с указателем или ПЗ), щит или меню под прицелом — как щелчок мышью в обзоре (view3d.firstHit)
+  // Аппарат дальше REACH.dev — 'far': не переключается, но подписан («подойдите ближе») и щелчком к нему подходят
   pickYard(hits) {
     const h = this.v.firstHit(hits);
     if (!h) return null;
     const u = h.object.userData, type = u.menu ? 'menu' : u.board ? 'board' : u.dev ? 'dev' : u.wire ? 'wire' : null;
+    if (type === 'dev' && h.distance > REACH.dev) return { h, type: 'far', id: u.dev };
     if (!type || h.distance > (type === 'menu' || type === 'board' ? REACH.board : REACH.dev)) return null;
     return { h, type, id: u.dev || u.wire || null };
   }
@@ -264,19 +301,43 @@ class Walk {
     const v = this.v, it = v.items, pm = v.app.permit, h = this.hud, yard = this.world.kind === 'yard';
     const set = (key, el, html) => { if (this.hudText[key] !== html) { this.hudText[key] = html; el.innerHTML = html; } };
     // подпись — та же, что у подсказки мыши в обзоре (view3d.targetText); пустая — прицел на заголовке меню
-    const lab = !this.aim ? '' : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
-    const key = !this.aim ? '' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
-    set('aim', h.aim, hot ? `${esc(lab)}<small>${key}</small>` : yard && this.floor ? 'Перейти сюда<small>щелчок или E</small>' : '');
+    const far = this.aim && this.aim.type === 'far', exam = !!(v.app.exam && v.app.exam.active());
+    const lab = !this.aim ? '' : far ? `${v.app.tr.nm(this.aim.id)} — подойдите ближе` : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
+    // на телефоне и планшете клавиш нет — «касание»
+    const tap = this.touch, key = !this.aim ? '' : far ? (tap ? 'касание — перейти' : exam ? 'щелчок — перейти' : 'G или щелчок — перейти')
+      : tap ? 'касание' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
+    // у места подпись уже начинается с клавиши: «E — поставить ограждение у яч.2»
+    const go = !this.floor ? '' : this.floorOk ? `Перейти сюда<small>${this.touch ? 'касание' : 'щелчок или E'}</small>` : 'Туда не пройти';
+    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(tap ? lab.replace(/^E — /, 'Касание — ') : lab) : `${esc(lab)}<small>${key}</small>`) : go);
     h.cross.classList.toggle('hot', hot);
     // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
     const cur = this.noLock && hot ? 'pointer' : 'default';
     if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
     // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
-    if (yard) { v.setHover(this.aim && this.aim.type === 'dev' ? this.aim.id : null); return; }
+    if (yard) {
+      v.setHover(this.aim && (this.aim.type === 'dev' || far) ? this.aim.id : null);
+      // включённый инструмент виден всё время, пока он включён: указатель (V) или ПЗ (P)
+      const tool = v.app.tool, tt = tool === 'check' ? `Указатель напряжения включён · ${this.touch ? 'кнопка в панели' : 'V'} — выключить`
+        : tool === 'pz' ? `Переносное заземление: наложить или снять · ${this.touch ? 'кнопка в панели' : 'P'} — выключить` : '';
+      set('tool', h.tool, tt);
+      h.tool.hidden = !tt;
+      // с подсказками шагов — следующий шаг и «Перейти · G»
+      const g = v.app.guideNext();
+      const nx = g ? `Следующий шаг: ${esc(g.text)}${g.step.op === 'check' ? '<small>V — указатель, затем E</small>' : String(g.step.id).startsWith('pz:') ? '<small>P — ПЗ, затем E</small>' : ''}<button type="button">${this.touch ? 'Перейти' : 'Перейти · G'}</button>` : '';
+      set('next', h.next, nx);
+      h.next.hidden = !nx;
+      return;
+    }
+    if (it) {
+      it.hover(this.aim && this.aim.type === 'item' ? this.aim.id : null);
+      // призрак предмета — у места под прицелом
+      it.preview(it.heldIn('desk'), this.aim && this.aim.type === 'mount' ? this.aim.id : null);
+    }
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');
-    set('held', h.held, held ? `В руке: <b>${esc(it.list.get(held).it.title)}</b> · E — применить · Q — положить` : 'Руки свободны');
+    set('held', h.held, held ? `В руке: <b>${esc(it.list.get(held).it.title)}</b> · ${this.touch ? 'касание места — применить' : 'E — применить · Q — положить'}` : 'Руки свободны');
+    h.drop.hidden = !(this.touch && held);
     const nx = st.guide && st.next ? `Следующее мероприятие: ${esc(st.next)}` : '';
     set('next', h.next, nx);
     h.next.hidden = !nx;
@@ -289,12 +350,8 @@ class Walk {
     if (!v.items) return;
     const r = v.items.act('desk', tgt);
     if (r !== 'pass') return;
-    // без захвата мыши (тачпад, планшет): щелчок по полу — перейти туда, как курок по полу в шлеме
-    if (!tgt) {
-      const f = this.floor;
-      if (this.noLock && f && f.distance < 9 && this.world.walkable(f.point.x, f.point.z)) { this.x = f.point.x; this.z = f.point.z; this.apply(); }
-      return;
-    }
+    // без захвата мыши (тачпад, планшет, телефон): щелчок по полу — перейти туда, как курок по полу в шлеме
+    if (!tgt) { this.goFloor(); return; }
     if (tgt.type === 'dev') v.app.pickEl(tgt.id, false, { menu3d: acts => v.showMenu3D(tgt.id, acts, tgt.h.point) });
     else if (tgt.type === 'board') v.boardClick(tgt.h.uv);
     else if (tgt.type === 'menu') v.menuClick(tgt.h.uv);
@@ -303,15 +360,34 @@ class Walk {
   // земля — перейти туда (площадка большая, как курок по полу в шлеме)
   actYard(t) {
     const v = this.v, app = v.app;
-    if (!t) {
-      const f = this.floor;
-      if (f) { this.x = f.point.x; this.z = f.point.z; this.vx = 0; this.vz = 0; this.apply(); }
-      return;
-    }
+    if (!t) { this.goFloor(); return; }
     if (t.type === 'menu') v.menuClick(t.h.uv);
     else if (t.type === 'board') v.boardClick(t.h.uv);
+    else if (t.type === 'far') v.goTo(t.id);
     else if (t.type === 'wire') { v.closeMenu3D(); app.pickWire3D(t.id, false); }
     else { v.closeMenu3D(); app.pick3D(t.id, false, { menu3d: acts => v.showMenu3D(t.id, acts, t.h.point) }); }
+  }
+  // Перейти к метке на полу: путь по прямой свободен — плавно, иначе затемнением; туда нельзя — сказать у прицела
+  goFloor() {
+    const f = this.floor, tp = this.v.tp;
+    if (!f || tp.busy) return;
+    if (!this.floorOk) { this.said('Туда не пройти'); return; }
+    const from = { x: this.x, z: this.z }, to = { x: f.point.x, z: f.point.z, y: f.point.y };
+    tp.go(from, to, (x, z) => { this.x = x; this.z = z; this.vx = 0; this.vz = 0; this.apply(); }, pathFree(this.world, from, to, R) ? 'glide' : 'fade');
+  }
+  // Перейти и встать так, чтобы под прицелом было нужное (q — из seek): путь свободен — плавно, иначе затемнением;
+  // взгляд поворачивается по ходу перехода
+  goPose(q) {
+    const tp = this.v.tp;
+    if (tp.busy) return;
+    const from = { x: this.x, z: this.z }, to = { x: q.x, z: q.z };
+    const y0 = this.yaw, dy = Math.atan2(Math.sin(q.yaw - y0), Math.cos(q.yaw - y0)), p0 = this.pitch;
+    // k — доля перехода: взгляд доворачивается и тогда, когда стоять остаёмся на месте
+    tp.go(from, to, (x, z, k = 1) => {
+      this.x = x; this.z = z; this.vx = 0; this.vz = 0;
+      this.yaw = y0 + dy * k; this.pitch = p0 + (q.pitch - p0) * k;
+      this.apply();
+    }, pathFree(this.world, from, to, R) ? 'glide' : 'fade');
   }
   drop() {
     const it = this.v.items;
@@ -320,4 +396,4 @@ class Walk {
   }
 }
 
-export { Walk, EYE };
+export { Walk, EYE, REACH };

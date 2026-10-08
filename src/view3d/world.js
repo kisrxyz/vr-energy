@@ -61,7 +61,8 @@ function mergeBoxes(list, gap) {
 
 // Площадка: внутри ограждения (hx, hz — полуразмеры), ворота шириной 2·gate в ближней стороне (z = +hz),
 // перед воротами снаружи — площадка apron м, там старт лицом к подстанции
-function makeYardWorld({ hx, hz, gate, apron = 3, blocks = [] }) {
+// dyn() — препятствия, которые двигаются (тележки ЗРУ, выкаченные в коридор)
+function makeYardWorld({ hx, hz, gate, apron = 3, blocks = [], dyn = null }) {
   const lim = { x0: -hx, x1: hx, z0: -hz, z1: hz + apron };
   // ближняя сторона ограждения по обе стороны ворот; снаружи за ней — только площадка перед воротами
   const fence = [{ x0: -hx - 1, x1: -gate, z0: hz - 0.05, z1: hz + apron + 1 }, { x0: gate, x1: hx + 1, z0: hz - 0.05, z1: hz + apron + 1 }];
@@ -69,8 +70,8 @@ function makeYardWorld({ hx, hz, gate, apron = 3, blocks = [] }) {
   return {
     kind: 'yard', lim, blocks: all,
     start: { x: 0, z: hz + apron / 2, yaw: 0 },
-    resolve(x, z, r = 0.25) { return resolveIn(x, z, r, lim, all); },
-    walkable(x, z, r = 0.25) { return walkableIn(x, z, r, lim, all); },
+    resolve(x, z, r = 0.25) { return resolveIn(x, z, r, lim, dyn ? all.concat(dyn()) : all); },
+    walkable(x, z, r = 0.25) { return walkableIn(x, z, r, lim, dyn ? all.concat(dyn()) : all); },
   };
 }
 

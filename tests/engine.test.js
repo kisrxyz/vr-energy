@@ -10,6 +10,7 @@ import { WHY, MISPLACED } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
+import { findKRU } from '../src/view3d/zru.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
@@ -786,6 +787,51 @@ function polyRef(tr, pm, id, skip = []) {
   ok(pm.place('nevkl1', 'zone:3').err && pm.place('lock', 'door:3').err, 'items go only where they fit');
 }
 {
+  console.log('Polygon: fence at the wrong cell — one error, take it back, put at cell 3 — measure done');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  polyRef(tr, pm, id, ['fence', 'stop']);
+  const miss = () => tr.run.errors.filter(e => e.text.startsWith('Ограждение у ячейки №2'));
+  ok(pm.place('fence', 'zone:2').ok && miss().length === 1 && miss()[0].why, 'fence at cell 2 -> «not at the work place» error');
+  ok(pm.place('stop1', 'fence').ok && pm.itemAt('stop1') === 'fence', 'poster hung on the wrong fence');
+  const r = pm.take('fence');
+  ok(r.ok && r.from === 'zone:2' && !pm.itemAt('fence') && !pm.itemAt('stop1'), 'fence taken back (its poster comes off)');
+  ok(!pm.status().measures.find(m => m.title.includes('Оградить')).sat, 'fence measure not done while in hand');
+  ok(pm.place('fence', 'zone:2').ok && pm.take('fence').ok && miss().length === 1, 'same wrong place again: still one error');
+  ok(pm.place('fence', 'zone:3').ok && pm.status().measures.find(m => m.title.includes('Оградить')).sat, 'fence at cell 3 -> measure done');
+  ok(pm.place('stop1', 'fence').ok && tr.run.done && tr.run.completed, 'task completed after fixing the place');
+  ok(tr.run.errors.length === 1 && miss().length === 1, 'exactly one error — the misplaced fence: ' + tr.run.errors.map(e => e.text).join(' | '));
+  // перенос с места на место (без «в руку») — то же: place переносит сам
+  const k = poly();
+  k.tr.startTask(k.task);
+  polyRef(k.tr, k.pm, k.id, ['fence', 'stop', 'lock']);
+  ok(k.pm.place('lock', 'drive:2').ok && k.pm.place('lock', 'drive:3').ok && k.pm.itemAt('lock') === 'drive:3', 'lock moved from cell 2 to cell 3');
+  ok(k.tr.run.errors.filter(e => e.text.startsWith('Замок')).length === 1, 'one «lock not here» error');
+}
+{
+  console.log('Polygon: where to put the item in hand — places now, next measure with hints');
+  const { tr, pm, id, task } = poly();
+  ok(pm.nextMounts('nevkl1').length === 0, 'free mode: no next measure');
+  ok(pm.mountsFor('fence').join() === 'zone:1,zone:2,zone:3,zone:4,zone:5,zone:6', 'fence fits the floor in front of any cell: ' + pm.mountsFor('fence'));
+  tr.startTask(task);
+  ok(pm.nextMounts('nevkl1').length === 0, 'stage 0 (PPE): the poster is not for now');
+  polyRef(tr, pm, id, ['nevkl', 'lock', 'check', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  ok(pm.nextMounts('nevkl1').join() === 'drive:3,door:3', '«Не включать» — drive or door of cell 3: ' + pm.nextMounts('nevkl1'));
+  ok(pm.nextMounts('lock').join() === 'drive:3' && !pm.nextMounts('fence').length && !pm.nextMounts('stop1').length, 'lock — drive 3; fence and «Стой» — not yet');
+  ok(!pm.nextMounts('uvn').length, 'indicator — after the poster and the lock');
+  pm.place('nevkl1', 'drive:3'); pm.place('lock', 'drive:3');
+  ok(pm.nextMounts('uvn').join() === 'contact:3:lo', 'indicator — lower contacts of cell 3');
+  pm.touch('contact:3:lo'); tr.operate(id('ЗН яч.3'));
+  ok(pm.nextMounts('fence').join() === 'zone:3' && pm.nextMounts('work1').join() === 'cart:3', 'stage 5: fence at cell 3, «Работать здесь» on the trolley');
+  ok(pm.nextMounts('stop1').join() === 'shutter:3,door:2,door:4', '«Стой» — places available now (no fence yet): ' + pm.nextMounts('stop1'));
+  pm.place('fence', 'zone:3');
+  ok(pm.nextMounts('stop1')[0] === 'fence', 'fence placed — «Стой» on it too');
+  const before = tr.run.errors.length, hints = tr.run.hints;
+  pm.guide = false;
+  ok(!pm.nextMounts('fence').length && !pm.nextMounts('stop1').length, 'hints off (exam) — nothing');
+  ok(tr.run.errors.length === before && tr.run.hints === hints, 'asking costs nothing');
+}
+{
   console.log('Polygon: JSON keeps room, measures and steps; other schemes unaffected');
   const { s } = poly();
   const s2 = E.normalizeScheme(JSON.parse(JSON.stringify(s)));
@@ -858,6 +904,56 @@ function doMeasure(tr, pm, m) {
       ok(tr.run.done && tr.run.completed && !tr.run.errors.length, `${smp.key} «${t.title}»: by hints (${tr.run.hints}), no errors` + (stuck ? ' :: ' + stuck : '') + tr.run.errors.map(e => ' :: ' + e.text).join(''));
     }
   }
+}
+
+{
+  console.log('Step hints without cost: peek() = next hint, no score, no log, no events');
+  const fresh = key => { const s = E.SAMPLES.find(x => x.key === key).make(), tr = new E.Trainer(), pm = tr.use(new Permit()); tr.load(s); return { s, tr, pm }; };
+  ok(fresh('ps110').tr.peek() === null, 'no task — nothing to peek');
+  for (const smp of E.SAMPLES) {
+    const n = smp.make().tasks.length;
+    for (let k = 0; k < n; k++) {
+      const { s, tr, pm } = fresh(smp.key), t = s.tasks[k];
+      tr.startTask(t);
+      let events = 0, bad = '';
+      tr.on(() => events++);
+      for (let i = 0; i < 40 && !tr.run.done; i++) {
+        const log = tr.log.length, hints = tr.run.hints, errs = tr.run.errors.length, ev = events;
+        const p = tr.peek(), p2 = tr.peek();
+        if (!p) { bad = 'peek ran out'; break; }
+        if (tr.log.length !== log || tr.run.hints !== hints || tr.run.errors.length !== errs || events !== ev) { bad = 'peek changed the run'; break; }
+        if (JSON.stringify(p) !== JSON.stringify(p2)) { bad = 'peek is not stable'; break; }
+        const h = tr.hint();
+        if (!h || h.text !== 'Подсказка: ' + p.text + '.' || JSON.stringify(h.step) !== JSON.stringify(p.step)) { bad = `peek «${p.text}» ≠ hint «${h && h.text}»`; break; }
+        tr.run.hints--;
+        const r = h.step.op === 'measure' ? doMeasure(tr, pm, t.measures[h.step.i]) : doStep(tr, pm, h.step);
+        if (!r || r.err || r.blocked) { bad = p.text + ' :: ' + (r && r.text); break; }
+      }
+      ok(!bad && tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.peek() === null, `${smp.key} «${t.title}»: peek leads to 100 without cost` + (bad ? ' :: ' + bad : ''));
+    }
+  }
+}
+
+{
+  console.log('ZRU on yards: KRU cells recognised from the topology (3D only, engine unchanged)');
+  const kru = key => { const s = E.SAMPLES.find(x => x.key === key).make(); return { s, r: findKRU(s, engine.buildTopo(s)) }; };
+  ok(kru('ps110').r === null && kru('tp10').r === null, 'no KRU on ПС 110/10 and ТП 10/0,4 — yards as before');
+  const { s, r } = kru('rp10');
+  const names = r.cells.map(c => c.cart ? c.cart.name : c.parts[0].el.name);
+  ok(r.cells.length === 13 && r.buses.map(b => b.name).join() === '1С-10,2С-10', 'РП-10: 13 cells on two sections');
+  ok(names.join() === 'В-10 Ввод-1,ТН-1 тележка,ТСН тележка,В-10 Л-1,В-10 Л-3,В-10 Л-5,СВ-10,СР-10,В-10 Л-2,В-10 Л-4,В-10 Л-6,ТН-2 тележка,В-10 Ввод-2', 'row order by x: ' + names);
+  const l1 = r.cells.find(c => c.cart && c.cart.name === 'В-10 Л-1');
+  ok(l1.parts.map(p => p.el.name).sort().join() === 'ЗН Л-1,ТТ Л-1' && l1.down.el.name === 'КЛ-10 Л-1', 'line cell: CT and earthing switch inside, cable outside');
+  const vt = r.cells.find(c => c.cart && c.cart.name === 'ТН-1 тележка');
+  ok(vt.kind === 'vt' && vt.parts.map(p => p.el.t).sort().join() === 'fuse,vt' && !vt.down, 'VT cell: fuse and VT inside');
+  ok(r.cells.find(c => c.cart && c.cart.name === 'ТСН тележка').down.el.name === 'ТСН', 'auxiliary transformer stays outside (bus bridge)');
+  ok(r.cells.filter(c => c.tie).map(c => c.cart.name).join() === 'СВ-10,СР-10', 'section breaker and section disconnector — two tie cells');
+  ok(['ТП-1 «Школа»', 'КЛ-10 Л-1', 'ВН ТП-1', 'В-10 Ф-7 ПС «Северная»'].every(n => !r.inside.has(s.els.find(e => e.name === n).id)), 'TP, cables and the far end stay outside');
+  const p = kru('ps35').r;
+  ok(p.cells.length === 14 && p.cells.filter(c => c.kind === 'aux').map(c => c.parts[0].el.name).join() === 'ОПН-10 1С,ОПН-10 2С', 'ПС 110/35/10: 14 cells, surge arresters in cells without a trolley');
+  ok(p.cells.find(c => c.cart && c.cart.name === 'В-10 Т1').down.el.name === 'Т1', 'transformer input cell: Т1 outside (bus bridge)');
+  const poly = kru('poly').r;
+  ok(poly && poly.cells.length === 6, 'the polygon scheme is recognised too (but it has its own room)');
 }
 
 /* ===== Полигон: правки по обзору ===== */

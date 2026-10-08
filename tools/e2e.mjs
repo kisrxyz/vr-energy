@@ -70,8 +70,11 @@ async function closeModal() {
 }
 async function setMode(m) {
   if (await page.eval(`TS.app.mode === '${m}'`)) return;
-  await clickBtn(`#tab-${m}`, null, 'вкладка ' + m);
-  await page.waitFor(`TS.app.mode === '${m}'`, 2000);
+  // первый щелчок сразу после загрузки страницы headless-браузер иногда теряет — второй раз щёлкаем, если вкладка не открылась
+  for (let i = 0; ; i++) {
+    await clickBtn(`#tab-${m}`, null, 'вкладка ' + m);
+    try { await page.waitFor(`TS.app.mode === '${m}'`, 2000); return; } catch (e) { if (i) throw e; }
+  }
 }
 async function selectTask(i) {
   await page.fn(i => { const s = document.getElementById('taskSel'); if (s) { s.value = String(i); s.dispatchEvent(new Event('change', { bubbles: true })); } }, i);
@@ -228,6 +231,421 @@ SUITES.errors = { perScheme: true, fn: async keys => {
       return `${run.errors[0].split(': ').slice(1).join(': ').slice(0, 80)}… · ${r.score} баллов`;
     });
   }
+} };
+
+// Предметы полигона через интерфейс (прицел, E и Q), свободный режим: каждый вид поставить не туда → снять → поставить туда;
+// плакат на ограждении → убрать ограждение → поднять плакат с пола. Подпись под прицелом у поставленного — «… — снять/убрать»
+const ITEM_MOVES = [
+  { item: 'nevkl1', wrong: 'drive:2', right: 'drive:3', verb: 'снять' },
+  { item: 'lock', wrong: 'drive:2', right: 'drive:3', verb: 'снять' },
+  { item: 'fence', wrong: 'zone:2', right: 'zone:3', verb: 'убрать', label: 'Переносное ограждение у яч.2 — убрать' },
+  { item: 'pz', wrong: 'contact:4:lo', right: 'contact:3:lo', verb: 'снять' },
+];
+async function aimLabel(what) {
+  const r = await page.fn(w => E2E.aim(w), what);
+  if (!r.ok) fail(`прицел на ${JSON.stringify(what)}: ${r.why}`);
+  return page.eval('TS.app.v3.walk.hud.aim.textContent');
+}
+SUITES.items = { perScheme: false, fn: async () => {
+  await check('items', 'не туда → снять → туда', async () => {
+    await openScheme('poly');
+    await page.eval('TS.app.tr.resetToNormal()');
+    await act3D({ do: 'wear', item: 'gloves' }); await act3D({ do: 'wear', item: 'helmet' });
+    // отсеки яч.3 и яч.4 открыты: выключатель отключён, тележка в ремонтном положении (линия 4 без напряжения — ПЗ туда можно)
+    for (const n of ['В-10 яч.3', 'В-10 яч.4']) {
+      const id = await page.eval(`TS.app.scheme.els.find(e => e.name === ${JSON.stringify(n)}).id`);
+      await act3D({ do: 'switch', id, menu: 'Отключить выключатель' });
+      await act3D({ do: 'rack', id, menu: 'Тележку в ремонтное положение' });
+      await sleep(2800);   // тележка едет
+    }
+    const out = [];
+    for (const m of ITEM_MOVES) {
+      await act3D({ do: 'place', item: m.item, at: m.wrong });
+      await sleep(80);
+      let st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), s: TS.app.v3.items.list.get('${m.item}').state, held: E2E.held() })`);
+      if (st.at !== m.wrong || st.s !== 'mount' || st.held) fail(`${m.item}: не встал ${m.wrong} — ${JSON.stringify(st)}`);
+      const lab = await aimLabel({ item: m.item });
+      if (!lab.includes('— ' + m.verb) || (m.label && !lab.startsWith(m.label))) fail(`${m.item}: подпись под прицелом «${lab}»`);
+      if (SHOTS && m.item === 'fence') await page.shot(`${OUT}/items-fence-aim.png`);
+      await page.key('KeyE'); await sleep(80);
+      st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), held: E2E.held() })`);
+      if (st.held !== m.item || st.at) fail(`${m.item}: не снялся с ${m.wrong} — ${JSON.stringify(st)}`);
+      await aimE({ mount: m.right }, 'место ' + m.right);
+      st = await page.eval(`({ at: TS.app.permit.itemAt('${m.item}'), s: TS.app.v3.items.list.get('${m.item}').state, held: E2E.held() })`);
+      if (st.at !== m.right || st.s !== 'mount' || st.held) fail(`${m.item}: не встал ${m.right} — ${JSON.stringify(st)}`);
+      out.push(m.item);
+    }
+    // плакат на ограждении → убрать ограждение (плакат падает) → поднять плакат с пола
+    await act3D({ do: 'place', item: 'stop1', at: 'fence' });
+    if ((await page.eval(`TS.app.permit.itemAt('stop1')`)) !== 'fence') fail('плакат не повешен на ограждение');
+    await aimE({ item: 'fence' }, 'ограждение');
+    await page.waitFor(`E2E.held() === 'fence'`, 1500, 'ограждение в руке');
+    await sleep(700);   // плакат падает на пол
+    const fl = await page.eval(`({ s: TS.app.v3.items.list.get('stop1').state, at: TS.app.permit.itemAt('stop1') })`);
+    if (fl.s !== 'floor' || fl.at) fail('плакат с ограждения не упал на пол: ' + JSON.stringify(fl));
+    await page.key('KeyQ'); await sleep(60);
+    await aimE({ item: 'stop1' }, 'плакат на полу');
+    await page.waitFor(`E2E.held() === 'stop1'`, 1500, 'плакат с пола в руке');
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval('TS.app.tr.resetToNormal()');
+    return `${out.join(', ')} переставлены; плакат с упавшего ограждения поднят с пола`;
+  });
+  // Предпросмотр: призрак под прицелом — там же, где предмет встанет (±2 см); подсвечены ровно места из mountsFor;
+  // с подсказками — кольцо у места ближайшего мероприятия; в экзамене кольца и «место работ» нет
+  const frames = 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))';
+  const ghostAt = `(() => { const g = TS.app.v3.items.ghostShown; if (!g || !g.visible) return null; const p = g.getWorldPosition(new TS.app.v3.kit.T.Vector3()); return [p.x, p.y, p.z]; })()`;
+  const objAt = id => `(() => { const p = TS.app.v3.items.list.get('${id}').obj.getWorldPosition(new TS.app.v3.kit.T.Vector3()); return [p.x, p.y, p.z]; })()`;
+  const near = (a, b) => !!a && !!b && a.every((x, i) => Math.abs(x - b[i]) <= 0.02);
+  await check('items', 'призрак и подсветка мест', async () => {
+    await openScheme('poly');
+    await page.eval('TS.app.tr.resetToNormal()');
+    await act3D({ do: 'wear', item: 'gloves' }); await act3D({ do: 'wear', item: 'helmet' });
+    await grab('fence');
+    await aimLabel({ mount: 'zone:2' });
+    await page.eval(frames);
+    const g = await page.eval(ghostAt);
+    if (!g) fail('держим ограждение, прицел на zone:2 — призрака нет');
+    const sp = await page.eval(`({ on: TS.app.v3.items.spotIds.slice().sort().join(), want: TS.app.permit.mountsFor('fence').sort().join(), vis: TS.app.v3.items.spots.visible })`);
+    if (sp.on !== sp.want || !sp.vis) fail(`подсвечены ${sp.on}, а можно ${sp.want}`);
+    if (SHOTS) await page.shot(`${OUT}/items-ghost-fence.png`);
+    await page.key('KeyE'); await sleep(80);
+    const f = await page.eval(objAt('fence'));
+    if (!near(g, f)) fail(`ограждение встало не там, где призрак: ${g.map(x => x.toFixed(2))} → ${f.map(x => x.toFixed(2))}`);
+    // плакат вторым на место: призрак в слоте со смещением
+    await act3D({ do: 'place', item: 'nevkl2', at: 'drive:2' });
+    await grab('nevkl1');
+    await aimLabel({ mount: 'drive:2' });
+    await page.eval(frames);
+    const pg = await page.eval(ghostAt);
+    await page.key('KeyE'); await sleep(80);
+    const pp = await page.eval(objAt('nevkl1'));
+    if (!near(pg, pp)) fail(`второй плакат встал не там, где призрак: ${pg} → ${pp}`);
+    if ((await page.eval(`TS.app.v3.items.spots.visible`))) { await page.eval(frames); if (await page.eval(`TS.app.v3.items.spots.visible`)) fail('рука пустая, а места подсвечены'); }
+    // задание с подсказками: кольцо у привода и двери яч.3 для «Не включать»
+    await page.eval('TS.app.tr.resetToNormal()');
+    await page.eval(`(() => { const app = TS.app; app.startTask(app.scheme.tasks[0]); const pl = TS.Plan.planTask(app.scheme, app.tr.run.task); for (const a of pl.slice(0, 4)) TS.Plan.runAction(app.tr, app.permit, a); })()`);
+    await sleep(2800);
+    await grab('nevkl1');
+    await page.eval(frames);
+    const mk = await page.eval(`TS.app.v3.items.markIds.slice().sort().join()`);
+    if (mk !== 'door:3,drive:3') fail('кольцо следующего мероприятия: ' + mk);
+    const lab = await aimLabel({ mount: 'drive:2' });
+    if (!lab.includes('место работ — яч.3')) fail('нет мягкой подсказки «место работ — яч.3»: ' + lab);
+    if (SHOTS) await page.shot(`${OUT}/items-ghost-guide.png`);
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval('TS.app.tr.exitTask(); TS.app.tr.resetToNormal()');
+    // экзамен: подсказок нет — ни кольца, ни «место работ»
+    await page.eval(`(() => { const app = TS.app, s = app.scheme; app.exam.start(s, 'poly', { kind: 'skills', interlocks: true, person: { fio: 'Проверка Призрака' }, tasks: [s.tasks[0]] }); })()`);
+    await page.waitFor('TS.app.exam.active() && !!TS.app.tr.run', 3000, 'экзамен начался');
+    await page.eval(`(() => { const app = TS.app; const pl = TS.Plan.planTask(app.scheme, app.tr.run.task); for (const a of pl.slice(0, 4)) TS.Plan.runAction(app.tr, app.permit, a); })()`);
+    await sleep(2800);
+    await page.eval('TS.app.v3.walk.lockChanged(true)');
+    await grab('nevkl1');
+    await page.eval(frames);
+    const ex = await page.eval(`({ mk: TS.app.v3.items.markIds.length, vis: TS.app.v3.items.marks.visible })`);
+    const exLab = await aimLabel({ mount: 'drive:2' });
+    await page.eval(frames);
+    const exG = await page.eval(ghostAt);
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval(`TS.app.exam.stop('abort')`);
+    await page.waitFor('!TS.app.exam.active() && !!document.querySelector("#modal .proto")', 3000, 'протокол прерванного экзамена');
+    await closeModal();
+    if (ex.mk || ex.vis) fail('в экзамене видно кольцо следующего мероприятия');
+    if (exLab.includes('место работ') || exLab.includes('по порядку')) fail('в экзамене подсказка места: ' + exLab);
+    if (!exG) fail('в экзамене нет нейтрального призрака');
+    // полигон — в нормальный режим, тележки на место сразу (следующие проверки снимают сцену)
+    await page.eval('TS.app.tr.resetToNormal(); TS.app.v3.update(true)');
+    return 'призрак = место (ограждение, второй плакат), подсвечены места из mountsFor, кольцо и «место работ» — только с подсказками';
+  });
+  // Шлем (эмулятор iwer): ограждение рукой — подсветка у руки, взять боковой кнопкой, призрак у яч.2, поставить ровно в призрак,
+  // снова взять у дальней стойки (раньше рука мерилась до угла у фасада — Б2)
+  await check('items', 'шлем (эмулятор iwer): ограждение рукой', async () => {
+    try {
+      if (!(await installIwer())) return 'пропущено: iwer с CDN не загрузился (нет сети)';
+      await openScheme('poly');
+      await page.eval('TS.app.tr.resetToNormal()');
+      await gesture('TS.app.v3.enterVR()');
+      await page.waitFor('TS.app.v3.renderer.xr.isPresenting', 5000, 'вход в VR');
+      const r = await page.eval(`(async () => {
+        const sleep = ms => new Promise(r => setTimeout(r, ms)), d = __iwer, R = d.controllers.right, v = TS.app.v3, it = v.items, T = v.kit.T, out = {};
+        const press = async b => { R.updateButtonValue(b, 1); await sleep(120); R.updateButtonValue(b, 0); await sleep(150); };
+        await sleep(400);
+        for (let i = 0; i < 3 && v.tutor && v.tutor.m.visible; i++) await press('trigger');
+        v.rig.position.set(0, 0, 0); v.rig.rotation.set(0, 0, 0);
+        const fh = v.room.fenceHome, c2 = v.room.cells.find(c => c.n === 2), ZF = v.room.ZF;
+        d.position.set(3.6, 1.6, 1.4); R.position.set(fh.x, 0.6, fh.z); R.quaternion.set(0, 0, 0, 1);
+        await sleep(300); out.hot = it.hot;
+        await press('squeeze'); out.held = it.heldIn(R === d.controllers.right ? 1 : 0) || it.heldIn(0) || it.heldIn(1);
+        d.position.set(c2.x + 0.3, 1.6, ZF + 2.8); R.position.set(c2.x, 1.1, ZF + 1.4);
+        await sleep(400);
+        const g = it.ghostShown, gp = g && g.visible ? g.getWorldPosition(new T.Vector3()) : null;
+        out.ghost = gp ? it.ghostAt : null;
+        await press('squeeze'); out.placed = TS.app.permit.itemAt('fence');
+        out.match = gp ? gp.distanceTo(it.list.get('fence').obj.getWorldPosition(new T.Vector3())) : null;
+        R.position.set(c2.x + 0.62, 0.7, ZF + 2.55);
+        await sleep(300); out.hotPost = it.hot;
+        await press('squeeze'); out.retaken = it.heldIn(0) || it.heldIn(1);
+        return out; })()`);
+      await page.eval('TS.app.v3.renderer.xr.getSession().end()');
+      await page.waitFor('!TS.app.v3.renderer.xr.isPresenting', 3000, 'выход из VR');
+      if (r.hot !== 'fence' || r.held !== 'fence') fail('рука у ограждения на стенде: ' + JSON.stringify(r));
+      if (r.ghost !== 'zone:2' || r.placed !== 'zone:2' || !(r.match < 0.02)) fail('призрак и место у яч.2: ' + JSON.stringify(r));
+      if (r.hotPost !== 'fence' || r.retaken !== 'fence') fail('поставленное ограждение не взять у дальней стойки: ' + JSON.stringify(r));
+      return 'взято рукой, призрак у яч.2 = место, снова взято у дальней стойки';
+    } finally {
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
+} };
+
+// Переход и телепорт: метка на земле видна и прячется на аппарате; щелчок (E) — место сменилось, эффект кончился, экран не тёмный;
+// за ограждением и в ячейке — «Туда не пройти», место прежнее. Площадка — E по прицелу, полигон без захвата мыши — щелчок мышью,
+// телефон — касание пола
+const IWER = 'https://cdn.jsdelivr.net/npm/iwer@2.5.0/+esm';
+// Выражение как действие пользователя (вход в VR требует жеста)
+const gesture = expr => page.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true }).then(r => {
+  if (r.result && r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
+  return r.result && r.result.result.value;
+});
+// Эмулятор шлема iwer (Quest 3) с CDN — только в странице проверки; false — нет сети
+const installIwer = () => gesture(`(async () => { try { const m = await import('${IWER}'); window.__iwer = new m.XRDevice(m.metaQuest3); window.__iwer.installRuntime({ forceInstall: true }); return true; } catch (e) { return false; } })()`);
+const tpState = `(() => { const v = TS.app.v3, w = v.walk, tp = v.tp; return { x: w.x, z: w.z, mark: tp.mark.visible, ok: tp.ok, busy: tp.busy,
+  dark: tp.fade.visible && tp.fade.material.opacity > 0.02, aim: w.hud.aim.textContent, said: w.hud.said.hidden ? '' : w.hud.said.textContent,
+  fx: w.floor ? w.floor.point.x : null, fz: w.floor ? w.floor.point.z : null }; })()`;
+// Точка пола (x, z) на экране
+const screenOf = (x, z) => page.fn((x, z) => { const v = TS.app.v3, T = v.kit.T, p = new T.Vector3(x, 0.01, z).project(v.camera), r = v.renderer.domElement.getBoundingClientRect();
+  return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height }; }, x, z);
+const settle = () => page.eval('new Promise(r => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(r)), 650))');
+async function tpCheck(where, st, to) {
+  if (st.busy || st.dark) fail(`${where}: переход не закончился или экран тёмный`);
+  if (to && Math.hypot(st.x - to.x, st.z - to.z) > 0.08) fail(`${where}: пришли в ${st.x.toFixed(2)}, ${st.z.toFixed(2)}, а метка была ${to.x.toFixed(2)}, ${to.z.toFixed(2)}`);
+}
+SUITES.teleport = { perScheme: false, fn: async () => {
+  await check('teleport', 'площадка: метка, переход, «Туда не пройти»', async () => {
+    await chooseScheme('ps110');
+    await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+    if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+    await page.eval('TS.app.v3.walk.lockChanged(true)');
+    // у ворот, взгляд под ноги вперёд — земля в 4–5 м
+    await page.eval(`(() => { const w = TS.app.v3.walk, s = TS.app.v3.world.start; w.pose({ x: s.x, z: s.z, yaw: s.yaw, pitch: -0.36 }); })()`);
+    let st = await page.eval(tpState);
+    if (!st.mark || st.ok !== true || !st.aim.startsWith('Перейти сюда')) fail('на земле нет метки «можно»: ' + JSON.stringify(st));
+    const to = { x: st.fx, z: st.fz };
+    if (SHOTS) await page.shot(`${OUT}/teleport-mark.png`);
+    await page.key('KeyE');
+    await sleep(80);
+    if (!(await page.eval('TS.app.v3.tp.busy'))) fail('переход не начался');
+    await settle();
+    st = await page.eval(tpState);
+    await tpCheck('площадка', st, to);
+    // на аппарате метки нет
+    const dev = await page.eval(`TS.app.scheme.els.find(e => e.name === 'ЛР Л-1').id`);
+    const r = await page.fn(id => E2E.aim({ dev: id }), dev);
+    if (!r.ok) fail('прицел на ЛР Л-1: ' + r.why);
+    st = await page.eval(tpState);
+    if (st.mark) fail('метка видна, когда прицел на аппарате');
+    // за дальним ограждением — нельзя
+    await page.eval(`(() => { const v = TS.app.v3, w = v.walk, [x, z] = v.world.resolve(0, -v.bounds.hz + 1.4); w.pose({ x, z, yaw: 0, pitch: -0.36 }); })()`);
+    st = await page.eval(tpState);
+    if (!st.mark || st.ok !== false || st.aim !== 'Туда не пройти') fail('за ограждением нет метки «нельзя»: ' + JSON.stringify(st));
+    if (SHOTS) await page.shot(`${OUT}/teleport-no.png`);
+    const was = { x: st.x, z: st.z };
+    await page.key('KeyE');
+    await settle();
+    st = await page.eval(tpState);
+    if (Math.hypot(st.x - was.x, st.z - was.z) > 0.01) fail('за ограждение всё-таки перешли');
+    if (st.said !== 'Туда не пройти') fail('нет «Туда не пройти» у прицела: ' + st.said);
+    await tpCheck('за ограждением', st);
+    await clickBtn('#btnWalk', null, '«Обзор»');
+    return 'метка на земле, нет на аппарате; переход по E; за ограждение — «Туда не пройти»';
+  });
+  await check('teleport', 'полигон без захвата мыши: щелчок по полу и в ячейку', async () => {
+    await openScheme('poly');
+    await page.eval('TS.app.tr.resetToNormal(); (() => { const w = TS.app.v3.walk; w.lockChanged(false); w.noLock = true; w.showClick(); w.reset(TS.app.v3.room.start); })()');
+    try {
+      // пол коридора перед ячейками: встать лицом к нему
+      await page.eval(`TS.app.v3.walk.pose({ x: 2.2, z: 2.6, yaw: Math.atan2(1.6, 1.2), pitch: -0.5 })`);
+      let p = await screenOf(0.6, 1.4);
+      await page.move(p.x, p.y); await settle();
+      let st = await page.eval(tpState);
+      if (!st.mark || st.ok !== true) fail('под курсором на полу нет метки: ' + JSON.stringify(st));
+      const to = { x: st.fx, z: st.fz };
+      await page.click(p.x, p.y);
+      await settle();
+      st = await page.eval(tpState);
+      await tpCheck('полигон', st, to);
+      // пол внутри ячейки №1 (между тележкой и ЗН не попасть): нельзя
+      await page.eval(`TS.app.v3.walk.pose({ x: -1.86, z: 1.2, yaw: 0, pitch: -0.62 })`);
+      p = await screenOf(-1.86, -1.6);
+      await page.move(p.x, p.y); await settle();
+      st = await page.eval(tpState);
+      if (!st.mark || st.ok !== false || st.aim !== 'Туда не пройти') fail('в ячейке нет «Туда не пройти»: ' + JSON.stringify(st));
+      const was = { x: st.x, z: st.z };
+      await page.click(p.x, p.y);
+      await settle();
+      st = await page.eval(tpState);
+      if (Math.hypot(st.x - was.x, st.z - was.z) > 0.01) fail('в ячейку всё-таки перешли');
+      return 'метка под курсором, щелчок — переход; в ячейку — «Туда не пройти»';
+    } finally {
+      await page.eval('(() => { const w = TS.app.v3.walk; w.noLock = false; w.cursor = null; w.lockChanged(true); })()');
+    }
+  });
+  // Шлем — эмулятор WebXR iwer (Quest 3) с CDN, только в странице проверки (в сборку не входит). Нет сети — проверка пропускается
+  await check('teleport', 'шлем (эмулятор iwer): курок по земле', async () => {
+    try {
+      if (!(await installIwer())) return 'пропущено: iwer с CDN не загрузился (нет сети)';
+      await chooseScheme('ps110');
+      await setMode('3d');
+      await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready)', 15000, '3D');
+      await gesture('TS.app.v3.enterVR()');
+      await page.waitFor('TS.app.v3.renderer.xr.isPresenting', 5000, 'вход в VR');
+      const press = `(async () => { const R = __iwer.controllers.right; R.updateButtonValue('trigger', 1); await new Promise(r => setTimeout(r, 120)); R.updateButtonValue('trigger', 0); await new Promise(r => setTimeout(r, 120)); })()`;
+      // первый вход: обучение из 3 шагов — его закрывает курок
+      await sleep(400);
+      for (let i = 0; i < 3 && (await page.eval('!!(TS.app.v3.tutor && TS.app.v3.tutor.m.visible)')); i++) { await page.eval(press); await sleep(200); }
+      if (await page.eval('!!(TS.app.v3.tutor && TS.app.v3.tutor.m.visible)')) fail('обучение в шлеме не закрылось курком');
+      // контроллер у пояса, луч вперёд-вниз на землю
+      await page.eval(`(() => { const d = __iwer, R = d.controllers.right, a = -0.6; d.position.set(0, 1.6, 0); R.position.set(0.2, 1.2, -0.3); R.quaternion.set(Math.sin(a / 2), 0, 0, Math.cos(a / 2)); })()`);
+      await settle();
+      let st = await page.eval(`(() => { const v = TS.app.v3, tp = v.tp; return { mark: tp.mark.visible, ok: tp.ok, mx: tp.mark.position.x, mz: tp.mark.position.z, calls: v.renderer.info.render.calls }; })()`);
+      if (!st.mark || st.ok !== true) fail('в шлеме под лучом на земле нет метки: ' + JSON.stringify(st));
+      await page.eval(press);
+      await settle();
+      const c = await page.eval(`(() => { const v = TS.app.v3, p = v.camera.getWorldPosition(new v.kit.T.Vector3()); return { x: p.x, z: p.z, busy: v.tp.busy, dark: v.tp.fade.visible }; })()`);
+      if (Math.hypot(c.x - st.mx, c.z - st.mz) > 0.1 || c.busy || c.dark) fail(`курок по земле: камера ${c.x.toFixed(2)}, ${c.z.toFixed(2)}, метка ${st.mx.toFixed(2)}, ${st.mz.toFixed(2)}${c.dark ? ', экран тёмный' : ''}`);
+      await page.eval('TS.app.v3.renderer.xr.getSession().end()');
+      await page.waitFor('!TS.app.v3.renderer.xr.isPresenting', 3000, 'выход из VR');
+      const after = await page.eval('({ dark: TS.app.v3.tp.fade.visible, mark: TS.app.v3.tp.mark.visible })');
+      if (after.dark || after.mark) fail('после выхода из VR осталось затемнение или метка');
+      return `метка, затемнение и переход к метке; вызовов в шлеме (оба глаза, у ворот): ${st.calls}`;
+    } finally {
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
+  await check('teleport', 'телефон 390×844: касание пола', async () => {
+    await page.viewport(390, 844, true);
+    try {
+      await page.goto(page.base);
+      await page.eval(HELPER);
+      await openScheme('poly');
+      await page.eval('TS.app.v3.walk.lockChanged(false)');
+      if (!(await page.eval('TS.app.v3.walk.touch'))) fail('телефон не распознан как касание');
+      if (!(await page.eval('TS.app.v3.walk.hud.click.hidden'))) fail('на телефоне видно «Мышь свободна — щёлкните по сцене»');
+      await page.eval(`TS.app.v3.walk.pose({ x: 2.2, z: 2.6, yaw: Math.atan2(1.6, 1.2), pitch: -0.5 })`);
+      const p = await screenOf(0.6, 1.4);
+      const was = await page.eval(tpState);
+      await page.tap(p.x, p.y);
+      await settle();
+      const st = await page.eval(tpState);
+      if (SHOTS) await page.shot(`${OUT}/teleport-phone.png`);
+      if (Math.hypot(st.x - was.x, st.z - was.z) < 0.3) fail('касание пола не перевело: ' + JSON.stringify(st));
+      await tpCheck('телефон', st);
+      return `касание — переход на ${Math.hypot(st.x - was.x, st.z - was.z).toFixed(1)} м`;
+    } finally {
+      await page.viewport(1366, 860);
+      await page.goto(page.base);
+      await page.eval(HELPER);
+    }
+  });
+} };
+
+// Подсказки шагов на площадках: каждое задание проходится в 3D пешком только по подсказкам — строка «Следующий шаг» верна на всём ходе,
+// G ставит прицел на нужный аппарат (или провод), дальше — как человек: V/P, E, пункт меню. Итог — 100 баллов.
+// В экзамене нет ни строки, ни маяка, ни G. «Обзор»: G наводит камеру на аппарат
+const frames2 = 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))';
+const guideState = `(() => { const v = TS.app.v3, w = v.walk, g = TS.app.guideNext(); return { next: w.hud.next.hidden ? '' : w.hud.next.textContent,
+  peek: g ? g.text : null, id: g ? g.step.id : null, op: g ? g.step.op : null, beacon: v.beacon.visible, aim: w.aim ? { type: w.aim.type, id: w.aim.id } : null,
+  x: w.x, z: w.z, busy: v.tp.busy }; })()`;
+SUITES.guide = { perScheme: true, fn: async keys => {
+  for (const key of keys) {
+    if (await page.eval(`!!TS.SAMPLES.find(s => s.key === '${key}').make().room`)) continue;
+    const n = await page.eval(`TS.SAMPLES.find(s => s.key === '${key}').make().tasks.length`);
+    for (let ti = 0; ti < n; ti++) {
+      await check('guide', `${key} #${ti + 1}`, async () => {
+        await chooseScheme(key);
+        await setMode('3d');
+        await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+        if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+        await page.eval('TS.app.v3.walk.lockChanged(true); TS.app.stepGuide = true');
+        await startTask(ti);
+        await page.eval('TS.app.v3.walk.reset(TS.app.v3.world.start)');
+        let steps = 0;
+        for (let i = 0; i < 40; i++) {
+          if (await page.eval('!TS.app.tr.run || TS.app.tr.run.done')) break;
+          await page.eval(frames2);
+          const st = await page.eval(guideState);
+          if (!st.peek) fail(`шаг ${i + 1}: подсказки нет, а задание идёт`);
+          if (!st.next.startsWith('Следующий шаг: ' + st.peek)) fail(`шаг ${i + 1}: строка «${st.next}», а следующий — «${st.peek}»`);
+          if (!st.beacon) fail(`шаг ${i + 1}: нет маяка над «${st.peek}»`);
+          const before = await page.eval('E2E.run()');
+          await page.key('KeyG');
+          await sleep(30);
+          await page.waitFor('!TS.app.v3.tp.busy', 3000, 'переход по G');
+          await page.eval(frames2);
+          const tool = st.op === 'check' ? 'check' : String(st.id).startsWith('pz:') ? 'pz' : null;
+          if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await page.eval(frames2); }
+          const aim = (await page.eval(guideState)).aim;
+          const want = String(st.id).startsWith('pz:') && aim && aim.type === 'dev' ? st.id : String(st.id).startsWith('pz:') ? st.id.slice(3) : st.id;
+          if (!aim || aim.id !== want) fail(`шаг ${i + 1} «${st.peek}»: после G под прицелом ${aim ? aim.type + ' ' + aim.id : 'ничего'}, а нужен ${want}`);
+          await page.key('KeyE'); await sleep(80);
+          // тележка: меню в 3D — пункт по шагу
+          if (await page.eval('!!TS.app.v3.menu3d')) {
+            const item = await page.eval(`(() => { const st = TS.app.tr.peek().step, el = TS.app.tr.elOf(st.id); return st.op === 'pos' ? TS.Plan.menuPos(st.pos) : TS.Plan.menuOn(st.op === 'on'); })()`);
+            await aimE({ menu: item }, 'пункт «' + item + '»');
+          }
+          if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await sleep(40); }
+          await sleep(60);
+          const after = await page.eval('E2E.run()');
+          if (after.errors.length > before.errors.length) fail(`шаг ${i + 1} «${st.peek}»: ошибка — ${after.errors.slice(before.errors.length).join('; ')}`);
+          if (after.ops !== before.ops + 1) fail(`шаг ${i + 1} «${st.peek}»: E не сработало (операций ${before.ops} → ${after.ops})`);
+          steps++;
+          if (SHOTS && i === 0) await page.shot(`${OUT}/guide-${key}-${ti + 1}.png`);
+        }
+        const r = await waitReport();
+        if (r.score !== 100 || r.verdict !== 'Выполнено без ошибок') fail(`отчёт: ${r.score}, «${r.verdict}»`);
+        if (!r.text.includes('подсказки шагов были включены')) fail('в отчёте нет «подсказки шагов были включены»');
+        await closeModal();
+        await clickBtn('#btnWalk', null, '«Обзор»');
+        return `${steps} шагов по подсказкам и G, 100 баллов`;
+      });
+    }
+  }
+  if (keys.length && keys.includes('ps110')) await check('guide', 'экзамен и «Обзор»', async () => {
+    await chooseScheme('ps110');
+    await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+    // «Обзор»: G — камера на аппарат следующего шага
+    await page.eval('TS.app.stepGuide = true');
+    await startTask(0);
+    const o0 = await page.eval('TS.app.v3.orbit.target.toArray()');
+    await page.eval('TS.app.v3.goNext()');
+    const o1 = await page.eval(`(() => { const v = TS.app.v3, d = v.aimTarget({ dev: TS.app.tr.peek().step.id }).p; return { t: v.orbit.target.toArray(), d: [d.x, d.z] }; })()`);
+    if (Math.hypot(o1.t[0] - o1.d[0], o1.t[2] - o1.d[1]) > 0.5) fail('в «Обзоре» камера не навелась на аппарат: ' + JSON.stringify({ o0, o1 }));
+    await clickBtn('[data-act="task-stop"]', null, '«Завершить»');
+    await waitReport(); await closeModal();
+    // экзамен: ни строки, ни маяка, ни G, ни «Перейти к аппарату» в панели
+    await page.eval(`(() => { const app = TS.app, s = app.scheme; app.exam.start(s, 'ps110', { kind: 'skills', interlocks: true, person: { fio: 'Проверка Подсказок' }, tasks: [s.tasks[0]] }); })()`);
+    await page.waitFor('TS.app.exam.active() && !!TS.app.tr.run', 3000, 'экзамен начался');
+    await setMode('3d');
+    if (!(await page.eval('TS.app.v3.yardWalk'))) await clickBtn('#btnWalk', null, '«Пешком»');
+    await page.eval('TS.app.v3.walk.lockChanged(true)');
+    await settle();
+    const ex = await page.eval(guideState);
+    const panel = await page.eval(`({ line: !!document.getElementById('guideLine'), go: !!document.querySelector('[data-act="goto-next"]'), goto: !!document.querySelector('[data-act="goto"]') })`);
+    await page.key('KeyG'); await settle();
+    const ex2 = await page.eval(guideState);
+    await page.eval(`TS.app.exam.stop('abort')`);
+    await page.waitFor('!TS.app.exam.active() && !!document.querySelector("#modal .proto")', 3000, 'протокол');
+    await closeModal();
+    await clickBtn('#btnWalk', null, '«Обзор»');
+    if (ex.next || ex.peek || ex.beacon) fail('в экзамене видна подсказка шага или маяк: ' + JSON.stringify(ex));
+    if (panel.line || panel.go || panel.goto) fail('в экзамене в панели подсказка или «Перейти»');
+    if (Math.hypot(ex2.x - ex.x, ex2.z - ex.z) > 0.01 || ex2.busy) fail('в экзамене G перевело к аппарату');
+    return '«Обзор» — камера на аппарат; в экзамене нет строки, маяка, G';
+  });
 } };
 
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
@@ -535,8 +953,11 @@ SUITES.scene3d = { perScheme: true, fn: async keys => {
         const v = TS.app.v3, T = v.kit.T, b = new T.Box3(), c = new T.Vector3(), z = new T.Vector3(), r = x => Math.round(x * 100) / 100, out = {};
         v.root.updateMatrixWorld(true);
         for (const o of v.pickables) {
-          const u = o.userData, k = u.dev ? 'dev:' + TS.app.tr.nm(u.dev) : u.item ? 'item:' + u.item : u.mount ? 'mount:' + u.mount : u.wire ? 'wire:' + u.wire : u.board ? 'board' : null;
+          const u = o.userData;
+          let k = u.dev ? 'dev:' + TS.app.tr.nm(u.dev) : u.item ? 'item:' + u.item : u.mount ? 'mount:' + u.mount : u.wire ? 'wire:' + u.wire : u.board ? 'board' : null;
           if (!k) continue;
+          // поставленное ограждение: коробки стоек и ленты — каждая под своим номером
+          if (u.part === 'open') { let i = 1; while (out[k + ':open' + i]) i++; k += ':open' + i; }
           b.setFromObject(o); b.getCenter(c); b.getSize(z);
           out[k] = [r(c.x), r(c.y), r(c.z), r(z.x), r(z.y), r(z.z)];
         }

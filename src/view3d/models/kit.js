@@ -39,7 +39,13 @@ const PAL = {
   volt: { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8,
     on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d, live: 0xff6a00, btnOn: 0xb81c2a, btnOff: 0x168a45 },
   ui: { rayIdle: 0x1f45ff, rayHot: 0xffd23f, ring: 0xffd23f, proxy: 0xffffff, lamp: 0xffffff, wireLine: 0x5f666a,
-    arc: 0xe6f6ff, sparks: 0xffd27a, arcLight: 0x9fd8ff, beacon: 0xff4d4d, beaconGlow: 0xff2020, window: 0xffcf70 },
+    arc: 0xe6f6ff, sparks: 0xffd27a, arcLight: 0x9fd8ff, beacon: 0xff4d4d, beaconGlow: 0xff2020, window: 0xffcf70,
+    // телепорт (teleport.js): метка «можно» и «нельзя», затемнение
+    tpOk: 0x8fe3ff, tpNo: 0xff3b4e, fade: 0x05080a,
+    // маяк над аппаратом следующего шага (подсказки шагов на площадке)
+    guide: 0xffe27a },
+  // подписи (холст, CSS-цвета): над аппаратами; итог проверки указателем на площадке — «нет» тёмным, «есть» красным (не зелёным, как плакат)
+  label: { bg: 'rgba(14,20,18,0.82)', fg: '#ffffff', dead: 'rgba(14,20,18,0.9)', live: 'rgba(200,22,44,0.94)', edge: 'rgba(255,255,255,0.55)' },
   // свет и окружение: площадка под небом и закрытое помещение полигона
   env: {
     fog: 0xc6d6e1, sky: [0x5f97d6, 0x9cc1e6, 0xd2e1ea], hills: [0x9fb0b4, 0x8b9c94], below: 0x8e9a82,
@@ -61,7 +67,8 @@ const PAL = {
   },
   roomTube: 0xfafcff,   // светящиеся трубки светильников
   // предметы полигона
-  items: { glove: 0xe7c65a, ctrl: 0x202428, ghost: 0xffd23f, back: 0xd9d6cc, helmet: 0xf3f3ee, rod: 0xb3342a, handle: 0x1d2124, head: 0xe6e8e4,
+  // ghost — призрак предмета на месте, spot — места, куда можно поставить, next — кольцо ближайшего мероприятия (с подсказками)
+  items: { glove: 0xe7c65a, ctrl: 0x202428, ghost: 0xeaf6ff, spot: 0x7fc8ff, next: 0xffd23f, hot: 0xffd23f, back: 0xd9d6cc, helmet: 0xf3f3ee, rod: 0xb3342a, handle: 0x1d2124, head: 0xe6e8e4,
     metal: 0xc9ced2, pzRod: 0xe0a020, pzCable: 0x9b6a3a, brass: 0xc9a43c, post: 0x2b2f31, lampOff: 0x3a1010, lampOn: 0xff2d2d },
 };
 
@@ -255,4 +262,4 @@ function makeKit(T, M, geoCache, nodeMatFor) {
   return k;
 }
 
-export { S3, H3, PAL, TEX, rng, texture, makeMaterials, makeKit };
+export { S3, H3, PAL, TEX, rng, css, texture, makeMaterials, makeKit };

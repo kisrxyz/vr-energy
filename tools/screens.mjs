@@ -1,4 +1,5 @@
-/* Снимки 3D для PR «до/после»: одни и те же ракурсы — обзор площадок, пешком у трансформатора и у ячейки КРУ, полигон у стенда.
+/* Снимки 3D для PR «до/после»: одни и те же ракурсы — обзор РП-10 и ПС 110/35/10, ячейка РП-10 пешком, ПС 110/10 «Пешком» у ворот,
+   полигон у стенда и с ограждением в руке у яч.3 (набор 0.5: не больше 6 пар).
    node tools/screens.mjs --tag=before|after  →  docs/screens/<n>-<ракурс>-<tag>.png (только сцена, без панелей; ≤ 300 КБ).
    Ракурсы считаются от координат схемы, а не от моделей: после правки моделей камера стоит там же.
    Vite — на свободном порту от 5182 (5173 не трогаем). Нужен Chrome (tools/cdp.mjs). */
@@ -12,12 +13,13 @@ const REVIEW = process.argv.includes('--review');
 const OUT = REVIEW ? 'e2e-out' : 'docs/screens';
 // где стоять пешком: элемент схемы, смещение от него в метрах (x, z) и высота взгляда на него
 const SHOTS = [
-  { n: 1, name: 'ps110-obzor', key: 'ps110' },
-  { n: 2, name: 'ps35-obzor', key: 'ps35' },
-  { n: 3, name: 'rp10-obzor', key: 'rp10' },
-  { n: 4, name: 'ps110-transformator', key: 'ps110', walk: { el: 'Т1', dx: 5.5, dz: 4.5, look: 2.2 } },
-  { n: 5, name: 'rp10-yacheyka', key: 'rp10', walk: { el: 'В-10 Л-3', dx: 3.2, dz: 3.4, look: 1.3 } },
-  { n: 6, name: 'poly-stend', key: 'poly', room: { x: 2.7, z: 2.6, look: [4.6, 1.2, 1.9] } },
+  { n: 1, name: 'rp10-obzor', key: 'rp10' },
+  { n: 2, name: 'rp10-yacheyka', key: 'rp10', walk: { el: 'В-10 Л-3', dx: 3.2, dz: 3.4, look: 1.3 } },
+  { n: 3, name: 'ps35-obzor', key: 'ps35' },
+  { n: 4, name: 'ps110-vorota', key: 'ps110', gate: true },
+  { n: 5, name: 'poly-stend', key: 'poly', room: { x: 2.7, z: 2.6, look: [4.6, 1.2, 1.9] } },
+  // ограждение в руке, прицел на пол перед яч.3 (−0,45; 0,2)
+  { n: 6, name: 'poly-ograzhdenie', key: 'poly', hold: 'fence', room: { x: 0.6, z: 2.7, look: [-0.45, 0, 0.3] } },
 ];
 const REVIEW_SHOTS = [
   { n: 'r1', name: 'breaker110', key: 'ps110', walk: { el: 'В-110 Т1', dx: 3.6, dz: 2.6, look: 2.0 } },
@@ -46,11 +48,16 @@ try {
       const v = TS.app.v3, T = v.kit.T, w = v.walk;
       if (s.walk) {
         if (!v.yardWalk) v.toggleWalk();
-        const el = TS.app.scheme.els.find(e => e.name === s.walk.el), c = v.toWorld([el.x, el.y]);
-        const x = c.x + s.walk.dx, z = c.z + s.walk.dz;
+        // аппарат в ЗРУ (с 0.5) — стоим в коридоре перед ячейкой, на улице — как задано от точки схемы
+        const el = TS.app.scheme.els.find(e => e.name === s.walk.el), d = v.dev.get(el.id), zru = d && d.zru;
+        const c = zru ? d.group.getWorldPosition(new T.Vector3()) : v.toWorld([el.x, el.y]);
+        const x = c.x + (zru ? -1.9 : s.walk.dx), z = c.z + (zru ? 2.5 : s.walk.dz);
         w.pose({ x, z, yaw: Math.atan2(-(c.x - x), -(c.z - z)), pitch: Math.atan2(s.walk.look - 1.62, Math.hypot(c.x - x, c.z - z)) });
+      } else if (s.gate) {
+        if (!v.yardWalk) v.toggleWalk(); else w.reset(v.world.start);
       } else if (s.room) {
         const [lx, ly, lz] = s.room.look;
+        if (v.items) { for (const h of ['desk']) { const id = v.items.heldIn(h); if (id) v.items.toHome(v.items.list.get(id)); } if (s.hold) v.items.grab(s.hold, 'desk'); }
         w.pose({ x: s.room.x, z: s.room.z, yaw: Math.atan2(-(lx - s.room.x), -(lz - s.room.z)), pitch: Math.atan2(ly - 1.62, Math.hypot(lx - s.room.x, lz - s.room.z)) });
       } else if (v.yardWalk) v.toggleWalk();
       w.lockChanged(true);

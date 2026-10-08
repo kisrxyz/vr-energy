@@ -62,7 +62,8 @@ const PAL = {
     rCeil: [0xd9d7cf, { roughness: 1 }], rLampBox: [0xc9ccc8, { metalness: 0.3 }], rDoor: [0x58707a, { metalness: 0.35, roughness: 0.55, tex: 'paint' }],
     rGstrip: [0xffffff, { roughness: 0.6, tex: 'gstrip' }], rKruDoor: [0xbcc3bd, { metalness: 0.05, roughness: 0.7, tex: 'paint' }],
     rCavity: [0x262b2a, { roughness: 0.9 }], rShutter: [0xb8432e, { roughness: 0.6 }], rTrolley: [0xa9b2ad, { metalness: 0.05, roughness: 0.75, tex: 'paint' }],
-    rPole: [0x5b3328, { roughness: 0.5 }], rCopper: [0xc8823e, { metalness: 0.6, roughness: 0.35 }],
+    // полюса вакуумного выключателя — тёмный литой эпоксид с блеском; изоляторы и «стаканы» отсека — эпоксид светлее
+    rPole: [0x515a60, { roughness: 0.3, metalness: 0.05 }], rCopper: [0xc8823e, { metalness: 0.6, roughness: 0.35 }], rEpoxy: [0x8a6a3a, { roughness: 0.4 }],
     rStand: [0x50646f, { roughness: 0.7, tex: 'paint' }], rShelf: [0x8b6b4a, { roughness: 0.8 }], rRed: [0xc8202c, { roughness: 0.45 }],
     // ЗРУ на площадке: рифлёные стальные плиты кабельного канала, стекло окон (светлое — день за окном)
     rPlate: [0x9aa0a3, { metalness: 0.55, roughness: 0.45, tex: 'plate' }], rWin: [0xcfe3f0, { roughness: 0.15, metalness: 0.1, emissive: 0x5d7180 }],

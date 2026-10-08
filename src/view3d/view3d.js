@@ -12,6 +12,7 @@ import { Walk, REACH as WALK_REACH } from './walk.js';
 import { Teleport } from './teleport.js';
 import { findKRU, buildZRU } from './zru.js';
 import { footprints, makeYardWorld } from './world.js';
+import { Batch } from './batch.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
@@ -224,6 +225,10 @@ class View3D {
     // мир ходьбы нужен и вне «Пешком»: «Перейти к аппарату» в шлеме ищет место тем же walk.seek
     if (this.walk) this.walk.world = this.world;
     this.compactParts();
+    // таблица узлов и инстансы одинаковых подвижных частей (batch.js) — до слияния неподвижного
+    if (this.batch) this.batch.dispose();
+    this.batch = new Batch(this);
+    this.batch.instance();
     this.mergeStatic();
     this.makeLamps();
     this.makeLabels();
@@ -458,7 +463,7 @@ class View3D {
   }
   joinGeos(parts) {
     const T = THREE, out = new T.BufferGeometry();
-    for (const nm of ['position', 'normal', 'uv']) {
+    for (const nm of ['position', 'normal', 'uv', 'nodeIdx']) {
       if (!parts.every(q => q.attributes[nm])) continue;
       let len = 0;
       for (const q of parts) len += q.attributes[nm].array.length;
@@ -471,26 +476,42 @@ class View3D {
     out.computeBoundingSphere();
     return out;
   }
-  // Неподвижные детали с одинаковым материалом сливаются в одну сетку: меньше вызовов отрисовки в шлеме
+  // Неподвижные детали с одинаковым материалом сливаются в одну сетку: меньше вызовов отрисовки в шлеме.
+  // Провода, шины и выводы всех узлов — одна сетка с материалом таблицы узлов, окна всех потребителей — тоже одна (batch.js)
   mergeStatic() {
-    const T = THREE, dyn = new Set();
+    const T = THREE, dyn = new Set(), B = this.batch, topo = this.app.tr.topo;
     for (const d of this.dev.values()) {
       for (const k of ['pivot', 'lever', 'slide', 'show', 'mark', 'beacon']) if (d[k]) d[k].traverse(o => dyn.add(o));
       if (d.spin) for (const sp of d.spin) sp.traverse(o => dyn.add(o));
+    }
+    // окна потребителя светятся по его узлу (вывод 0)
+    const winIdx = new Map();
+    for (const d of this.dev.values()) {
+      if (!d.win || !B) continue;
+      const i = B.table.idx.get((topo.term.get(d.el.id) || [])[0]);
+      if (i != null) d.group.traverse(o => { if (o.material === d.win) winIdx.set(o, i); });
     }
     const buckets = new Map();
     this.root.updateMatrixWorld(true);
     this.root.traverse(o => {
       if (!o.isMesh || o.isInstancedMesh || dyn.has(o) || o.userData.proxy || o.userData.ground || o.userData.board || o.userData.dyn) return;
-      if (o.material && o.material.map && o.material.emissiveMap) return;
-      let l = buckets.get(o.material);
-      if (!l) buckets.set(o.material, l = []);
+      let key = o.material;
+      if (B && B.nodeIdx(o.material) >= 0) key = 'node';
+      else if (winIdx.has(o)) key = 'win';
+      else if (o.material && o.material.map && o.material.emissiveMap) return;
+      let l = buckets.get(key);
+      if (!l) buckets.set(key, l = []);
       l.push(o);
     });
-    for (const [mat, list] of buckets) {
-      if (list.length < 2) continue;
-      const out = this.joinGeos(list.map(m => { const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); g.applyMatrix4(m.matrixWorld); return g; }));
-      this.root.add(new T.Mesh(out, mat));
+    for (const [key, list] of buckets) {
+      const shared = key === 'node' || key === 'win';
+      if (list.length < 2 && !shared) continue;
+      const out = this.joinGeos(list.map(m => {
+        const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+        g.applyMatrix4(m.matrixWorld);
+        return key === 'node' ? B.tag(g, B.nodeIdx(m.material)) : key === 'win' ? B.tag(g, winIdx.get(m)) : g;
+      }));
+      this.root.add(new T.Mesh(out, key === 'node' ? B.nodeMat : key === 'win' ? B.winFor(list[0].material) : key));
       for (const m of list) m.parent.remove(m);
     }
   }
@@ -676,7 +697,9 @@ class View3D {
       let col, ei;
       if (kv != null) { col = COL3[vClass(kv)]; ei = 0.55; } else if (st.G.has(n)) { col = COL3.gnd; ei = 0.3; } else { col = COL3.dead; ei = 0; }
       m.color.setHex(col); m.emissive.setHex(col); m.emissiveIntensity = ei;
+      if (this.batch) this.batch.setNode(n, col, ei);
     }
+    if (this.batch) this.batch.commit();
     for (const [id, d] of this.dev) {
       const sw = tr.sim.st[id], tm = tr.topo.term.get(id) || [];
       d.trip = sw ? !!sw.trip : false;
@@ -691,6 +714,7 @@ class View3D {
       }
     }
     this.setLamps(true);
+    if (this.batch) this.batch.sync();
     if (this.items) this.items.sync();
     this.syncGuide();
     this.drawBoard();
@@ -719,29 +743,33 @@ class View3D {
   step(time) {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const blink = Math.floor(time / 350) % 2 === 0;
-    let trips = false;
+    let trips = false, moved = false;
     for (const d of this.dev.values()) {
       if (d.pivot && d.angT != null && d.ang !== d.angT) {
+        moved = true;
         const diff = d.angT - d.ang;
         d.ang += Math.sign(diff) * Math.min(Math.abs(diff), 2.4 * dt);
         d.pivot.rotation.x = d.ang;
       }
       if (d.lever && d.leverT != null) {
         const ax = d.leverAxis || 'x', cur = d.lever.rotation[ax], diff = d.leverT - cur;
-        if (diff) d.lever.rotation[ax] = cur + Math.sign(diff) * Math.min(Math.abs(diff), 9 * dt);
+        if (diff) { d.lever.rotation[ax] = cur + Math.sign(diff) * Math.min(Math.abs(diff), 9 * dt); moved = true; }
       }
       if (d.slide && d.slideT != null && d.slideX !== d.slideT) {
         const diff = d.slideT - d.slideX;
         d.slideX += Math.sign(diff) * Math.min(Math.abs(diff), 0.8 * dt);
         d.slide.position[d.slideAxis || 'x'] = d.slideX;
         this.slideMoved(d);
+        moved = true;
       }
       if (d.spin && d.spin.length) {
         d.speed += (d.speedT - d.speed) * Math.min(1, dt * (d.speedT > d.speed ? 0.9 : 0.45));
-        if (d.speed > 0.01) for (const sp of d.spin) sp.rotation.x += d.speed * dt;
+        if (d.speed > 0.01) { for (const sp of d.spin) sp.rotation.x += d.speed * dt; moved = true; }
       }
       if (d.trip) trips = true;
     }
+    // инстансы подвижных частей — за своими местами (batch.js)
+    if (moved && this.batch) this.batch.sync();
     if (trips || this._tripsWas) this.setLamps(blink);
     this._tripsWas = trips;
     this.stepFx(dt);

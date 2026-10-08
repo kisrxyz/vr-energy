@@ -41,7 +41,7 @@ try {
   const p = await browser.newPage();
   await p.goto(url);
   // снимок — без кнопок и подсказок поверх сцены
-  await p.eval(`(() => { const s = document.createElement('style'); s.textContent = '.v3-top, .v3-fps, .v3-tip, .v3-note, .toasts, .v3-load { display: none !important; }'; document.head.appendChild(s); })()`);
+  await p.eval(`(() => { const s = document.createElement('style'); s.textContent = '.v3-top, .v3-fps, .v3-intro, .v3-tip, .v3-note, .toasts, .v3-load { display: none !important; }'; document.head.appendChild(s); })()`);
   for (const s of REVIEW ? REVIEW_SHOTS : SHOTS) {
     await p.eval(`(async () => { TS.app.chooseScheme('${s.key}'); TS.app.setMode('3d'); await TS.app.v3.show(); })()`);
     await p.fn(s => {

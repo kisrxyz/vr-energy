@@ -11,6 +11,7 @@ import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
 import { findKRU } from '../src/view3d/zru.js';
+import { Batch, geoSig } from '../src/view3d/batch.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
@@ -1349,6 +1350,33 @@ function doMeasure(tr, pm, m) {
     ok(near(m.box, b.box), `${t}: overall size as before (the click box and walking around depend on it)`);
     ok(m.tris <= lt && m.mats <= lm, `${t}: ${m.tris} triangles (≤ ${lt}), ${m.mats} materials (≤ ${lm})`);
   }
+}
+{
+  console.log('3D draw calls (batch.js): node colours from one table, identical moving parts as instances');
+  const nodeMats = new Map([[7, new THREE.MeshStandardMaterial()], [9, new THREE.MeshStandardMaterial()]]);
+  const root = new THREE.Group(), dev = new Map(), geo = new THREE.BoxGeometry(0.1, 0.3, 0.1), handle = new THREE.MeshStandardMaterial();
+  // три одинаковые рукоятки (свой материал) и три одинаковых вывода с материалами разных узлов
+  for (let i = 0; i < 3; i++) {
+    const g = new THREE.Group(), lever = new THREE.Group(), pin = new THREE.Group();
+    g.position.set(i * 2, 0, 0); lever.position.set(0, 1, 0); lever.rotation.z = 0.5; pin.position.set(0, 3, 0);
+    lever.add(new THREE.Mesh(geo, handle)); pin.add(new THREE.Mesh(geo.clone(), nodeMats.get(i ? 9 : 7)));
+    g.add(lever, pin); root.add(g);
+    dev.set('e' + i, { group: g, lever, show: pin });
+  }
+  const v = { kit: { T: THREE, PAL: { ui: { window: 0xffcf70 } } }, dev, nodeMats, root };
+  const b = new Batch(v);
+  b.instance();
+  const ims = root.children.filter(o => o.isInstancedMesh);
+  ok(ims.length === 2 && ims.every(im => im.count === 3), 'two InstancedMesh (handles, node pins) with 3 instances each, got ' + ims.map(im => im.count));
+  ok([...dev.values()].every(d => !d.lever.children.some(o => o.isMesh) && d.lever.children.length === 1), 'the original meshes are replaced by empty slots');
+  const pins = ims.find(im => im.material === b.nodeMat), m4 = new THREE.Matrix4(), p = new THREE.Vector3();
+  pins.getMatrixAt(1, m4); p.setFromMatrixPosition(m4);
+  ok(Math.abs(p.x - 2) < 1e-6 && Math.abs(p.y - 3) < 1e-6 && [...pins.geometry.attributes.nodeIdx.array].join() === '0,1,1', 'instance matrix = world matrix of the slot, node index per instance');
+  dev.get('e1').lever.visible = false; b.sync();
+  ok(ims.find(im => im.material === handle).count === 2, 'a hidden part is not drawn (instances compacted)');
+  b.setNode(9, 0xff0000, 0.55); b.commit();
+  ok(b.table.data[4] === 1 && Math.abs(b.table.data[7] - 0.55) < 1e-6 && b.table.data[0] === 0, 'node table: colour and glow of node 9 at index 1');
+  ok(geoSig(new THREE.BoxGeometry(1, 2, 3)) === geoSig(new THREE.BoxGeometry(1, 2, 3)) && geoSig(new THREE.BoxGeometry(1, 2, 3)) !== geoSig(new THREE.BoxGeometry(1, 2, 3.1)), 'geometry signature: same content — same, other size — other');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

@@ -1332,7 +1332,8 @@ class View3D {
     else if (act === 'goto') this.goNext();
     else if (act === 'mark') this.addMark('щит');
     else if (act === 'debug') this.toggleDebug();
-    else if (act === 'tutor') { if (this.room && !this.renderer.xr.isPresenting) this.walk.intro(true); else this.showTutor(true); }
+    // на ноутбуке — карточка поверх 3D (закрывается «Понятно» или клавишей), в шлеме — панель перед глазами (закрывается курком)
+    else if (act === 'tutor') { if (!this.renderer.xr.isPresenting) this.walk.intro(true); else this.showTutor(true); }
     app.renderSide();
     this.drawBoard();
   }

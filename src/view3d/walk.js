@@ -17,6 +17,19 @@ const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
 const REACH = { dev: 6, board: 9, floor: 25 };
 // После выхода из захвата Chrome ~1 с отказывает в новом: отказ в эту паузу не считается, мс
 const LOCK_PAUSE = 1600;
+// Карточка «как управлять» на ноутбуке (кнопка «Понятно» — data-intro)
+const INTRO = {
+  room: `<h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
+    <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
+    <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
+    <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+  yard: `<h3 id="v3IntroT">Площадка: как управлять</h3>
+    <ol><li><b>«Обзор»</b> — мышь вращает площадку, правая кнопка — сдвиг, колесо — ближе. Щелчок по аппарату — операция, Shift + щелчок — указатель напряжения.</li>
+    <li><b>«Пешком»</b> — WASD и мышь, Shift — бегом. E или щелчок — операция, V — указатель, P — ПЗ, щелчок по земле — перейти, G — к аппарату следующего шага.</li>
+    <li><b>В шлеме</b> — курок по аппарату — операция, боковая кнопка — указатель, курок по земле — переход, B или Y — к следующему шагу.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+};
 
 class Walk {
   constructor(v) {
@@ -46,29 +59,36 @@ class Walk {
         <span data-w="room"><kbd>Q</kbd> или правая кнопка — положить</span>
         <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span>
         <span><kbd>Shift</kbd> бегом<i data-w="yard"> · <kbd>G</kbd> к аппарату</i></span></div>
-      <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
-      <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
-        <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
-        <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
-        <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
-        <button class="btn primary" type="button" data-intro="ok">Понятно</button></div>`;
+      <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>`;
     host.appendChild(el);
+    // карточка «как управлять» — поверх 3D и в «Обзоре», и пешком (не внутри HUD ходьбы: он в «Обзоре» спрятан);
+    // закрывается «Понятно», Esc, Enter, E или пробелом
+    const intro = document.createElement('div');
+    intro.className = 'v3-intro'; intro.hidden = true;
+    intro.setAttribute('role', 'dialog'); intro.setAttribute('aria-labelledby', 'v3IntroT');
+    host.appendChild(intro);
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
       held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
-      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
+      intro, cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
     // телефон: клавиши Q нет — «Положить» рядом с тем, что в руке
     this.hud.drop.addEventListener('click', () => this.drop());
     // «Перейти · G» в строке следующего шага
     this.hud.next.addEventListener('click', e => { if (e.target.closest('button')) this.v.goNext(); });
-    this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
+    intro.addEventListener('click', e => { if (e.target.closest('[data-intro]')) this.intro(false); });
   }
   bind() {
     const cv = () => this.v.renderer && this.v.renderer.domElement;
     const typing = e => { const t = (e.target && e.target.tagName || '').toLowerCase(); return t === 'input' || t === 'textarea' || t === 'select'; };
     const live = () => this.on && this.v.active && !(this.v.renderer && this.v.renderer.xr.isPresenting) && document.getElementById('modal').hidden;
+    // открытая карточка «как управлять» закрывается клавишей, и клавиша дальше не идёт (E не переключит аппарат за карточкой)
+    document.addEventListener('keydown', e => {
+      if (this.hud.intro.hidden || !this.v.active || typing(e) || !['Escape', 'Enter', 'KeyE', 'Space'].includes(e.code)) return;
+      e.preventDefault(); e.stopPropagation();
+      this.intro(false);
+    }, true);
     document.addEventListener('keydown', e => {
       if (!live() || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       const c = e.code;
@@ -119,11 +139,20 @@ class Walk {
     clearTimeout(this._saidT);
     this._saidT = setTimeout(() => { el.hidden = true; }, 2600);
   }
-  // Карточка «как брать предметы» (полигон); quiet — спрятать, не отмечая «прочитано»
+  // Карточка «как управлять» на ноутбуке: полигон — как брать предметы, площадка — «Обзор», «Пешком», шлем.
+  // Открывается сама при первом входе в полигон и кнопкой «Обучение» на щите; quiet — спрятать, не отмечая «прочитано».
+  // Мышь на время карточки отпускается — иначе «Понятно» не нажать (курсор спрятан захватом)
   intro(on, quiet) {
-    this.hud.intro.hidden = !on;
-    if (!on && !quiet) store.set('ts.polyIntro', '1');
+    const el = this.hud.intro, room = this.v.room ? 'room' : 'yard';
+    if (on) {
+      if (el.dataset.kind !== room) { el.dataset.kind = room; el.innerHTML = INTRO[room]; }
+      this.unlock(); this.keys.clear();
+      if (this.locked) this.lockChanged(false);
+    }
+    el.hidden = !on;
+    if (!on && !quiet && room === 'room') store.set('ts.polyIntro', '1');
     this.showClick();
+    if (on) { const b = el.querySelector('[data-intro]'); if (b) try { b.focus({ preventScroll: true }); } catch (e) { /* без фокуса */ } }
   }
   // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
   showClick() {

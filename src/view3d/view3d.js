@@ -239,6 +239,7 @@ class View3D {
     }
     // мир ходьбы нужен и вне «Пешком»: «Перейти к аппарату» в шлеме ищет место тем же walk.seek
     if (this.walk) this.walk.world = this.world;
+    this.partBoxes();
     this.compactParts();
     // таблица узлов и инстансы одинаковых подвижных частей (batch.js) — до слияния неподвижного
     if (this.batch) this.batch.dispose();
@@ -460,6 +461,19 @@ class View3D {
       out.push(m);
     }
     return out;
+  }
+  // Коробки деталей каждого аппарата площадки — до слияния (потом детали разных аппаратов в одной сетке): по ним щелчок и прицел
+  // выбирают аппарат, чья деталь ближе по лучу, когда невидимые коробки соседей перекрываются (ЗН у трансформатора, ТТ у выключателя)
+  partBoxes() {
+    const T = THREE, b = new T.Box3();
+    this.root.updateMatrixWorld(true);
+    for (const d of this.dev.values()) {
+      if (d.zru) continue;
+      const far = new Set();
+      for (const f of d.far || []) f.traverse(o => far.add(o));
+      d.pick = [];
+      d.group.traverse(o => { if (!o.isMesh || o.userData.proxy || far.has(o)) return; b.setFromObject(o); if (!b.isEmpty()) d.pick.push(b.clone().expandByScalar(0.03)); });
+    }
   }
   // Подвижная часть из нескольких фигур (тележка, ротор, ПЗ) сливается по материалам в своей системе координат
   // d.merge — свои группы для слияния (тележка ячейки полигона: лицевая панель и начинка отдельно)
@@ -1081,10 +1095,26 @@ class View3D {
     const h = hits.find(q => q.object.userData.menu) || hits.find(q => { const u = q.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
     return h && h.object.userData.dev ? this.centered(h, hits) : h;
   }
-  // Коробки соседних аппаратов перекрываются (ЗН у разъединителя, ТТ у выключателя): из аппаратов не дальше 3 м за первым
-  // берём тот, чей центр ближе к лучу (в долях размера коробки) — щелчок по середине аппарата попадает в него, а не в соседа
+  // Коробки соседних аппаратов перекрываются (ЗН у трансформатора, ТТ у выключателя): из аппаратов не дальше 3 м за первым
+  // берём тот, чью деталь луч встречает раньше (коробки деталей — partBoxes); луч мимо деталей — тот, чей центр ближе к лучу
+  // (в долях размера коробки): щелчок по середине аппарата попадает в него, а не в соседа
   centered(first, hits) {
     const T = THREE, ray = this.ray.ray, c = this.tmp.v, p = this.tmp.v2, inv = this._inv || (this._inv = new T.Matrix4());
+    if (this.pickParts !== false) {
+      const seen = new Set();
+      let pb = null, pd = Infinity;
+      // по деталям — и за пустыми коробками впереди (луч прошёл коробку ЗН мимо его деталей — виден трансформатор за ней)
+      for (const h of hits) {
+        if (h.distance > first.distance + 12) break;
+        const id = h.object.userData.dev, d = id && !seen.has(id) ? this.dev.get(id) : null;
+        if (!d) continue;
+        seen.add(id);
+        // шина — тонкая и длинная, проходит над аппаратами: по деталям её не выбираем (кроме ПЗ) — щелчок рядом с ней — по аппарату
+        if (d.kind === 'bus' && this.app.tool !== 'pz') continue;
+        for (const b of d.pick || []) if (ray.intersectBox(b, c)) { const dist = c.distanceTo(ray.origin); if (dist < pd) { pd = dist; pb = h; } }
+      }
+      if (pb) return pb;
+    }
     let best = first, bk = Infinity;
     for (const h of hits) {
       if (h.distance > first.distance + 3) break;

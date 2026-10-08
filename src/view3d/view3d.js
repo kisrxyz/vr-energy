@@ -8,12 +8,14 @@ import { wireMid } from '../view2d/scheme2d.js';
 import { buildRoom } from './room.js';
 import { Items } from './items.js';
 import { placeText } from '../core/permit.js';
+import { whyOf } from '../core/explain.js';
 import { Walk, REACH as WALK_REACH } from './walk.js';
 import { Teleport } from './teleport.js';
 import { findKRU, buildZRU } from './zru.js';
 import { footprints, makeYardWorld } from './world.js';
 import { Batch } from './batch.js';
 import { Probe } from './probe.js';
+import { Coach } from './coach.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
@@ -77,12 +79,15 @@ class View3D {
     this.update(true);
     this.renderer.setAnimationLoop((t, f) => this.loop(t, f));
     this.checkVR();
+    // первый вход в 3D площадки — предложить обучение; идёт обучение — показать текущий шаг
+    if (this.coach.on) this.coach.update(true); else this.coach.offer();
   }
   hide() {
     this.active = false;
     if (this.renderer && !this.renderer.xr.isPresenting) this.renderer.setAnimationLoop(null);
     if (this.walk) this.walk.disable();
     if (this.probe) this.probe.dispose();
+    if (this.coach) this.coach.hide();
     this.closeMenu3D();
     this.tip(null);
   }
@@ -135,6 +140,8 @@ class View3D {
     this.walk = new Walk(this);
     this.tp = new Teleport(this);
     this.makeBeacon();
+    // обучение «за руку» на площадке (coach.js)
+    this.coach = new Coach(this);
     this.setupXR();
     Diag.on(t => { if (t === 'error') { this.drawBoard(); if (this.dbg && this.dbg.m.visible) this.drawDebug(); } });
     this.ro = new ResizeObserver(() => this.resize());
@@ -210,6 +217,9 @@ class View3D {
     this.pzDev = new Map(); this.closeMenu3D();
     if (this.tp) this.tp.cancel();
     if (this.probe) this.probe.dispose();
+    // новая схема: обучение — заново (предложение — на новой площадке), щит — у ворот
+    if (this.coach) { this.coach.stop(false); this.coach.offered = false; }
+    this.taskStart = null; this.boardG = null;
     if (this.items) { this.items.dispose(); this.items = null; }
     const poly = !!(s.room && Array.isArray(s.room.cells) && s.room.cells.length);
     this.setEnv(poly);
@@ -321,19 +331,25 @@ class View3D {
     }
     // КЛ из ячеек — лотком к муфтам, к трансформаторам — шинный мост (выводы уличных элементов уже на месте)
     if (this.zru) { this.root.updateMatrixWorld(true); this.zru.links(); }
-    const board = this.makeBoard();
+    // щит с заданием переезжает к первому аппарату задания (placeBoard): его детали не сливаются с неподвижными
+    const board = this.boardG = this.makeBoard();
+    this.mergeInto(board);
+    board.traverse(o => { o.userData.dyn = true; });
+    this.boardHome = { pos: board.position.clone(), ry: board.rotation.y };
+    this.boardBlocks = footprints(T, board);
     this.makeProxies();
-    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus' && !d.zru).map(d => d.group), [board]);
+    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus' && !d.zru).map(d => d.group));
     // Пешком: граница — ограждение с воротами, препятствия — детали моделей (и щита), до которых не дотянуться над головой.
     // Дальние части (линия от энергосистемы) не мешают; провода и шины на высоте 3,4 м — тоже
-    const blocks = footprints(T, board).concat(this.zru ? this.zru.blocks : []);
+    const blocks = [].concat(this.zru ? this.zru.blocks : []);
     for (const d of this.dev.values()) {
       if (d.zru) continue;
       const far = new Set();
       for (const f of d.far || []) f.traverse(o => far.add(o));
       blocks.push(...footprints(T, d.group, o => far.has(o)));
     }
-    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks, dyn: this.zru && this.zru.dyn });
+    const zdyn = this.zru && this.zru.dyn;
+    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks, dyn: () => (zdyn ? zdyn() : []).concat(this.boardBlocks) });
     this.start = new T.Vector3(this.world.start.x, 0, this.world.start.z);
   }
   buildFence(hx, hz) {
@@ -796,6 +812,7 @@ class View3D {
     else if (this.fpsOn()) this.walk.step(dt);
     this.holdProbe(xr);
     this.probe.step(dt, time);
+    if (this.coach.on && time - (this._coachT || 0) > 150) { this._coachT = time; this.coach.update(); }
     if (this.items) this.items.step(dt, time);
     if (this.menu3d && (performance.now() > this.menu3d.until || this.menuFar())) this.closeMenu3D();
   }
@@ -835,6 +852,66 @@ class View3D {
   }
   // Щелчок, E или луч по аппарату и проводу: где попали — туда коснётся указатель
   noteHit(h) { const u = h && h.object.userData; if (u && (u.dev || u.wire)) this.hitAt = { id: u.dev || u.wire, p: h.point.clone(), t: performance.now() }; }
+
+  // ---------- щит у первого аппарата задания (площадка) ----------
+  // Задание началось: щит — рядом с первым аппаратом задания, начало пешком — перед ним (аппарат под прицелом, щит сбоку);
+  // уже пешком — переход туда, в шлеме — затемнением. Без задания щит у ворот и начало у ворот (как было)
+  onTaskStart() {
+    if (!this.ready || this.room || !this.boardG) return;
+    const q = this.placeBoard();
+    if (!q || !this.active) return;
+    if (this.renderer.xr.isPresenting) {
+      const T = THREE, head = this.camera.getWorldPosition(new T.Vector3());
+      this.tp.go(head, q, (x, z) => {
+        const c = this.camera.getWorldPosition(new T.Vector3()), d = this.camera.getWorldDirection(new T.Vector3()), hy = Math.atan2(-d.x, -d.z);
+        const ang = Math.atan2(Math.sin(q.yaw - hy), Math.cos(q.yaw - hy));
+        this.rig.position.sub(c).applyAxisAngle(this.tmp.up, ang).add(c); this.rig.rotation.y += ang; this.rig.updateMatrixWorld(true);
+        const c2 = this.camera.getWorldPosition(new T.Vector3());
+        this.rig.position.x += x - c2.x; this.rig.position.z += z - c2.z;
+      }, 'fade');
+    } else if (this.fpsOn()) this.walk.goPose(q);
+    else this.walkPose = q;
+  }
+  // Щит — к первому аппарату задания: место, откуда аппарат под прицелом (walk.seek), щит — впереди слева или справа от него.
+  // Возвращает место начала { x, z, yaw, pitch } или null (задания нет — щит у ворот)
+  placeBoard() {
+    const T = THREE, g = this.boardG, run = this.app.tr.run;
+    if (!g) return null;
+    const home = () => { g.position.copy(this.boardHome.pos); g.rotation.y = this.boardHome.ry; this.boardBlocks = footprints(T, g); this.taskStart = null; return null; };
+    if (!run || run.done) return home();
+    const st = run.task.steps.find(x => this.guideTarget(x.id)), t = st && this.guideTarget(st.id), a = t && this.aimTarget(t);
+    if (!a) return home();
+    // щит на время поиска — у ворот (не загораживает); камера и rig — как были (поиск двигает камеру ходьбы)
+    g.position.copy(this.boardHome.pos); g.rotation.y = this.boardHome.ry; this.boardBlocks = footprints(T, g);
+    const cam = this.camera, rig = this.rig, w = this.walk, keep = [cam.position.clone(), cam.quaternion.clone(), rig.position.clone(), rig.rotation.y, w.x, w.z, w.yaw, w.pitch];
+    const xr = this.renderer.xr.isPresenting;
+    if (xr) { rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0); rig.updateMatrixWorld(true); }
+    let q = null;
+    this.wireAim = !!t.wire;
+    try { q = w.seek(a.p, a.want, false, [5.5, 5, 4.5, 4, 3.5]); } finally {
+      this.wireAim = false;
+      [w.x, w.z, w.yaw, w.pitch] = keep.slice(4);
+      cam.position.copy(keep[0]); cam.quaternion.copy(keep[1]); rig.position.copy(keep[2]); rig.rotation.set(0, keep[3], 0); rig.updateMatrixWorld(true);
+      if (this.fpsOn()) w.apply(); else if (!xr) this.applyOrbit();
+    }
+    if (!q) return home();
+    // щит: на 3 м вперёд и на 2,4 м вбок от места, откуда виден аппарат, лицом к нему; начало — лицом к щиту
+    // (задание на щите перед глазами, аппарат — рядом; к нему — G, это первый шаг обучения)
+    const f = [-Math.sin(q.yaw), -Math.cos(q.yaw)], r = [Math.cos(q.yaw), -Math.sin(q.yaw)];
+    this.taskStart = q;
+    const spots = [];
+    for (const fw of [3, 2.4, 3.6, 1.8]) for (const lat of [2.4, 3, 1.8]) for (const side of [-1, 1]) spots.push([fw, lat * side]);
+    for (const [fw, lt] of spots) {
+      const bx = q.x + f[0] * fw + r[0] * lt, bz = q.z + f[1] * fw + r[1] * lt;
+      const ry = Math.atan2(q.x - bx, q.z - bz), ex = Math.cos(ry) * 1.6, ez = -Math.sin(ry) * 1.6;
+      if (![[bx, bz], [bx + ex, bz + ez], [bx - ex, bz - ez]].every(([x, z]) => this.world.walkable(x, z, 0.35))) continue;
+      g.position.set(bx, 0, bz); g.rotation.y = ry;
+      this.boardBlocks = footprints(T, g);
+      this.taskStart = { x: q.x, z: q.z, yaw: Math.atan2(-(bx - q.x), -(bz - q.z)), pitch: Math.atan2(2.25 - 1.62, Math.hypot(bx - q.x, bz - q.z)) };
+      break;
+    }
+    return this.taskStart;
+  }
 
   // ---------- камера и мышь ----------
   applyOrbit() {
@@ -895,7 +972,8 @@ class View3D {
     this.closeMenu3D(); this.tip(null); this.setHover(null);
     // «Обзор» и обратно — на то же место: начало у ворот только у новой площадки
     const w = this.walk;
-    if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
+    // начало: прежнее место, иначе у щита с заданием (задание идёт), иначе у ворот
+    if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else if (this.taskStart) w.pose(this.taskStart); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
     else { this.walkPose = { x: w.x, z: w.z, yaw: w.yaw, pitch: w.pitch }; w.disable(); this.applyOrbit(); }
     this.showRoof(this.yardWalk);
     this.camButtons();
@@ -1303,8 +1381,9 @@ class View3D {
         y += 8; x.font = F(600, 26); x.fillStyle = run.errors.length ? '#ffb4bd' : '#eef4f1';
         x.fillText(`Время ${fmtTime(tr.elapsed())} · операций ${g.myOps} · ошибок ${run.errors.length}`, 32, y); y += 40;
         // площадка с подсказками шагов — следующий шаг (без штрафа, Trainer.peek)
-        const nx = poly ? null : app.guideNext();
-        if (nx) para('Следующий шаг: ' + nx.text, 26, 600, '#ffd23f', 2);
+        const nx = poly ? null : app.guideNext(), cl = poly ? null : this.coach.boardLine();
+        if (cl) para(cl, 26, 600, '#ffd23f', 3);
+        else if (nx) para('Следующий шаг: ' + nx.text, 26, 600, '#ffd23f', 2);
         // полигон: сколько мероприятий сделано, СИЗ и подсказка «следующее мероприятие»
         if (poly && run.task.measures) {
           const st = pm.status();
@@ -1417,7 +1496,12 @@ class View3D {
     else if (act === 'mark') this.addMark('щит');
     else if (act === 'debug') this.toggleDebug();
     // на ноутбуке — карточка поверх 3D (закрывается «Понятно» или клавишей), в шлеме — панель перед глазами (закрывается курком)
-    else if (act === 'tutor') { if (!this.renderer.xr.isPresenting) this.walk.intro(true); else this.showTutor(true); }
+    // на площадке — обучение «за руку» на задании (в шлеме — и панель управления перед глазами); в полигоне — карточка или панель
+    else if (act === 'tutor') {
+      const xr = this.renderer.xr.isPresenting;
+      if (!this.room && this.coach.can()) { if (xr) this.showTutor(true); this.coach.start(); }
+      else if (!xr) this.walk.intro(true); else this.showTutor(true);
+    }
     app.renderSide();
     this.drawBoard();
   }
@@ -1623,9 +1707,10 @@ class View3D {
     if (!this.room && run && !run.done) top = run.task.title;
     x.fillText(this.fit(x, top, c.width - 40), 20, 38);
     let y = 80, lines = 3;
-    if (g) {
+    const cl = this.room ? null : this.coach.boardLine();
+    if (g || cl) {
       x.fillStyle = '#ffd23f'; x.font = '600 24px "Golos Text", system-ui, sans-serif';
-      this.wrap(x, `Следующий: ${g.text} · B/Y — перейти`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 30; lines--; });
+      this.wrap(x, cl || `Следующий: ${g.text} · B/Y — перейти`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 30; lines--; });
       y += 6;
     }
     const last = run && !run.done && run.errors.length ? run.errors[run.errors.length - 1] : null;
@@ -1637,17 +1722,36 @@ class View3D {
     if (err) { x.fillStyle = '#ff6b7d'; x.font = '600 20px "Golos Text", system-ui, sans-serif'; this.wrap(x, `Ошибка: ${err.msg}`, c.width - 40, 2).forEach((l, i) => x.fillText(l, 20, 206 + i * 24)); }
     t.needsUpdate = true;
   }
-  banner(text, level) {
+  // Баннер перед глазами в шлеме; why — «почему опасно» мельче под текстом (ошибка), баннер тогда выше и висит дольше
+  banner(text, level, why) {
     if (!this.ready || !this.renderer.xr.isPresenting || !this.bannerH) return;
-    const { c, t, m } = this.bannerH, x = c.getContext('2d');
+    const { c, m } = this.bannerH, x = c.getContext('2d'), F = (w, sz) => `${w} ${sz}px "Golos Text", system-ui, sans-serif`;
+    x.font = F(600, 32);
+    const main = this.wrap(x, text, c.width - 60, 3);
+    x.font = F(400, 27);
+    const sub = why ? this.wrap(x, 'Почему опасно: ' + why, c.width - 60, 4) : [];
+    const H = Math.max(180, 30 + main.length * 42 + (sub.length ? 14 + sub.length * 34 : 0) + 18);
+    // высота холста меняется — текстуру пересоздаём (в WebGL2 её размер неизменяем)
+    if (c.height !== H) { c.height = H; this.bannerH.t.dispose(); this.bannerH.t = new THREE.CanvasTexture(c); this.bannerH.t.colorSpace = THREE.SRGBColorSpace; m.material.map = this.bannerH.t; m.scale.y = H / 180; m.position.y = -0.24 - (H - 180) / 180 * 0.176 / 2; }
     x.clearRect(0, 0, c.width, c.height);
     x.fillStyle = level === 'err' ? 'rgba(200,20,45,0.92)' : level === 'warn' ? 'rgba(165,92,0,0.92)' : 'rgba(18,30,26,0.9)';
     rr(x, 0, 0, c.width, c.height, 24); x.fill();
-    x.fillStyle = '#ffffff'; x.font = '600 32px "Golos Text", system-ui, sans-serif';
-    this.wrap(x, text, c.width - 60, 3).forEach((l, i) => x.fillText(l, 30, 54 + i * 42));
-    t.needsUpdate = true;
+    x.fillStyle = '#ffffff'; x.font = F(600, 32);
+    main.forEach((l, i) => x.fillText(l, 30, 54 + i * 42));
+    x.font = F(400, 27); x.fillStyle = '#ffe9ec';
+    sub.forEach((l, i) => x.fillText(l, 30, 54 + main.length * 42 + 10 + i * 34));
+    this.bannerH.t.needsUpdate = true;
     m.visible = true;
-    this.bannerUntil = performance.now() + (level === 'err' ? 5500 : 3500);
+    this.bannerUntil = performance.now() + (why ? 9000 : level === 'err' ? 5500 : 3500);
+  }
+  // Ошибка задания на площадке и в полигоне: что случилось и почему опасно — у прицела (пешком), в баннере (шлем);
+  // в «Обзоре» объяснение — в тосте (app.toast). e — { kind, text, why? }
+  errFx(e) {
+    if (!this.ready || !this.active) return;
+    // в шлеме — баннер (его показывает приложение вместе с тостом)
+    if (this.renderer.xr.isPresenting || !this.fpsOn()) return;
+    const why = whyOf(e);
+    this.walk.said(e.text, true, why ? 9000 : 5000, why ? 'Почему опасно: ' + why : '');
   }
   xrHits(info) {
     const c = info.c;
@@ -1989,6 +2093,8 @@ class View3D {
     this.showRoof(true);
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
+    // площадка с заданием — у щита рядом с первым аппаратом, лицом к нему
+    if (!this.room && this.taskStart) { this.rig.position.set(this.taskStart.x, 0, this.taskStart.z); this.rig.rotation.y = this.taskStart.yaw; }
     // ходьба на ноутбуке отключается до выхода из шлема; камера — снова в начале координат
     if (this.walking()) { this.walk.disable(); this.camera.position.set(0, 0, 0); this.camera.rotation.set(0, 0, 0); }
     if (this.room) {
@@ -1997,6 +2103,7 @@ class View3D {
       if (this.items) this.items.xrStart();
     }
     this.tip(null); this.setHover(null);
+    this.coach.hide();
     document.getElementById('btnVR').textContent = 'Выйти из VR';
     const s = this.renderer.xr.getSession();
     const feats = s && s.enabledFeatures ? [...s.enabledFeatures].join(', ') : '';
@@ -2021,6 +2128,7 @@ class View3D {
     this.bannerH.m.visible = false;
     document.getElementById('btnVR').textContent = 'Войти в VR';
     if (this.items) this.items.xrEnd();
+    if (this.coach.on) this.coach.update(true);
     // снова пешком на ноутбуке (полигон или площадка «Пешком») или обзор
     if (this.walking()) { if (this.active) this.walk.enable(this.world); this.walk.apply(); }
     else this.applyOrbit();

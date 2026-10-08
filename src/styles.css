@@ -275,6 +275,7 @@ details.more p.ask { color: var(--warn); }
 .v3-aim small { display: inline-block; margin-left: 8px; padding: 1px 6px; border: 1px solid var(--hud-line); border-radius: 4px; font: 600 11px/1.4 var(--f-mono); color: var(--hud-hot); }
 .v3-said { position: absolute; left: 50%; top: calc(50% + 62px); transform: translateX(-50%); max-width: min(560px, calc(100% - 32px)); text-align: center; padding: 6px 12px; border-radius: 8px; background: var(--hud-bg); border: 1px solid var(--hud-line); font-weight: 600; line-height: 1.35; }
 .v3-said.live { background: var(--hud-live); }
+.v3-said small { display: block; margin-top: 4px; font-weight: 400; font-size: 12.5px; line-height: 1.4; opacity: .92; }
 .v3-tool { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 6px 12px; border-radius: 8px; background: var(--hud-bg); border: 1px solid var(--hud-hot); color: var(--hud-hot); font-weight: 600; white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; }
 .v3-next { position: absolute; left: 12px; top: 12px; max-width: min(460px, calc(100% - 330px)); padding: 7px 10px; border-radius: 8px; background: var(--hud-bg); border-left: 3px solid var(--hud-hot); line-height: 1.35; }
 .v3-hand { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); }
@@ -303,7 +304,16 @@ details.more p.ask { color: var(--warn); }
 .v3-intro ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13.5px; line-height: 1.45; }
 .v3-intro .btn { justify-self: start; }
 .view3d[data-fps="1"] .v3-note { display: none; }
+/* обучение «за руку» на площадке (coach.js): карточка вместо строки следующего шага, нужная клавиша подсвечена и в «Управлении» */
+.v3-coach { position: absolute; left: 12px; top: 12px; z-index: 4; width: min(520px, calc(100% - 330px)); pointer-events: auto; display: grid; gap: 6px; padding: 10px 14px; border-radius: 10px; background: var(--hud-bg); color: var(--hud-ink); border: 2px solid var(--hud-hot); box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font-size: 14px; line-height: 1.45; }
+.v3-coach .t { color: var(--hud-hot); font: 600 12.5px/1.3 var(--f-ui); }
+.v3-coach p { margin: 0; }
+.v3-coach .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.v3-coach .btn:not(.primary) { color: var(--ink); background: var(--panel); }
+.v3-coach kbd, .v3-keys kbd.hot { display: inline-block; min-width: 18px; text-align: center; font: 600 11px/1.5 var(--f-mono); color: var(--hud-hot); border: 1px solid var(--hud-hot); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; margin: 0 1px; }
+.view3d[data-coach="1"] .v3-next, .view3d[data-coach="1"] .v3-note { display: none; }
 @media (max-width: 760px) { .v3-keys { display: none; } .v3-next { max-width: calc(100% - 24px); top: 56px; }
+  .v3-coach { width: calc(100% - 24px); top: 56px; font-size: 13px; }
   /* телефон: строка «в руке» переносится, итог проверки — над прицелом (внизу — тосты) */
   .v3-hand span { white-space: normal; text-align: center; } .v3-said { top: auto; bottom: calc(50% + 20px); } }
 
@@ -343,6 +353,7 @@ details.more p.ask { color: var(--warn); }
 .toast.warn { border-color: var(--warn); }
 .toast.err { border-color: var(--fault); background: color-mix(in srgb, var(--fault) 14%, var(--panel)); font-weight: 600; }
 .toast.ok { border-color: var(--ok); }
+.toast .why { display: block; margin-top: 4px; font-weight: 400; font-size: 12px; line-height: 1.4; color: var(--muted); }
 @keyframes tin { from { opacity: 0; transform: translateY(-6px); } }
 .flash { position: absolute; inset: 0; pointer-events: none; z-index: 4; opacity: 0; background: radial-gradient(circle at 50% 50%, rgba(255, 240, 220, .85), rgba(224, 23, 74, .35) 45%, transparent 75%); }
 .flash.on { animation: flash .9s ease-out; }

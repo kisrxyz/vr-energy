@@ -3,6 +3,7 @@ import { GLOSSARY } from './core/glossary.js';
 import { SAMPLES } from './core/samples.js';
 import { buildTopo, makeSim, compute, Trainer } from './core/engine.js';
 import { Permit } from './core/permit.js';
+import { whyOf } from './core/explain.js';
 import * as Ed from './core/edit.js';
 import { elSubtitle, nearestOnWire, Scheme2D } from './view2d/scheme2d.js';
 import { Panels, countText } from './ui/panels.js';
@@ -275,6 +276,8 @@ const app = Object.assign({
     this.tr.startTask(task);
     this.renderSide();
   },
+  // «Почему опасно» в тосте — в 3D, кроме «Пешком» (там оно у прицела, view3d.errFx)
+  whyToast(e) { return this.mode === '3d' && !(this.v3 && this.v3.ready && this.v3.fpsOn()) ? whyOf(e) : null; },
   onTrainer(type, d) {
     if (type === 'state') {
       this.closeActMenu();
@@ -288,16 +291,21 @@ const app = Object.assign({
       this.updateAlarmsBtn();
       return;
     }
-    if (type === 'log') { this.renderLog(); return; }
+    if (type === 'log') {
+      this.renderLog();
+      // перерыв питания приходит записью журнала (не событием операции): объяснение — у прицела
+      if (d && d.level === 'err' && /^Перерыв питания/.test(d.text) && this.mode === '3d' && this.v3 && this.v3.ready) this.v3.errFx({ kind: 'supply', text: d.text });
+      return;
+    }
     if (type === 'op') {
       if (d.blocked) { this.toast(d.text, 'warn'); Sound.play('blocked'); if (this.v3) this.v3.banner(d.text, 'warn'); }
       else if (d.info) this.toast(d.text);
       else if (d.viol && (d.viol.kind === 'accident' || d.viol.kind === 'kz')) {
-        this.toast(d.viol.text, 'err'); this.flash(); Sound.play('arc');
+        this.toast(d.viol.text, 'err', this.whyToast(d.viol)); this.flash(); Sound.play('arc');
         this.view.burst(d.id, 'var(--fault)');
         if (d.tripped && d.tripped.length) setTimeout(() => this.toast('Сработала защита: ' + d.tripped.map(t => this.tr.tripText(t)).join('; ') + '.', 'warn'), 700);
-        if (this.v3) this.v3.banner(d.viol.text, 'err');
-      } else if (d.viol) { this.toast(d.viol.text, 'warn'); Sound.play('disc'); if (this.v3) this.v3.banner(d.viol.text, 'warn'); }
+        if (this.v3) { this.v3.banner(d.viol.text, 'err', whyOf(d.viol)); this.v3.errFx(d.viol); }
+      } else if (d.viol) { this.toast(d.viol.text, 'warn', this.whyToast(d.viol)); Sound.play('disc'); if (this.v3) { this.v3.banner(d.viol.text, 'warn', whyOf(d.viol)); this.v3.errFx(d.viol); } }
       else if (d.ok) { const el = this.tr.elOf(d.id); Sound.play(el && TYPES[el.t].sw === 'breaker' && !d.pos ? 'breaker' : 'disc'); }
       this.renderTaskStats(); this.renderRec();
       return;
@@ -314,6 +322,8 @@ const app = Object.assign({
     }
     if (type === 'task') {
       this.renderTask(); this.renderRec();
+      // площадка в 3D: щит с заданием — к первому аппарату, начало пешком — у щита
+      if (d.start && this.v3 && this.v3.ready && this.mode === '3d') this.v3.onTaskStart();
       if (d.done && d.run) {
         Sound.play(d.run.grade.tone === 'good' ? 'ok' : 'fail');
         // в экзамене отчёта с эталоном нет: результат — в протокол
@@ -327,7 +337,7 @@ const app = Object.assign({
     if (type === 'rec') { this.renderRec(); this.renderTask(); if (d.saved) { this.markMine(); this.autosave(); } return; }
     // VR-полигон: предметы, плакаты, мероприятия; warn — нарушение (без СИЗ, не по порядку, не на месте)
     if (type === 'field') {
-      if (d.warn) { this.toast(d.warn, 'warn'); Sound.play('blocked'); if (this.v3) this.v3.banner(d.warn, 'warn'); }
+      if (d.warn) { this.toast(d.warn, 'warn', this.whyToast({ text: d.warn, why: d.why })); Sound.play('blocked'); if (this.v3) { this.v3.banner(d.warn, 'warn', d.why); this.v3.errFx({ text: d.warn, why: d.why }); } }
       // самопроверка указателя: огонёк и звук, как при напряжении
       if (d.test) { this.toast('Указатель исправен: огонёк горит, звук есть.', 'ok'); Sound.play('checklive'); }
       this.renderMeasures(); this.renderTaskStats();

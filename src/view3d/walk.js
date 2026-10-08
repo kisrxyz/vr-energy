@@ -140,12 +140,13 @@ class Walk {
     if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
     this.cur = null;
   }
-  // Итог действия у прицела на 2,6 с (проверка указателем): туда, куда человек смотрит; live — красным
-  said(text, live) {
+  // Итог действия у прицела (проверка указателем — 2,6 с, ошибка — дольше): туда, куда человек смотрит; live — красным;
+  // sub — вторая строка мельче (почему опасно)
+  said(text, live, ms = 2600, sub = '') {
     const el = this.hud.said;
-    el.textContent = text; el.classList.toggle('live', !!live); el.hidden = false;
+    el.innerHTML = esc(text) + (sub ? `<small>${esc(sub)}</small>` : ''); el.classList.toggle('live', !!live); el.hidden = false;
     clearTimeout(this._saidT);
-    this._saidT = setTimeout(() => { el.hidden = true; }, 2600);
+    this._saidT = setTimeout(() => { el.hidden = true; }, ms);
   }
   // Карточка «как управлять» на ноутбуке: полигон — как брать предметы, площадка — «Обзор», «Пешком», шлем.
   // Открывается сама при первом входе в полигон и кнопкой «Обучение» на щите; quiet — спрятать, не отмечая «прочитано».
@@ -203,7 +204,9 @@ class Walk {
     this.noLock = true; this.showClick();
     this.v.app.toast('Мышь не захватывается: смотрите, перетаскивая мышью, действие — щелчок по месту.');
   }
+  // Встать сразу (начало, «Обзор» и обратно): идущий переход отменяется — иначе он доведёт на старое место
   reset(start) {
+    if (this.v.tp && this.v.tp.busy) this.v.tp.cancel();
     this.x = start.x; this.z = start.z; this.yaw = start.yaw; this.pitch = -0.12; this.vx = 0; this.vz = 0;
     this.apply();
   }
@@ -239,7 +242,7 @@ class Walk {
     return pose;
   }
   // Встать и посмотреть (прямо, без анимации)
-  pose(q) { this.x = q.x; this.z = q.z; this.yaw = q.yaw; this.pitch = q.pitch; this.vx = 0; this.vz = 0; this.apply(); this.updateAim(); }
+  pose(q) { if (this.v.tp && this.v.tp.busy) this.v.tp.cancel(); this.x = q.x; this.z = q.z; this.yaw = q.yaw; this.pitch = q.pitch; this.vx = 0; this.vz = 0; this.apply(); this.updateAim(); }
 
   // ---------- мышь по холсту (view3d передаёт сюда, пока полигон открыт от первого лица) ----------
   pointer(e) {

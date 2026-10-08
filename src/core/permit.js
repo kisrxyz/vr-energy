@@ -322,7 +322,7 @@ class Permit {
       const t = `Операция под плакатом «Не включать! Работают люди»: ${what} (яч.${c.n}).`;
       tr.addLog('err', t, el.id);
       tr.note('safety', t, el.id, { why: WHY.nevklOp });
-      this.warn(t);
+      this.warn(t, WHY.nevklOp);
     }
   }
   afterCheck(d) {
@@ -361,9 +361,10 @@ class Permit {
       if (t - this.ppeWarnAt < QUIET) return;
       this.ppeWarnAt = t;
     }
-    this.warn(text);
+    this.warn(text, why);
   }
-  warn(text) { this.tr.emit('field', { warn: text }); }
+  // why — почему опасно: 3D показывает его у прицела и в баннере шлема, тост — второй строкой
+  warn(text, why) { this.tr.emit('field', { warn: text, why: why || null }); }
   changed(full = true) {
     if (full) this.evaluate();
     this.tr.emit('field', {});
@@ -402,7 +403,7 @@ class Permit {
     const tr = this.tr, fresh = [];
     ms.forEach((m, i) => { if (!this.doneAt.has(i) && this.performed(m)) fresh.push(i); });
     fresh.sort((a, b) => ms[a].stage - ms[b].stage);
-    let warn = null;
+    let warn = null, why = null;
     for (const i of fresh) {
       this.doneAt.set(i, Math.round(tr.elapsed()));
       const m = ms[i], missing = [];
@@ -414,7 +415,7 @@ class Permit {
         this.flagged.add(chk);
         const t = `${this.earthText(m)} без проверки отсутствия напряжения указателем.`;
         tr.addLog('err', t, m.id); tr.note('safety', t, m.id, { why: WHY.check });
-        warn = warn || t;
+        if (!warn) { warn = t; why = WHY.check; }
         missing.splice(missing.indexOf(chk), 1);
       }
       if (!missing.length || this.flagged.has(i)) continue;
@@ -423,11 +424,12 @@ class Permit {
       const names = missing.length === 1 ? nm(missing[0]) : missing.length === 2 ? `${nm(missing[0])} и ${nm(missing[1])}` : `${nm(missing[0])}, ${nm(missing[1])} и ещё ${missing.length - 2}`;
       const t = `Нарушен порядок: ${lowFirst(this.title(m))} — раньше, чем ${names}.`;
       const own = (AFTER[this.key(m)] || []).some(k => missing.some(j => this.key(ms[j]) === k));
+      const w = (own && EARLY[this.key(m)]) || WHY[this.key(ms[missing[0]])];
       tr.addLog('warn', t, m.id);
-      tr.note('safety', t, m.id, { why: (own && EARLY[this.key(m)]) || WHY[this.key(ms[missing[0]])] });
-      warn = warn || t;
+      tr.note('safety', t, m.id, { why: w });
+      if (!warn) { warn = t; why = w; }
     }
-    if (warn) this.warn(warn);
+    if (warn) this.warn(warn, why);
   }
   earthText(m) {
     if (m.id && this.tr.isOn(m.id)) return `${this.tr.nm(m.id)} включён`;
@@ -451,7 +453,7 @@ class Permit {
     const text = bad.text(m.n);
     this.tr.addLog('err', text);
     this.tr.note('safety', text, null, { why: bad.why });
-    this.warn(text);
+    this.warn(text, bad.why);
   }
   title(m) {
     if (m.title) return m.title;

@@ -653,6 +653,77 @@ SUITES.guide = { perScheme: true, fn: async keys => {
   });
 } };
 
+// Обучение «за руку» (src/view3d/coach.js): первый вход в 3D площадки — предложение; «Начать» — задание, «Пешком» у щита рядом
+// с первым аппаратом, карточки ведут по шагам (G, V, E) до «Обучение пройдено», 100 баллов; «Пропустить» — больше не предлагается.
+// Остальные проверки идут с отметкой «обучение пройдено» (ставится при запуске), здесь её снимают
+const coachCard = `(() => { const c = document.querySelector('.v3-coach'); return c && !c.hidden ? c.querySelector('.t').textContent : ''; })()`;
+SUITES.coach = { perScheme: false, fn: async () => {
+  const fresh = async key => {
+    await page.eval("localStorage.removeItem('ts.coach')");
+    await page.goto(page.base); await page.eval(HELPER);
+    await chooseScheme(key); await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+  };
+  await check('coach', 'ps110: от предложения до «Обучение пройдено»', async () => {
+    try {
+      await fresh('ps110');
+      const b = await page.fn(() => E2E.box('.v3-coach [data-coach="start"]'));
+      if (!b) fail('нет предложения обучения при первом входе в 3D');
+      await clickAt(b, '«Начать»');
+      await page.waitFor('TS.app.v3.yardWalk && !!TS.app.tr.run', 3000, 'задание и «Пешком»');
+      await page.eval('TS.app.v3.walk.lockChanged(true)');
+      await settle();
+      const st0 = await page.eval(`(() => { const v = TS.app.v3, w = v.walk, b = v.boardG.position, h = v.boardHome.pos; return { far: Math.hypot(b.x - h.x, b.z - h.z), d: Math.hypot(w.x - b.x, w.z - b.z) }; })()`);
+      if (st0.far < 3 || st0.d > 6) fail('щит не у первого аппарата или начало не у щита: ' + JSON.stringify(st0));
+      const seen = [await page.eval(coachCard)];
+      if (!/шаг 1 из 5/.test(seen[0])) fail('первая карточка: ' + seen[0]);
+      for (let i = 0; i < 30; i++) {
+        if (await page.eval('!TS.app.tr.run || TS.app.tr.run.done')) break;
+        const st = await page.eval(guideState);
+        await page.key('KeyG'); await sleep(30);
+        await page.waitFor('!TS.app.v3.tp.busy', 3000, 'переход по G');
+        await page.eval(frames2);
+        const tool = st.op === 'check' ? 'check' : String(st.id).startsWith('pz:') ? 'pz' : null;
+        if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await page.eval(frames2); }
+        await sleep(200);
+        seen.push(await page.eval(coachCard));
+        await page.key('KeyE'); await sleep(80);
+        if (await page.eval('!!TS.app.v3.menu3d')) {
+          const item = await page.eval(`(() => { const st = TS.app.tr.peek().step; return st.op === 'pos' ? TS.Plan.menuPos(st.pos) : TS.Plan.menuOn(st.op === 'on'); })()`);
+          await aimE({ menu: item }, 'пункт «' + item + '»');
+        }
+        if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await sleep(40); }
+        await sleep(250);
+        seen.push(await page.eval(coachCard));
+      }
+      const r = await waitReport();
+      if (r.score !== 100) fail(`отчёт: ${r.score}, «${r.verdict}»`);
+      await closeModal();
+      const last = await page.eval(coachCard);
+      for (const k of ['шаг 3 из 5', 'шаг 4 из 5', 'шаг 5 из 5']) if (!seen.some(t => t.includes(k))) fail(`не было карточки «${k}»: ${[...new Set(seen)].join(' → ')}`);
+      if (last !== 'Обучение пройдено') fail('в конце карточка: ' + last);
+      return [...new Set(seen.filter(Boolean))].map(t => t.replace('Обучение · ', '')).join(' → ') + ' → пройдено, 100 баллов';
+    } finally {
+      await page.eval("localStorage.setItem('ts.coach', '1')");
+    }
+  });
+  await check('coach', 'tp10: «Пропустить»', async () => {
+    try {
+      await fresh('tp10');
+      const b = await page.fn(() => E2E.box('.v3-coach [data-coach="skip"]'));
+      if (!b) fail('нет предложения обучения');
+      await clickAt(b, '«Пропустить»');
+      const r = await page.eval(`({ card: ${coachCard}, seen: localStorage.getItem('ts.coach'), run: !!TS.app.tr.run })`);
+      if (r.card || r.seen !== '1' || r.run) fail('после «Пропустить»: ' + JSON.stringify(r));
+      await setMode('train'); await setMode('3d');
+      if (await page.eval(coachCard)) fail('предложение снова появилось');
+      return 'карточка закрыта, задание не началось, больше не предлагается';
+    } finally {
+      await page.eval("localStorage.setItem('ts.coach', '1')");
+    }
+  });
+} };
+
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
 // блокировки и не трогает «Мои схемы»; телефон 390×844 — панель снизу и не закрывает схему
 const demoReady = 'TS.app.demo.on && !TS.app.demo.busy && TS.app.demo.check().length === 0';
@@ -1000,6 +1071,8 @@ async function main() {
     page.base = url;
     await page.goto(url);
     await page.eval(HELPER);
+    // обучение «за руку» на площадках не предлагается (его проверяет coach): предложение — карточка поверх 3D
+    await page.eval("localStorage.setItem('ts.coach', '1')");
     const keys = await page.eval('TS.SAMPLES.map(s => s.key)');
     const su = onlySuites(), ok = onlyKeys();
     for (const [name, s] of Object.entries(SUITES)) {

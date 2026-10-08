@@ -1,6 +1,7 @@
 import { APP_VER, CATS, TYPES, PALETTE, POS, POS_NAME, esc, vClass, V_CLASSES, isSwitchable, windings, searchTypes } from '../core/elements.js';
 import { fmtTime, capFirst } from '../core/engine.js';
 import { GLOSSARY } from '../core/glossary.js';
+import { whyOf } from '../core/explain.js';
 import { symbolIcon } from '../view2d/scheme2d.js';
 import { store } from './store.js';
 import { Diag } from './diag.js';
@@ -13,14 +14,16 @@ const errText = (kind, text) => { const t = String(text); return t.startsWith(ki
 const countText = (ne, nw) => `${ne} ${plural(ne, ['элемент', 'элемента', 'элементов'])}, ${nw} ${plural(nw, ['провод', 'провода', 'проводов'])}`;
 const Panels = {
   // ---------- уведомления ----------
-  toast(text, level = 'info') {
+  // why — «почему опасно» второй строкой (ошибки в 3D); тост тогда висит дольше
+  toast(text, level = 'info', why = null) {
     const box = document.getElementById('toasts');
     const t = document.createElement('div');
     t.className = 'toast ' + level;
     t.textContent = text;
+    if (why) { const w = document.createElement('small'); w.className = 'why'; w.textContent = 'Почему опасно: ' + why; t.appendChild(w); }
     box.prepend(t);
     while (box.children.length > 3) box.lastChild.remove();
-    setTimeout(() => t.remove(), level === 'err' ? 6000 : level === 'warn' ? 4500 : 3000);
+    setTimeout(() => t.remove(), why ? 9000 : level === 'err' ? 6000 : level === 'warn' ? 4500 : 3000);
   },
   flash() {
     const f = document.getElementById('flash');
@@ -433,7 +436,7 @@ const Panels = {
     const tr = this.tr, g = run.grade, ms = run.measures || null;
     const kindName = { accident: 'Авария', kz: 'КЗ', blocked: 'Блокировка', supply: 'Перерыв питания', proc: 'Порядок', safety: 'Охрана труда' };
     // ошибки полигона объясняют, почему это опасно (тексты — src/core/explain.js, проверяет преподаватель)
-    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${esc(errText(kindName[e.kind] || e.kind, e.text))}${e.why ? `<span class="why">Почему опасно: ${esc(e.why)}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
+    const errs = run.errors.length ? '<ul class="issues">' + run.errors.map(e => `<li class="bad"><span class="mono">${fmtTime(e.t)}</span> · ${esc(errText(kindName[e.kind] || e.kind, e.text))}${whyOf(e) ? `<span class="why">Почему опасно: ${esc(whyOf(e))}</span>` : ''}</li>`).join('') + '</ul>' : '<p>Ошибок нет.</p>';
     const mine = run.ops.length ? '<ol>' + run.ops.map(o => `<li><span class="mono">${fmtTime(o.t)}</span> ${esc(capFirst(tr.stepText(o)))}</li>`).join('') + '</ol>' : '<p>Действий не было.</p>';
     const ref = '<ol>' + run.task.steps.map(s => `<li>${esc(capFirst(tr.stepText(s)))}</li>`).join('') + '</ol>';
     const mark = m => (m.sat && !m.flagged ? '✓' : m.sat ? '!' : '—');
@@ -451,7 +454,7 @@ const Panels = {
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
       `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, ...(run.guide && !ms ? ['Подсказки шагов были включены'] : []), '', 'Ошибки:',
-      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
+      ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${whyOf(e) ? `\n    Почему опасно: ${whyOf(e)}` : ''}`) : ['- нет']),
       ...(rm.length ? ['', 'Замечания (баллы не снижают):', ...rm.map(r => `- ${fmtTime(r.t)} ${r.text.replace(/^Замечание: /, '')}`)] : []),
       ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
       '', 'Действия:',

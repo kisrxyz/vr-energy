@@ -164,6 +164,22 @@ class Permit {
     return out;
   }
 
+  // Подсказка в 3D (только с «Подсказками мероприятий»): куда предмет id по ближайшему этапу — места, где его можно поставить сейчас.
+  // [] — подсказок нет, свободный режим, или предмет не для ближайших мероприятий. Ничего не меняет и не считается подсказкой
+  nextMounts(id) {
+    const ms = this.measures(), it = ITEM[id];
+    if (!ms || !it || !this.guide) return [];
+    const open = ms.filter(m => !this.sat(m));
+    if (!open.length) return [];
+    const stage = Math.min(...open.map(m => m.stage));
+    const fits = m => m.k === 'sign' ? it.kind === 'poster' && it.poster === m.poster : m.k === 'lock' ? it.kind === 'lock' : m.k === 'fence' ? it.kind === 'fence'
+      : m.k === 'check' ? it.kind === 'uvn' : m.k === 'earth' ? it.kind === 'pz' && !!m.wire : false;
+    const m = open.find(q => q.stage === stage && fits(q));
+    if (!m) return [];
+    const at = m.k === 'check' || m.k === 'earth' ? [this.contactMount(m.wire)] : m.at || [];
+    return at.filter(a => a && this.mountState(a).ok);
+  }
+
   // ---------- действия с предметами (их вызывает 3D) ----------
   wear(id) {
     const it = ITEM[id];

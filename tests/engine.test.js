@@ -808,6 +808,29 @@ function polyRef(tr, pm, id, skip = []) {
   ok(k.tr.run.errors.filter(e => e.text.startsWith('Замок')).length === 1, 'one «lock not here» error');
 }
 {
+  console.log('Polygon: where to put the item in hand — places now, next measure with hints');
+  const { tr, pm, id, task } = poly();
+  ok(pm.nextMounts('nevkl1').length === 0, 'free mode: no next measure');
+  ok(pm.mountsFor('fence').join() === 'zone:1,zone:2,zone:3,zone:4,zone:5,zone:6', 'fence fits the floor in front of any cell: ' + pm.mountsFor('fence'));
+  tr.startTask(task);
+  ok(pm.nextMounts('nevkl1').length === 0, 'stage 0 (PPE): the poster is not for now');
+  polyRef(tr, pm, id, ['nevkl', 'lock', 'check', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  ok(pm.nextMounts('nevkl1').join() === 'drive:3,door:3', '«Не включать» — drive or door of cell 3: ' + pm.nextMounts('nevkl1'));
+  ok(pm.nextMounts('lock').join() === 'drive:3' && !pm.nextMounts('fence').length && !pm.nextMounts('stop1').length, 'lock — drive 3; fence and «Стой» — not yet');
+  ok(!pm.nextMounts('uvn').length, 'indicator — after the poster and the lock');
+  pm.place('nevkl1', 'drive:3'); pm.place('lock', 'drive:3');
+  ok(pm.nextMounts('uvn').join() === 'contact:3:lo', 'indicator — lower contacts of cell 3');
+  pm.touch('contact:3:lo'); tr.operate(id('ЗН яч.3'));
+  ok(pm.nextMounts('fence').join() === 'zone:3' && pm.nextMounts('work1').join() === 'cart:3', 'stage 5: fence at cell 3, «Работать здесь» on the trolley');
+  ok(pm.nextMounts('stop1').join() === 'shutter:3,door:2,door:4', '«Стой» — places available now (no fence yet): ' + pm.nextMounts('stop1'));
+  pm.place('fence', 'zone:3');
+  ok(pm.nextMounts('stop1')[0] === 'fence', 'fence placed — «Стой» on it too');
+  const before = tr.run.errors.length, hints = tr.run.hints;
+  pm.guide = false;
+  ok(!pm.nextMounts('fence').length && !pm.nextMounts('stop1').length, 'hints off (exam) — nothing');
+  ok(tr.run.errors.length === before && tr.run.hints === hints, 'asking costs nothing');
+}
+{
   console.log('Polygon: JSON keeps room, measures and steps; other schemes unaffected');
   const { s } = poly();
   const s2 = E.normalizeScheme(JSON.parse(JSON.stringify(s)));

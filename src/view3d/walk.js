@@ -94,7 +94,7 @@ class Walk {
   }
   disable() {
     this.on = false; this.keys.clear();
-    if (this.v.items) this.v.items.hover(null);
+    if (this.v.items) { this.v.items.hover(null); this.v.items.preview(null); }
     this.hud.root.hidden = true;
     delete this.v.host.dataset.fps;
     this.unlock();
@@ -275,14 +275,19 @@ class Walk {
     // подпись — та же, что у подсказки мыши в обзоре (view3d.targetText); пустая — прицел на заголовке меню
     const lab = !this.aim ? '' : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
     const key = !this.aim ? '' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
-    set('aim', h.aim, hot ? `${esc(lab)}<small>${key}</small>` : yard && this.floor ? 'Перейти сюда<small>щелчок или E</small>' : '');
+    // у места подпись уже начинается с клавиши: «E — поставить ограждение у яч.2»
+    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(lab) : `${esc(lab)}<small>${key}</small>`) : yard && this.floor ? 'Перейти сюда<small>щелчок или E</small>' : '');
     h.cross.classList.toggle('hot', hot);
     // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
     const cur = this.noLock && hot ? 'pointer' : 'default';
     if (this.cur !== cur) { this.cur = cur; v.renderer.domElement.style.cursor = cur; }
     // площадка: кольцо под аппаратом, как при наведении мышью; СИЗ, руки и мероприятия — только в полигоне
     if (yard) { v.setHover(this.aim && this.aim.type === 'dev' ? this.aim.id : null); return; }
-    if (it) it.hover(this.aim && this.aim.type === 'item' ? this.aim.id : null);
+    if (it) {
+      it.hover(this.aim && this.aim.type === 'item' ? this.aim.id : null);
+      // призрак предмета — у места под прицелом
+      it.preview(it.heldIn('desk'), this.aim && this.aim.type === 'mount' ? this.aim.id : null);
+    }
     const st = pm.status();
     set('ppe', h.ppe, `СИЗ: перчатки ${st.ppe.gloves ? 'надеты' : 'не надеты'}, каска ${st.ppe.helmet ? 'надета' : 'не надета'}`);
     const held = it && it.heldIn('desk');

@@ -278,6 +278,8 @@ const app = Object.assign({
       if (this.v3 && this.v3.ready) this.v3.update();
       // «Нормальный режим», новое задание, «Ещё раз»: предметы полигона — с рук и с пола на стенд
       if (d.reset && this.v3 && this.v3.ready) this.v3.onField({ reset: true });
+      // мероприятия полигона: «отключить» и «выкатить» выполняют аппаратом — список в панели обновляется и после операции
+      if (this.permit.active && this.tr.run && !this.tr.run.done) this.renderMeasures();
       this.updateAlarmsBtn();
       return;
     }

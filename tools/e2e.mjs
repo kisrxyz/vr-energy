@@ -287,6 +287,73 @@ SUITES.items = { perScheme: false, fn: async () => {
     await page.eval('TS.app.tr.resetToNormal()');
     return `${out.join(', ')} переставлены; плакат с упавшего ограждения поднят с пола`;
   });
+  // Предпросмотр: призрак под прицелом — там же, где предмет встанет (±2 см); подсвечены ровно места из mountsFor;
+  // с подсказками — кольцо у места ближайшего мероприятия; в экзамене кольца и «место работ» нет
+  const frames = 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))';
+  const ghostAt = `(() => { const g = TS.app.v3.items.ghostShown; if (!g || !g.visible) return null; const p = g.getWorldPosition(new TS.app.v3.kit.T.Vector3()); return [p.x, p.y, p.z]; })()`;
+  const objAt = id => `(() => { const p = TS.app.v3.items.list.get('${id}').obj.getWorldPosition(new TS.app.v3.kit.T.Vector3()); return [p.x, p.y, p.z]; })()`;
+  const near = (a, b) => !!a && !!b && a.every((x, i) => Math.abs(x - b[i]) <= 0.02);
+  await check('items', 'призрак и подсветка мест', async () => {
+    await openScheme('poly');
+    await page.eval('TS.app.tr.resetToNormal()');
+    await act3D({ do: 'wear', item: 'gloves' }); await act3D({ do: 'wear', item: 'helmet' });
+    await grab('fence');
+    await aimLabel({ mount: 'zone:2' });
+    await page.eval(frames);
+    const g = await page.eval(ghostAt);
+    if (!g) fail('держим ограждение, прицел на zone:2 — призрака нет');
+    const sp = await page.eval(`({ on: TS.app.v3.items.spotIds.slice().sort().join(), want: TS.app.permit.mountsFor('fence').sort().join(), vis: TS.app.v3.items.spots.visible })`);
+    if (sp.on !== sp.want || !sp.vis) fail(`подсвечены ${sp.on}, а можно ${sp.want}`);
+    if (SHOTS) await page.shot(`${OUT}/items-ghost-fence.png`);
+    await page.key('KeyE'); await sleep(80);
+    const f = await page.eval(objAt('fence'));
+    if (!near(g, f)) fail(`ограждение встало не там, где призрак: ${g.map(x => x.toFixed(2))} → ${f.map(x => x.toFixed(2))}`);
+    // плакат вторым на место: призрак в слоте со смещением
+    await act3D({ do: 'place', item: 'nevkl2', at: 'drive:2' });
+    await grab('nevkl1');
+    await aimLabel({ mount: 'drive:2' });
+    await page.eval(frames);
+    const pg = await page.eval(ghostAt);
+    await page.key('KeyE'); await sleep(80);
+    const pp = await page.eval(objAt('nevkl1'));
+    if (!near(pg, pp)) fail(`второй плакат встал не там, где призрак: ${pg} → ${pp}`);
+    if ((await page.eval(`TS.app.v3.items.spots.visible`))) { await page.eval(frames); if (await page.eval(`TS.app.v3.items.spots.visible`)) fail('рука пустая, а места подсвечены'); }
+    // задание с подсказками: кольцо у привода и двери яч.3 для «Не включать»
+    await page.eval('TS.app.tr.resetToNormal()');
+    await page.eval(`(() => { const app = TS.app; app.startTask(app.scheme.tasks[0]); const pl = TS.Plan.planTask(app.scheme, app.tr.run.task); for (const a of pl.slice(0, 4)) TS.Plan.runAction(app.tr, app.permit, a); })()`);
+    await sleep(2800);
+    await grab('nevkl1');
+    await page.eval(frames);
+    const mk = await page.eval(`TS.app.v3.items.markIds.slice().sort().join()`);
+    if (mk !== 'door:3,drive:3') fail('кольцо следующего мероприятия: ' + mk);
+    const lab = await aimLabel({ mount: 'drive:2' });
+    if (!lab.includes('место работ — яч.3')) fail('нет мягкой подсказки «место работ — яч.3»: ' + lab);
+    if (SHOTS) await page.shot(`${OUT}/items-ghost-guide.png`);
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval('TS.app.tr.exitTask(); TS.app.tr.resetToNormal()');
+    // экзамен: подсказок нет — ни кольца, ни «место работ»
+    await page.eval(`(() => { const app = TS.app, s = app.scheme; app.exam.start(s, 'poly', { kind: 'skills', interlocks: true, person: { fio: 'Проверка Призрака' }, tasks: [s.tasks[0]] }); })()`);
+    await page.waitFor('TS.app.exam.active() && !!TS.app.tr.run', 3000, 'экзамен начался');
+    await page.eval(`(() => { const app = TS.app; const pl = TS.Plan.planTask(app.scheme, app.tr.run.task); for (const a of pl.slice(0, 4)) TS.Plan.runAction(app.tr, app.permit, a); })()`);
+    await sleep(2800);
+    await page.eval('TS.app.v3.walk.lockChanged(true)');
+    await grab('nevkl1');
+    await page.eval(frames);
+    const ex = await page.eval(`({ mk: TS.app.v3.items.markIds.length, vis: TS.app.v3.items.marks.visible })`);
+    const exLab = await aimLabel({ mount: 'drive:2' });
+    await page.eval(frames);
+    const exG = await page.eval(ghostAt);
+    await page.key('KeyQ'); await sleep(60);
+    await page.eval(`TS.app.exam.stop('abort')`);
+    await sleep(300);
+    await closeModal();
+    if (ex.mk || ex.vis) fail('в экзамене видно кольцо следующего мероприятия');
+    if (exLab.includes('место работ') || exLab.includes('по порядку')) fail('в экзамене подсказка места: ' + exLab);
+    if (!exG) fail('в экзамене нет нейтрального призрака');
+    // полигон — в нормальный режим, тележки на место сразу (следующие проверки снимают сцену)
+    await page.eval('TS.app.tr.resetToNormal(); TS.app.v3.update(true)');
+    return 'призрак = место (ограждение, второй плакат), подсвечены места из mountsFor, кольцо и «место работ» — только с подсказками';
+  });
 } };
 
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,

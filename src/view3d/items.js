@@ -4,7 +4,10 @@
    взять, отпустить, повесить, надеть, коснуться указателем. Надет ли, висит ли, наложено ли и все правила — в Permit
    (src/core/permit.js); 3D только спрашивает его и показывает итог (sync).
    Руки: 'desk' — ноутбук (предмет перед камерой, E и Q), 0 и 1 — контроллеры шлема (боковая кнопка — взять и отпустить).
-   Перчатки и каску в руку не берут: их надевают сразу, как взяли со стенда. */
+   Перчатки и каску в руку не берут: их надевают сразу, как взяли со стенда.
+   Предпросмотр, пока предмет в руке: все места, куда его можно поставить сейчас, мягко подсвечены (одна InstancedMesh, места одинаковые —
+   правильное не выдаётся); у места под прицелом или лучом — призрак самого предмета там, где он встанет (одна сетка);
+   с «Подсказками мероприятий» место ближайшего мероприятия — пульсирующее кольцо (одна InstancedMesh). Всего ≤ 3 вызова и только с предметом в руке. */
 import { ITEMS, ITEM, TAKES, parseMount, placeText } from '../core/permit.js';
 import { Sound } from '../ui/sound.js';
 import { PAL } from './models/kit.js';
@@ -39,9 +42,7 @@ class Items {
     this.touching = new Map(); this.lampUntil = 0; this.hot = null; this.hotMats = new Map();
     this.mats();
     for (const it of ITEMS) this.make(it);
-    this.ghost = new this.T.Mesh(new this.T.BoxGeometry(1, 1, 1), new this.T.MeshBasicMaterial({ color: C.ghost, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
-    this.ghost.visible = false; this.ghost.renderOrder = 5;
-    v.scene.add(this.ghost);
+    this.makePreview();
     this.sync(true);
   }
   get permit() { return this.v.app.permit; }
@@ -188,6 +189,7 @@ class Items {
     const px = new T.Mesh(new T.BoxGeometry(0.08, 0.34, 0.9), this.v._proxyMat);
     px.position.set(-X + 0.02, Y, 1.4); px.visible = false; px.userData.mount = 'fence'; px.userData.proxy = true;
     g.add(px); this.v.pickables.push(px);
+    this.fenceProxy = px;
     return g;
   }
 
@@ -219,17 +221,34 @@ class Items {
     this.setPose(x, parent, hold[0], hold[1], xr ? 1 : 0.8);
   }
   toWorn(x) { this.freeHand(x); x.state = 'worn'; x.mount = null; x.obj.visible = false; }
-  // На место: плакаты — по очереди со смещением, замок — на петлю привода, ПЗ — зажимом на контакты, ограждение — вокруг места работ
-  toMount(x, at, slot) {
+  // Где предмет встанет на месте at: родитель, точка и поворот. Плакаты — по очереди со смещением (slot — номер плаката на месте),
+  // замок — на петлю привода, ПЗ — зажимом на контакты, ограждение — вокруг места работ. Тем же считается призрак предпросмотра
+  mountPose(x, at, slot = 0) {
     const m = at === 'fence' ? this.fenceMount() : this.room.mounts.get(at);
-    if (!m) { this.toHome(x); return; }
-    this.freeHand(x);
-    x.state = 'mount'; x.mount = at; x.fall = null;
+    if (!m) return null;
     const kind = x.it.kind, p = m.p, sv = m.slot || [0, 0, 0];
-    if (kind === 'poster') this.setPose(x, m.obj, [p[0] + sv[0] * slot, p[1] + sv[1] * slot, p[2] + sv[2] * slot], [0, m.ry || 0, 0]);
-    else if (kind === 'lock') this.setPose(x, m.obj, m.lock || p, [0, 0, 0]);
-    else if (kind === 'pz') this.setPose(x, m.obj, [p[0] + 0.12, p[1], p[2] + 0.62], [0, 0, 0]);
-    else if (kind === 'fence') { this.setPose(x, m.obj, [0, 0, 0], [0, 0, 0]); this.showOpen(x, true); }
+    if (kind === 'poster') return { parent: m.obj, p: [p[0] + sv[0] * slot, p[1] + sv[1] * slot, p[2] + sv[2] * slot], r: [0, m.ry || 0, 0] };
+    if (kind === 'lock') return { parent: m.obj, p: m.lock || p, r: [0, 0, 0] };
+    if (kind === 'pz') return { parent: m.obj, p: [p[0] + 0.12, p[1], p[2] + 0.62], r: [0, 0, 0] };
+    if (kind === 'fence') return { parent: m.obj, p: [0, 0, 0], r: [0, 0, 0] };
+    return null;
+  }
+  // Номер плаката на месте: свой, если уже висит здесь, иначе первый свободный — соседние плакаты при этом не переезжают
+  freeSlot(at, x) {
+    if (x.it.kind !== 'poster') return 0;
+    if (x.state === 'mount' && x.mount === at && x.slot != null) return x.slot;
+    const used = new Set([...this.list.values()].filter(q => q !== x && q.state === 'mount' && q.mount === at && q.it.kind === 'poster').map(q => q.slot));
+    let i = 0;
+    while (used.has(i)) i++;
+    return i;
+  }
+  toMount(x, at) {
+    const slot = this.freeSlot(at, x), q = this.mountPose(x, at, slot);
+    if (!q) { this.toHome(x); return; }
+    this.freeHand(x);
+    x.state = 'mount'; x.mount = at; x.fall = null; x.slot = slot;
+    this.setPose(x, q.parent, q.p, q.r);
+    this.showOpen(x, x.it.kind === 'fence');
   }
   showOpen(x, on) {
     if (!x.open) return;
@@ -272,7 +291,7 @@ class Items {
     for (const x of order) {
       const at = pm.itemAt(x.id);
       if (at === 'worn') { if (x.state !== 'worn') this.toWorn(x); continue; }
-      if (at) { this.toMount(x, at, pm.onMount(at).filter(k => ITEM[k].kind === x.it.kind).indexOf(x.id)); continue; }
+      if (at) { this.toMount(x, at); continue; }
       // сняли не руками (убрали ограждение вместе с плакатом) — падает на пол
       if (x.state === 'mount') { this.toFloor(x); continue; }
       if (x.state === 'worn') this.toHome(x);
@@ -329,11 +348,12 @@ class Items {
       return `${it.title}${at && at !== 'worn' ? ' ' + placeText(at, 1) : ''} — ${at ? (it.kind === 'fence' ? 'убрать' : 'снять') : PPE[it.kind] ? 'надеть' : 'взять'}`;
     }
     if (tgt.type === 'mount') {
-      const kind = ITEM[held].kind, ms = pm.mountState(tgt.id);
-      const place = placeText(tgt.id, 3);
-      if (!ms.ok) return `${place}: ${lowFirst(ms.text)}`;
-      const verb = kind === 'uvn' ? 'проверить указателем' : kind === 'pz' ? 'наложить ПЗ' : kind === 'lock' ? 'запереть на замок' : kind === 'fence' ? 'поставить ограждение' : 'повесить плакат';
-      return `${place} — ${verb}`;
+      const kind = ITEM[held].kind, ms = pm.mountState(tgt.id), at = tgt.id;
+      if (!ms.ok) return `${placeText(at, 3)}: ${lowFirst(ms.text)}`;
+      const to = placeText(at, 0);
+      const verb = kind === 'uvn' ? `проверить указателем ${placeText(at, 1)}` : kind === 'pz' ? `наложить ПЗ ${to}` : kind === 'lock' ? `запереть ${to.replace(/^на /, '')} на замок`
+        : kind === 'fence' ? `поставить ограждение ${to}` : `повесить плакат ${to}`;
+      return `${hand === 'desk' ? 'E' : 'Боковая кнопка'} — ${verb}${this.guideNote(held, at)}`;
     }
     if (tgt.type === 'stand') return 'Стенд — положить на место';
     if (tgt.type === 'dev') {
@@ -347,6 +367,14 @@ class Items {
     // меню: подпись — пункт под прицелом; над заголовком подписи нет, чтобы не закрывать первый пункт
     const b = this.v.menuBtn(tgt.h.uv);
     return b ? b.a.label : '';
+  }
+
+  // С «Подсказками мероприятий»: прицел на место того же вида, но не то, — мягко, где ближайшее мероприятие (ошибкой не считается)
+  guideNote(id, at) {
+    const nx = this.permit.nextMounts(id), run = this.v.app.tr.run;
+    if (!nx.length || nx.includes(at)) return '';
+    const W = run && run.task.workCell;
+    return W && nx.some(a => (parseMount(a) || {}).n === W) ? ` · место работ — яч.${W}` : ` · по порядку — ${placeText(nx[0], 0)}`;
   }
 
   // ---------- действия ----------
@@ -430,7 +458,7 @@ class Items {
   // Боковая кнопка: пустая рука — взять ближайший предмет (или по лучу), с предметом — отпустить у места
   squeeze(info, rayHits) {
     const hand = info.i, held = this.heldIn(hand);
-    if (held) { this.release(hand, this.snapFor(hand, rayHits)); this.ghost.visible = false; return true; }
+    if (held) { this.release(hand, this.snapFor(hand, rayHits)); this.preview(null); return true; }
     let best = this.nearest(info.grip.getWorldPosition(new this.T.Vector3()));
     if (!best && rayHits) { const t = this.pick(rayHits, hand, REACH.xr); if (t && t.type === 'item') best = this.list.get(t.id); }
     if (!best) return false;
@@ -523,23 +551,24 @@ class Items {
   }
   // Каждый кадр в шлеме: коснуться указателем; подсветить место
   xrFrame(ctrls, rays) {
-    let ghost = null, hot = null;
+    let prev = null, hot = null;
     for (const info of ctrls) {
       if (!info.src) continue;
-      const id = this.heldIn(info.i);
+      const id = this.heldIn(info.i), hits = rays && rays.get(info);
       if (!id) {
         // пустая рука: подсветить предмет у руки, иначе — под лучом
         const near = this.nearest(info.grip.getWorldPosition(new this.T.Vector3()));
-        const t = near || !rays || !rays.get(info) ? null : this.pick(rays.get(info), info.i, REACH.xr);
+        const t = near || !hits ? null : this.pick(hits, info.i, REACH.xr);
         hot = hot || (near ? near.id : t && t.type === 'item' ? t.id : null);
         continue;
       }
       if (ITEM[id].kind === 'uvn') this.tipTouch(this.list.get(id));
-      const s = this.snapFor(info.i, null);
-      if (s && s.wp) ghost = s;
+      // призрак — там, куда встанет предмет, если отпустить сейчас (у руки или по лучу), как в release
+      const s = this.snapFor(info.i, hits);
+      if (!prev && s && s.type === 'mount') prev = { id, at: s.id };
     }
     this.hover(hot);
-    this.showGhost(ghost);
+    this.preview(prev && prev.id, prev && prev.at);
   }
   // Наконечник указателя у контактов: одна проверка на касание, следующая — когда отвели и снова коснулись
   tipTouch(x) {
@@ -551,12 +580,76 @@ class Items {
       else if (was && d > REACH.tip * 1.8) this.touching.set(m.id, false);
     }
   }
-  showGhost(s) {
-    const g = this.ghost;
-    if (!s || !s.wp) { g.visible = false; return; }
-    g.visible = true; g.position.copy(s.wp);
-    g.scale.set(0.36, s.id && s.id.startsWith('zone') ? 0.04 : 0.24, 0.12);
-    if (s.id && s.id.startsWith('zone')) { g.scale.set(1.2, 0.04, 2.3); g.position.y = 0.03; }
+
+  // ---------- предпросмотр: подсветка мест, призрак, метка ближайшего мероприятия ----------
+  makePreview() {
+    const T = this.T, v = this.v, n = this.room.mounts.size + 1;
+    const basic = (c, o) => new T.MeshBasicMaterial(Object.assign({ color: c, transparent: true, depthWrite: false, toneMapped: false }, o));
+    this.ghostMat = basic(C.ghost, { opacity: 0.5 });
+    this.ghosts = new Map(); this.ghostShown = null;
+    this.spots = new T.InstancedMesh(new T.BoxGeometry(1, 1, 1), basic(C.spot, { opacity: 0.2 }), n);
+    this.marks = new T.InstancedMesh(new T.TorusGeometry(1, 0.06, 6, 40), basic(C.next, { opacity: 0.95 }), n);
+    for (const im of [this.spots, this.marks]) {
+      im.count = 0; im.visible = false; im.frustumCulled = false; im.raycast = () => {}; im.renderOrder = 6; im.userData.dyn = true;
+      v.scene.add(im);
+    }
+    this.spotIds = []; this.markIds = [];
+  }
+  // Призрак предмета: его же детали одной сеткой полупрозрачным материалом (у ограждения — поставленная П-образная часть)
+  ghostOf(x) {
+    const kind = x.it.kind;
+    if (this.ghosts.has(kind)) return this.ghosts.get(kind);
+    const T = this.T, src = kind === 'fence' ? x.open : x.body, list = [];
+    src.updateWorldMatrix(true, true);
+    const inv = new T.Matrix4().copy(src.matrixWorld).invert(), m4 = new T.Matrix4();
+    src.traverse(o => { if (o.isMesh && !o.userData.proxy && o !== x.lamp) list.push(o); });
+    const geo = this.v.joinGeos(list.map(o => { const q = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone(); q.applyMatrix4(m4.multiplyMatrices(inv, o.matrixWorld)); return q; }));
+    const g = new T.Mesh(geo, this.ghostMat);
+    g.renderOrder = 7; g.raycast = () => {}; g.visible = false; g.userData.dyn = true;
+    this.ghosts.set(kind, g);
+    return g;
+  }
+  // Показать призрак предмета id на месте at (или спрятать: id пустой, указатель, место недоступно)
+  preview(id, at) {
+    const x = id && at && this.list.get(id);
+    const q = x && x.it.kind !== 'uvn' && this.permit.mountState(at).ok ? this.mountPose(x, at, this.freeSlot(at, x)) : null;
+    const g = q ? this.ghostOf(x) : null;
+    if (this.ghostShown && this.ghostShown !== g) this.ghostShown.visible = false;
+    this.ghostShown = g; this.ghostAt = q ? at : null;
+    if (!g) return;
+    if (g.parent !== q.parent) q.parent.add(g);
+    g.position.set(q.p[0], q.p[1], q.p[2]); g.rotation.set(q.r[0], q.r[1], q.r[2]);
+    g.visible = true;
+  }
+  // Каждый кадр: что в руке — места для него (подсветка) и место ближайшего мероприятия (кольцо, пульсирует)
+  stepPreview(time) {
+    const v = this.v, xr = v.renderer.xr.isPresenting, pm = this.permit;
+    const hands = xr ? [0, 1] : v.walk && v.walk.on ? ['desk'] : [];
+    const held = hands.map(h => this.heldIn(h)).filter(Boolean);
+    if (!xr && !(v.walk && v.walk.on)) this.preview(null);
+    this.spotIds = held.length ? [...new Set(held.flatMap(id => pm.mountsFor(id)))] : [];
+    this.markIds = held.length ? [...new Set(held.flatMap(id => pm.nextMounts(id)))] : [];
+    this.layout(this.spots, this.spotIds, false, 1);
+    this.layout(this.marks, this.markIds, true, 1 + 0.1 * Math.sin(time * 0.006));
+  }
+  layout(im, ids, ring, k) {
+    im.count = 0; im.visible = ids.length > 0;
+    if (!im.visible) return;
+    const T = this.T, m4 = this._m4 || (this._m4 = new T.Matrix4()), s4 = this._s4 || (this._s4 = new T.Matrix4()), r4 = new T.Matrix4();
+    for (const id of ids) {
+      const px = id === 'fence' ? this.fenceProxy : (this.room.mounts.get(id) || {}).proxy;
+      if (!px) continue;
+      px.updateWorldMatrix(true, false);
+      const g = px.geometry.parameters, floor = g.height < 0.1;
+      if (ring) {
+        // кольцо вокруг места: на полу — лёжа, тонкое; на ячейке — в плоскости фасада
+        if (floor) s4.makeScale(0.5 * k, 0.5 * k, 0.25);
+        else s4.makeScale(g.width / 2 * 1.1 * k, g.height / 2 * 1.25 * k, 1);
+        m4.multiplyMatrices(px.matrixWorld, floor ? r4.makeRotationX(-Math.PI / 2) : r4.identity()).multiply(s4);
+      } else m4.multiplyMatrices(px.matrixWorld, s4.makeScale(g.width * (floor ? 0.72 : 1), floor ? 0.01 : g.height, g.depth * (floor ? 0.92 : 1)));
+      im.setMatrixAt(im.count++, m4);
+    }
+    im.instanceMatrix.needsUpdate = true;
   }
   // Сессия VR закончилась: предметы из рук контроллеров — в руку ноутбука или на пол
   xrEnd() {
@@ -566,7 +659,7 @@ class Items {
       const x = this.list.get(id);
       if (!this.hands.desk) this.toHand(x, 'desk'); else this.toFloor(x);
     }
-    this.ghost.visible = false;
+    this.preview(null);
   }
   xrStart() {
     const id = this.hands.desk;
@@ -575,6 +668,7 @@ class Items {
 
   // ---------- каждый кадр ----------
   step(dt, time) {
+    this.stepPreview(time);
     for (const x of this.list.values()) {
       if (!x.fall) continue;
       x.fall.v += 9.8 * dt; x.fall.y = Math.max(x.fall.to, x.fall.y - x.fall.v * dt);
@@ -589,9 +683,11 @@ class Items {
   }
   dispose() {
     this.hover(null);
+    for (const g of this.ghosts.values()) { if (g.parent) g.parent.remove(g); g.geometry.dispose(); }
+    for (const im of [this.spots, this.marks]) { this.v.scene.remove(im); im.geometry.dispose(); im.material.dispose(); }
+    this.ghostMat.dispose();
     for (const m of this.hotMats.values()) m.dispose();
     this.gloveGrips(true);
-    this.v.scene.remove(this.ghost);
     for (const x of this.list.values()) if (x.obj.parent) x.obj.parent.remove(x.obj);
   }
 }

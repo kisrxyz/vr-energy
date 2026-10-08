@@ -126,6 +126,9 @@ async function grab(item) {
   if (held) { await page.key('KeyQ'); await sleep(40); }
   await aimE({ item }, 'предмет ' + item);
   await page.waitFor(`E2E.held() === ${JSON.stringify(item)}`, 1500, 'предмет в руке: ' + item);
+  // указатель в первый раз — карточка «как понять результат»: «Понятно», мышь снова захвачена (в headless — вызовом)
+  const card = await page.fn(() => E2E.box('.v3-intro [data-intro]'));
+  if (card) { await clickAt(card, '«Понятно» на карточке указателя'); await page.eval('TS.app.v3.walk.lockChanged(true)'); }
 }
 async function act3D(a) {
   switch (a.do) {
@@ -156,6 +159,8 @@ async function doAction(a, i, poly) {
   const after = await page.eval('E2E.run()');
   if (!after) fail(`шаг ${i + 1} «${text}»: задание пропало`);
   if (after.errors.length > before.errors.length) fail(`шаг ${i + 1} «${text}»: ошибка — ${after.errors.slice(before.errors.length).join('; ')}`);
+  // самопроверка указателя — не операция: её итог — «Указатель исправен» в журнале
+  if (a.self) { if (after.ops !== before.ops || !(await page.eval('/исправен/.test(TS.app.tr.log[0].text)'))) fail(`шаг ${i + 1} «${text}»: самопроверки нет`); return; }
   if (after.ops !== before.ops + 1) fail(`шаг ${i + 1} «${text}»: щелчок не сработал (операций ${before.ops} → ${after.ops})`);
 }
 // Открыть схему для задания: 2D — вкладка «Тренажёр», полигон — 3D пешком (захват мыши в headless — вызовом)

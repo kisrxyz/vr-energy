@@ -5,8 +5,8 @@ import * as engine from '../src/core/engine.js';
 import { GLOSSARY } from '../src/core/glossary.js';
 import { symbolSVG, editColors } from '../src/view2d/scheme2d.js';
 import { MODELS } from '../src/view3d/models/index.js';
-import { Permit, ITEMS, POSTERS } from '../src/core/permit.js';
-import { WHY, MISPLACED } from '../src/core/explain.js';
+import { Permit, ITEMS, POSTERS, placeText } from '../src/core/permit.js';
+import { WHY, MISPLACED, WHY_OP, whyOf } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
@@ -765,6 +765,45 @@ function polyRef(tr, pm, id, skip = []) {
   ok(pm.place('pz', 'contact:1:up').err, 'upper contacts are behind the shutter');
 }
 {
+  console.log('Polygon: indicator self-test on the tester at the stand (as by the safety rules) — before the check');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  ok(pm.mountState('tester').ok && pm.mountsFor('uvn').includes('tester') && !pm.mountsFor('nevkl1').includes('tester') && !pm.mountsFor('pz').includes('tester'), 'the tester takes only the indicator');
+  ok(pm.place('nevkl1', 'tester').err && placeText('tester', 1) === 'на проверочном устройстве', 'a poster does not go there; place text');
+  const r = pm.touch('tester');
+  ok(r && r.ok && r.test && pm.tested && tr.log[0].level === 'ok' && /исправен/.test(tr.log[0].text), 'self-test: «указатель исправен» in the log');
+  ok(!tr.run.ops.length && !tr.run.errors.length, 'the self-test is neither an operation nor an error');
+  polyRef(tr, pm, id);
+  ok(tr.run.done && tr.run.grade.score === 100 && !tr.run.errors.length && !(tr.run.remarks || []).length, 'with the self-test: 100, no remarks');
+  ok(!tr.log.some(e => /самопроверк/.test(e.text) && e.level === 'warn'), 'no remark in the log');
+}
+{
+  console.log('Polygon: check without the self-test — the measure counts, one remark (not an error, score not reduced)');
+  const { tr, pm, id, task } = poly();
+  tr.startTask(task);
+  const fields = [];
+  tr.on((type, d) => { if (type === 'field' && d && d.warn) fields.push(d.warn); });
+  polyRef(tr, pm, id);
+  const ms = tr.run.measures, chk = ms.find(m => /указателем/.test(m.title));
+  ok(tr.run.done && tr.run.grade.score === 100 && !tr.run.errors.length && chk.sat && !chk.flagged, 'measure «check» done, 100, no errors');
+  ok(tr.run.remarks && tr.run.remarks.length === 1 && /без самопроверки/.test(tr.run.remarks[0].text), 'one remark in the run: ' + (tr.run.remarks || []).map(x => x.text));
+  ok(tr.log.some(e => e.level === 'warn' && /Замечание: проверка указателем на нижних контактах яч\.3 без самопроверки/.test(e.text)), 'remark in the log names the place');
+  ok(fields.some(t => /без самопроверки/.test(t)), 'the remark is shown at once (toast, banner)');
+  // самопроверка годна, пока указатель в руках: вернули на стенд — снова нужна
+  const k = poly();
+  k.tr.startTask(k.task);
+  k.pm.touch('tester'); k.pm.untest();
+  polyRef(k.tr, k.pm, k.id);
+  ok(k.tr.run.remarks.length === 1, 'returned to the stand — the self-test has to be repeated');
+  // с подсказками кольцо ведёт сначала к проверочному устройству
+  const g = poly();
+  g.tr.startTask(g.task);
+  polyRef(g.tr, g.pm, g.id, ['check', 'earth', 'zazem', 'work', 'fence', 'stop']);
+  ok(g.pm.nextMounts('uvn').join() === 'tester', 'hints: the tester first — ' + g.pm.nextMounts('uvn'));
+  g.pm.touch('tester');
+  ok(g.pm.nextMounts('uvn').join() === 'contact:3:lo', 'then the lower contacts of cell 3');
+}
+{
   console.log('Polygon: stopping early lists missed measures with explanations');
   const { tr, pm, id, task } = poly();
   tr.startTask(task);
@@ -821,6 +860,8 @@ function polyRef(tr, pm, id, skip = []) {
   ok(pm.nextMounts('lock').join() === 'drive:3' && !pm.nextMounts('fence').length && !pm.nextMounts('stop1').length, 'lock — drive 3; fence and «Стой» — not yet');
   ok(!pm.nextMounts('uvn').length, 'indicator — after the poster and the lock');
   pm.place('nevkl1', 'drive:3'); pm.place('lock', 'drive:3');
+  ok(pm.nextMounts('uvn').join() === 'tester', 'indicator — first the self-test on the tester');
+  pm.touch('tester');
   ok(pm.nextMounts('uvn').join() === 'contact:3:lo', 'indicator — lower contacts of cell 3');
   pm.touch('contact:3:lo'); tr.operate(id('ЗН яч.3'));
   ok(pm.nextMounts('fence').join() === 'zone:3' && pm.nextMounts('work1').join() === 'cart:3', 'stage 5: fence at cell 3, «Работать здесь» on the trolley');
@@ -963,6 +1004,7 @@ function doMeasure(tr, pm, m) {
   const { tr, pm, id } = poly();
   pm.wear('gloves'); pm.wear('helmet');
   tr.operate(id('В-10 яч.3')); tr.operate(id('В-10 яч.3'), { pos: 'repair' });
+  pm.touch('tester');
   const r = pm.touch('contact:3:lo');
   ok(r.text.startsWith('Указатель напряжения на нижних контактах яч.3:') && !r.text.includes('ЗН'), 'text: ' + r.text);
   ok(tr.log[0].text === r.text, 'same text in the log');
@@ -1147,6 +1189,7 @@ function doMeasure(tr, pm, m) {
       }
       ok(tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.run.grade.verdict === 'Выполнено без ошибок', `${tag}: 100, «Выполнено без ошибок» (${tr.run.grade.score}, ${tr.run.grade.verdict})`);
       if (t.measures) ok(t.measures.every(m => pm.sat(m)) || (tr.run.measures || []).every(m => m.sat && !m.flagged), `${tag}: every measure done in order`);
+      if (s.room) ok(plan.findIndex(a => a.self) >= 0 && plan.findIndex(a => a.self) === plan.findIndex(a => a.do === 'check') && !(tr.run.remarks || []).length, `${tag}: the self-test goes before the first check — no remarks`);
       ok(Plan.actionText(tr, plan[0]).length > 3 && plan.every(a => !/undefined|NaN/.test(Plan.actionText(tr, a))), `${tag}: action texts read well («${Plan.actionText(tr, plan[0])}»)`);
     });
   }
@@ -1377,6 +1420,22 @@ function doMeasure(tr, pm, m) {
   b.setNode(9, 0xff0000, 0.55); b.commit();
   ok(b.table.data[4] === 1 && Math.abs(b.table.data[7] - 0.55) < 1e-6 && b.table.data[0] === 0, 'node table: colour and glow of node 9 at index 1');
   ok(geoSig(new THREE.BoxGeometry(1, 2, 3)) === geoSig(new THREE.BoxGeometry(1, 2, 3)) && geoSig(new THREE.BoxGeometry(1, 2, 3)) !== geoSig(new THREE.BoxGeometry(1, 2, 3.1)), 'geometry signature: same content — same, other size — other');
+}
+{
+  console.log('Yards: every engine error has a short «why it is dangerous» (explain.js, whyOf)');
+  const { tr, id } = setup('ps110');
+  tr.opt.interlocks = false;
+  const errs = [];
+  tr.on((type, d) => { if (type === 'op' && d.viol) errs.push({ kind: d.viol.kind, text: d.viol.text }); });
+  tr.operate(id('ЛР Л-1'));                       // разъединитель под нагрузкой
+  tr.resetToNormal();
+  tr.operate(id('ЗН-1 Л-1'));                     // ЗН на напряжение
+  tr.resetToNormal();
+  ok(errs.length >= 2 && errs.every(e => whyOf(e)), 'whyOf for: ' + errs.map(e => e.kind + ' — ' + (whyOf(e) || '').slice(0, 30)).join('; '));
+  ok(whyOf(errs[0]) === WHY_OP.loadBreak && whyOf(errs[1]) === WHY_OP.earthLive, 'load break and earthing a live part — their own texts');
+  ok(whyOf({ kind: 'supply', text: 'Перерыв питания: Цех.' }) === WHY_OP.supply && whyOf({ kind: 'proc', text: 'Нарушение порядка: ЗН-1 включён без проверки отсутствия напряжения указателем.' }) === WHY.check, 'supply and order');
+  ok(whyOf({ kind: 'safety', text: 'x', why: 'своё' }) === 'своё' && whyOf({ kind: 'blocked', text: 'Блокировка: …' }) === WHY_OP.blocked, 'polygon errors keep their own why; blocked has a note');
+  ok(Object.values(WHY_OP).every(t => t.length > 40 && t.length < 260), 'texts are short (fit the crosshair line and the VR banner)');
 }
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

@@ -129,8 +129,9 @@ class Items {
       body.add(k.cyl(0.016, 0.44, M.rod, 0, 0, -0.41, 'z'));
       body.add(k.cyl(0.03, 0.13, M.head, 0, 0, -0.69, 'z'));
       body.add(k.cyl(0.006, 0.07, M.metal, 0, 0, -0.79, 'z'));
+      // огонёк: без напряжения — явно погасший (серый), при напряжении и на проверочном устройстве — мигает красным
       lamp = new T.Mesh(this.v.geo.sphere, M.lamp);
-      lamp.scale.setScalar(0.017); lamp.position.set(0, 0.03, -0.68);
+      lamp.scale.setScalar(0.021); lamp.position.set(0, 0.032, -0.68);
       g.add(lamp);
       tip = [0, 0, -0.83]; size = [0.08, 0.08, 0.86]; center = [0, 0, -0.4];
     } else if (it.kind === 'pz') {
@@ -209,6 +210,8 @@ class Items {
   freeHand(x) { const h = this.handOf(x.id); if (h != null) this.hands[h] = null; x.hand = null; }
   toHome(x) {
     this.freeHand(x);
+    // указатель вернули на стенд: перед следующей проверкой — снова самопроверка
+    if (x.it.kind === 'uvn' && this.permit) this.permit.untest();
     x.state = 'home'; x.mount = null; x.fall = null;
     this.showOpen(x, false);
     if (x.it.kind === 'fence') { this.setPose(x, this.v.root, [this.room.fenceHome.x, 0, this.room.fenceHome.z], [0, 0.4, 0]); return; }
@@ -357,7 +360,7 @@ class Items {
       // причина сама называет место («Верхние (шинные) контакты яч.3 закрыты шторкой…») — без повтора
       if (!ms.ok) return /яч\.\d|№\d/.test(ms.text) ? ms.text : `${placeText(at, 3)}: ${lowFirst(ms.text)}`;
       const to = placeText(at, 0);
-      const verb = kind === 'uvn' ? `проверить указателем ${placeText(at, 1)}` : kind === 'pz' ? `наложить ПЗ ${to}` : kind === 'lock' ? `запереть ${to.replace(/^на /, '')} на замок`
+      const verb = at === 'tester' ? 'самопроверка указателя (коснуться электрода)' : kind === 'uvn' ? `проверить указателем ${placeText(at, 1)}` : kind === 'pz' ? `наложить ПЗ ${to}` : kind === 'lock' ? `запереть ${to.replace(/^на /, '')} на замок`
         : kind === 'fence' ? `поставить ограждение ${to}` : `повесить плакат ${to}`;
       return `${hand === 'desk' ? 'E' : 'Боковая кнопка'} — ${verb}${this.guideNote(held, at)}`;
     }
@@ -405,6 +408,7 @@ class Items {
     if (PPE[x.it.kind]) return this.wear(id);
     const at = pm.itemAt(id);
     this.toHand(x, hand);
+    if (x.it.kind === 'uvn') this.v.uvnCard();
     if (at) {
       const r = pm.take(id);
       if (r && r.err) { this.say(r.text); this.sync(); return false; }
@@ -431,9 +435,22 @@ class Items {
   touchAt(mount) {
     const r = this.permit.touch(mount);
     if (!r || r.err) { this.say(r ? r.text : 'Указателем касаются токоведущих частей.'); return null; }
-    // огонёк и звук — если напряжение есть (звук подаёт приложение по событию проверки)
-    if (r.res && r.res.some(q => q.kv != null)) this.lampUntil = performance.now() + 2200;
+    // огонёк и звук — если напряжение есть или это проверочное устройство (звук подаёт приложение по событию)
+    if (r.test || (r.res && r.res.some(q => q.kv != null))) this.lampUntil = performance.now() + 2200;
     return r;
+  }
+  // Итог у указателя в шлеме на 2 с: табличка над рукояткой (не у наконечника в отсеке — там её закрыла бы ячейка), поверх всего.
+  // kind — фон PAL.label: dead — нейтральный тёмный, live — красный (не зелёный: это цвет плаката «Работать здесь»)
+  // На ноутбуке итог — строкой у прицела (указатель там у края кадра, табличка у него вышла бы огромной), здесь — только шлем
+  tipLabel(text, kind) {
+    const x = this.list.get('uvn');
+    if (!x || x.state !== 'hand' || x.hand === 'desk') return false;
+    if (this.tipSprite) { this.tipSprite.parent && this.tipSprite.parent.remove(this.tipSprite); this.tipSprite.material.map.dispose(); this.tipSprite.material.dispose(); }
+    const sp = this.v.labelSprite(text, kind, 0.045);
+    sp.position.set(0, 0.09, -0.24); sp.renderOrder = 13; sp.userData.dyn = true;
+    x.obj.add(sp);
+    this.tipSprite = sp; this.tipUntil = performance.now() + 2000;
+    return true;
   }
   // Q на ноутбуке, боковая кнопка в шлеме: отпустить — повесить у места, вернуть на стенд или уронить на пол
   release(hand, near) {
@@ -686,6 +703,7 @@ class Items {
       const on = performance.now() < this.lampUntil && Math.floor(time / 120) % 2 === 0;
       u.lamp.material.color.setHex(on ? C.lampOn : C.lampOff);
     }
+    if (this.tipSprite && performance.now() > this.tipUntil) { this.tipSprite.parent && this.tipSprite.parent.remove(this.tipSprite); this.tipSprite.material.map.dispose(); this.tipSprite.material.dispose(); this.tipSprite = null; }
   }
   dispose() {
     this.hover(null);

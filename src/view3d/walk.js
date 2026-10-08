@@ -21,7 +21,7 @@ const LOCK_PAUSE = 1600;
 const INTRO = {
   room: `<h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
     <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
-    <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
+    <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем (сначала — проверочного устройства на полке, потом контактов). Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
     <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
     <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
   yard: `<h3 id="v3IntroT">Площадка: как управлять</h3>
@@ -29,7 +29,15 @@ const INTRO = {
     <li><b>«Пешком»</b> — WASD и мышь, Shift — бегом. E или щелчок — операция, V — указатель, P — ПЗ, щелчок по земле — перейти, G — к аппарату следующего шага.</li>
     <li><b>В шлеме</b> — курок по аппарату — операция, боковая кнопка — указатель, курок по земле — переход, B или Y — к следующему шагу.</li></ol>
     <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+  // при первом взятии указателя (не в экзамене и не в показе)
+  uvn: `<h3 id="v3IntroT">Указатель напряжения: как понять результат</h3>
+    <ol><li><b>Сначала самопроверка.</b> Коснитесь электрода проверочного устройства на полке стенда (E, в шлеме — наконечником): огонёк мигает и пищит — указатель исправен.</li>
+    <li><b>Горит и пищит</b> на контактах — напряжение <b>есть</b>. Заземлять и работать нельзя.</li>
+    <li><b>Молчит, огонёк серый</b> — напряжения нет, но только после самопроверки: неисправный указатель тоже молчит.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
 };
+// какая карточка отмечается «прочитано» (площадка — только по кнопке «Обучение», не сама)
+const INTRO_SEEN = { room: 'ts.polyIntro', uvn: 'ts.uvnCard' };
 
 class Walk {
   constructor(v) {
@@ -142,15 +150,18 @@ class Walk {
   // Карточка «как управлять» на ноутбуке: полигон — как брать предметы, площадка — «Обзор», «Пешком», шлем.
   // Открывается сама при первом входе в полигон и кнопкой «Обучение» на щите; quiet — спрятать, не отмечая «прочитано».
   // Мышь на время карточки отпускается — иначе «Понятно» не нажать (курсор спрятан захватом)
-  intro(on, quiet) {
-    const el = this.hud.intro, room = this.v.room ? 'room' : 'yard';
+  // kind — какая карточка: room, yard (по умолчанию — по миру), uvn (как понять результат указателя)
+  intro(on, quiet, kind) {
+    const el = this.hud.intro;
     if (on) {
-      if (el.dataset.kind !== room) { el.dataset.kind = room; el.innerHTML = INTRO[room]; }
+      kind = kind || (this.v.room ? 'room' : 'yard');
+      if (el.dataset.kind !== kind) { el.dataset.kind = kind; el.innerHTML = INTRO[kind]; }
       this.unlock(); this.keys.clear();
       if (this.locked) this.lockChanged(false);
     }
+    const was = !el.hidden;
     el.hidden = !on;
-    if (!on && !quiet && room === 'room') store.set('ts.polyIntro', '1');
+    if (!on && !quiet && was && INTRO_SEEN[el.dataset.kind]) store.set(INTRO_SEEN[el.dataset.kind], '1');
     this.showClick();
     if (on) { const b = el.querySelector('[data-intro]'); if (b) try { b.focus({ preventScroll: true }); } catch (e) { /* без фокуса */ } }
   }
@@ -390,6 +401,7 @@ class Walk {
   actYard(t) {
     const v = this.v, app = v.app;
     if (!t) { this.goFloor(); return; }
+    v.noteHit(t.h);
     if (t.type === 'menu') v.menuClick(t.h.uv);
     else if (t.type === 'board') v.boardClick(t.h.uv);
     else if (t.type === 'far') v.goTo(t.id);

@@ -437,18 +437,22 @@ const Panels = {
     const mine = run.ops.length ? '<ol>' + run.ops.map(o => `<li><span class="mono">${fmtTime(o.t)}</span> ${esc(capFirst(tr.stepText(o)))}</li>`).join('') + '</ol>' : '<p>Действий не было.</p>';
     const ref = '<ol>' + run.task.steps.map(s => `<li>${esc(capFirst(tr.stepText(s)))}</li>`).join('') + '</ol>';
     const mark = m => (m.sat && !m.flagged ? '✓' : m.sat ? '!' : '—');
+    // замечания (полигон: проверка без самопроверки указателя) — не ошибки, баллы не снижают
+    const rm = run.remarks || [];
+    const remarks = rm.length ? `<div><h4 style="margin:0 0 6px;font-size:13px">Замечания <span class="chip">баллы не снижают</span></h4><ul class="issues">${rm.map(r => `<li><span class="mono">${fmtTime(r.t)}</span> · ${esc(r.text.replace(/^Замечание: /, ''))}</li>`).join('')}</ul></div>` : '';
     const meas = ms ? `<div><h4 style="margin:0 0 6px;font-size:13px">Технические мероприятия${run.guide ? ' <span class="chip">подсказки были включены</span>' : ''}</h4>
       <ol class="meas">${ms.map(m => `<li class="${m.sat && !m.flagged ? 'ok' : 'bad'}">${esc(m.title)}${m.flagged ? ` <span class="tag">${m.sat ? 'не по порядку' : 'пропущено'}</span>` : ''}</li>`).join('')}</ol></div>` : '';
     const body = `<div class="verdict ${g.tone}"><span class="score">${g.score}</span><div><b>${esc(g.verdict)}</b><div class="desc">из 100 баллов</div></div></div>
       <dl class="kv"><dt>Время</dt><dd>${fmtTime(g.secs)}</dd><dt>Операций</dt><dd>${g.myOps} (эталон ${g.refOps}${g.extra ? `, лишних ${g.extra}` : ''})</dd>
       <dt>Аварии и КЗ</dt><dd>${g.acc}</dd><dt>Блокировки</dt><dd>${g.blk}</dd><dt>Перерывы питания</dt><dd>${g.sup}</dd><dt>Нарушения порядка</dt><dd>${g.prc}</dd>${ms ? `<dt>Охрана труда</dt><dd>${g.saf || 0}</dd>` : ''}<dt>Подсказки</dt><dd>${g.hints}${run.guide && !ms ? ' · <span class="chip">подсказки шагов были включены</span>' : ''}</dd></dl>
-      <div><h4 style="margin:0 0 6px;font-size:13px">Ошибки</h4>${errs}</div>${meas}
+      <div><h4 style="margin:0 0 6px;font-size:13px">Ошибки</h4>${errs}</div>${remarks}${meas}
       <div class="cols"><div><h4>Ваши действия (бланк)</h4>${mine}</div><div><h4>Эталон</h4>${ref}</div></div>
       <p class="desc" style="color:var(--muted);font-size:12px">Баллы: −40 за аварию или КЗ, −15 за перерыв питания, −10 за блокировку, нарушение порядка и охраны труда, −5 за подсказку, −2 за лишнюю операцию.</p>`;
     this.reportText = [
       `Тренажёр переключений — отчёт`, `Схема: ${this.scheme.title}`, `Задание: ${run.task.title}`, `Итог: ${g.verdict}, ${g.score} из 100`,
       `Время: ${fmtTime(g.secs)}; операций: ${g.myOps} (эталон ${g.refOps})`, ...(run.guide && !ms ? ['Подсказки шагов были включены'] : []), '', 'Ошибки:',
       ...(run.errors.length ? run.errors.map(e => `- ${fmtTime(e.t)} ${errText(kindName[e.kind] || e.kind, e.text)}${e.why ? `\n    Почему опасно: ${e.why}` : ''}`) : ['- нет']),
+      ...(rm.length ? ['', 'Замечания (баллы не снижают):', ...rm.map(r => `- ${fmtTime(r.t)} ${r.text.replace(/^Замечание: /, '')}`)] : []),
       ...(ms ? ['', `Технические мероприятия${run.guide ? ' (подсказки были включены)' : ''}:`, ...ms.map((m, i) => `${i + 1}. [${mark(m)}] ${m.title}`)] : []),
       '', 'Действия:',
       ...run.ops.map((o, i) => `${i + 1}. ${fmtTime(o.t)} ${capFirst(tr.stepText(o))}`),

@@ -328,8 +328,10 @@ const app = Object.assign({
     // VR-полигон: предметы, плакаты, мероприятия; warn — нарушение (без СИЗ, не по порядку, не на месте)
     if (type === 'field') {
       if (d.warn) { this.toast(d.warn, 'warn'); Sound.play('blocked'); if (this.v3) this.v3.banner(d.warn, 'warn'); }
+      // самопроверка указателя: огонёк и звук, как при напряжении
+      if (d.test) { this.toast('Указатель исправен: огонёк горит, звук есть.', 'ok'); Sound.play('checklive'); }
       this.renderMeasures(); this.renderTaskStats();
-      if (this.v3 && this.v3.ready) this.v3.onField();
+      if (this.v3 && this.v3.ready) this.v3.onField(d);
     }
   },
 

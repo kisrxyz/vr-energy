@@ -67,9 +67,10 @@ const PAL = {
   },
   roomTube: 0xfafcff,   // светящиеся трубки светильников
   // предметы полигона
-  // ghost — призрак предмета на месте, spot — места, куда можно поставить, next — кольцо ближайшего мероприятия (с подсказками)
+  // ghost — призрак предмета на месте, spot — места, куда можно поставить, next — кольцо ближайшего мероприятия (с подсказками);
+  // огонёк указателя: lampOff — погасший (серый, видно, что не горит), lampOn — горит
   items: { glove: 0xe7c65a, ctrl: 0x202428, ghost: 0xeaf6ff, spot: 0x7fc8ff, next: 0xffd23f, hot: 0xffd23f, back: 0xd9d6cc, helmet: 0xf3f3ee, rod: 0xb3342a, handle: 0x1d2124, head: 0xe6e8e4,
-    metal: 0xc9ced2, pzRod: 0xe0a020, pzCable: 0x9b6a3a, brass: 0xc9a43c, post: 0x2b2f31, lampOff: 0x3a1010, lampOn: 0xff2d2d },
+    metal: 0xc9ced2, pzRod: 0xe0a020, pzCable: 0x9b6a3a, brass: 0xc9a43c, post: 0x2b2f31, lampOff: 0x8a9094, lampOn: 0xff2d2d },
 };
 
 // Детерминированный шум: одинаковые текстуры при каждом запуске (снимки «до/после» сравнимы)

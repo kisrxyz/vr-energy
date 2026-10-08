@@ -13,6 +13,7 @@ import { Teleport } from './teleport.js';
 import { findKRU, buildZRU } from './zru.js';
 import { footprints, makeYardWorld } from './world.js';
 import { Batch } from './batch.js';
+import { Probe } from './probe.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
@@ -81,6 +82,7 @@ class View3D {
     this.active = false;
     if (this.renderer && !this.renderer.xr.isPresenting) this.renderer.setAnimationLoop(null);
     if (this.walk) this.walk.disable();
+    if (this.probe) this.probe.dispose();
     this.closeMenu3D();
     this.tip(null);
   }
@@ -119,6 +121,8 @@ class View3D {
     this.tmp = { m: new T.Matrix4(), v: new T.Vector3(), v2: new T.Vector3(), dir: new T.Vector3(), up: new T.Vector3(0, 1, 0) };
     this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 12, 8) };
     this.makeMats();
+    // указатель напряжения на площадке: в руке и касание по месту (probe.js)
+    this.probe = new Probe(this);
     this.ring = new T.Mesh(this.geo.ring, new T.MeshBasicMaterial({ color: PAL.ui.ring }));
     // небо с дальними холмами — одна сфера вокруг площадки (в помещении спрятана); рисуется первой, без тумана
     this.sky = new T.Mesh(new T.SphereGeometry(800, 32, 16), new T.MeshBasicMaterial({ map: texture(T, 'sky'), side: T.BackSide, fog: false, depthWrite: false, toneMapped: false }));
@@ -205,6 +209,7 @@ class View3D {
     this.dev.clear(); this.nodeMats.clear(); this.pickables = []; this.hover = null; this.ring.visible = false;
     this.pzDev = new Map(); this.closeMenu3D();
     if (this.tp) this.tp.cancel();
+    if (this.probe) this.probe.dispose();
     if (this.items) { this.items.dispose(); this.items = null; }
     const poly = !!(s.room && Array.isArray(s.room.cells) && s.room.cells.length);
     this.setEnv(poly);
@@ -728,10 +733,15 @@ class View3D {
     // предмет на полу, на который выкатили тележку, отодвигается из-под неё — иначе его не достать
     if (this.items) this.items.unbury();
   }
-  // Предметы, плакаты и мероприятия изменились (событие 'field' движка)
+  // Предметы, плакаты и мероприятия изменились (событие 'field' движка); test — самопроверка указателя на проверочном устройстве
   onField(d = {}) {
     if (!this.ready) return;
     if (this.items) this.items.sync(!!d.reset);
+    // в шлеме — табличка у указателя (вместо баннера перед глазами), на ноутбуке — строка у прицела
+    if (d.test && this.active) {
+      if (!(this.items && this.items.tipLabel('Указатель исправен', 'dead'))) this.banner('Указатель исправен: огонёк горит, звук есть.', 'info');
+      if (this.fpsOn()) this.walk.said('Указатель исправен — огонёк горит, звук есть');
+    }
     this.drawBoard();
   }
   // Кадр: ошибка в шаге или отрисовке уходит в журнал, сессия VR продолжается
@@ -784,9 +794,47 @@ class View3D {
     }
     if (xr) this.xrFrame(dt);
     else if (this.fpsOn()) this.walk.step(dt);
+    this.holdProbe(xr);
+    this.probe.step(dt, time);
     if (this.items) this.items.step(dt, time);
     if (this.menu3d && (performance.now() > this.menu3d.until || this.menuFar())) this.closeMenu3D();
   }
+
+  // Указатель на площадке в руке, пока включён инструмент: пешком — у края кадра (модель — по аппарату под прицелом),
+  // в шлеме — в правой руке. В «Обзоре» и в полигоне (там указатель — предмет со стенда) — нет
+  holdProbe(xr) {
+    let anchor = null, kind = this.probeKind || 'uvn';
+    if (!this.room && this.app.tool === 'check') {
+      if (xr) { const c = this.ctrls.find(q => q.src && q.hand === 'right') || this.ctrls.find(q => q.src); anchor = c ? c.grip : null; }
+      else if (this.fpsOn()) {
+        anchor = this.camera;
+        const a = this.walk.aim;
+        if (a && a.id && (a.type === 'dev' || a.type === 'wire' || a.type === 'far')) kind = this.probeKind = this.probe.kindForTarget(a.id);
+      }
+    }
+    this.probe.hold(anchor, kind);
+  }
+  // Куда коснуться указателем (площадка): выводы аппарата — каждая проверяемая сторона, провод — точка попадания на высоте проводов,
+  // в ЗРУ — нижние контакты ячейки
+  probePoints(d) {
+    const T = THREE, tr = this.app.tr, dv = this.dev.get(d.target), out = [];
+    const h = this.hitAt && this.hitAt.id === d.target && performance.now() - this.hitAt.t < 1500 ? this.hitAt.p : null;
+    if (dv && !dv.zru && dv.ports && dv.ports.length) {
+      const tm = tr.topo.term.get(d.target) || [];
+      for (const r of d.res) {
+        const i = tm.indexOf(r.n), pp = dv.ports[i >= 0 ? i : 0];
+        if (pp) out.push({ p: dv.group.localToWorld(new T.Vector3(...pp)), live: r.kv != null });
+      }
+      return out;
+    }
+    const p = !dv && h ? h.clone() : this.posOf(d.target);
+    if (!p) return out;
+    if (!dv && !p.indoor) p.y = H3;
+    out.push({ p, live: d.live });
+    return out;
+  }
+  // Щелчок, E или луч по аппарату и проводу: где попали — туда коснётся указатель
+  noteHit(h) { const u = h && h.object.userData; if (u && (u.dev || u.wire)) this.hitAt = { id: u.dev || u.wire, p: h.point.clone(), t: performance.now() }; }
 
   // ---------- камера и мышь ----------
   applyOrbit() {
@@ -934,6 +982,7 @@ class View3D {
     const u = h.object.userData;
     if (u.board) { this.boardClick(h.uv); return; }
     if (u.menu) { this.menuClick(h.uv); return; }
+    this.noteHit(h);
     if (u.dev) { this.app.pick3D(u.dev, shift, { cx, cy }); this.hover = null; this.hoverAt(cx, cy); return; }
     if (u.wire) this.app.pickWire3D(u.wire, shift);
   }
@@ -1126,22 +1175,29 @@ class View3D {
     this.banner(`Отметка ${m.n} сохранена: ${m.look}`, 'info');
     if (this.dbg && this.dbg.m.visible) this.drawDebug();
   }
-  // Короткое обучение перед лицом: при первом входе в VR и по кнопке «Обучение» на щите; закрывается курком
-  showTutor(on = true) {
+  // Короткое обучение перед лицом: при первом входе в VR и по кнопке «Обучение» на щите; закрывается курком.
+  // kind = 'uvn' — «как понять результат» при первом взятии указателя
+  showTutor(on = true, kind) {
     if (!this.tutor) { this.tutor = this.mkPanel(1024, 600, 1.0, 0.586); this.tutor.m.position.set(0, -0.05, -1.25); this.camera.add(this.tutor.m); }
     this.tutor.m.visible = on;
     if (!on) return;
+    this.tutorKind = kind || (this.room ? 'room' : 'yard');
     const { c, t } = this.tutor, x = c.getContext('2d'), F = (w, sz) => `${w} ${sz}px "Golos Text", system-ui, sans-serif`;
     x.clearRect(0, 0, c.width, c.height);
     x.fillStyle = 'rgba(16,24,21,0.94)'; rr(x, 0, 0, c.width, c.height, 28); x.fill();
     x.fillStyle = '#3b4fd1'; rr(x, 0, 0, c.width, 10, 4); x.fill();
     // в полигоне — как брать предметы (то же на табличке над стендом)
-    x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText(this.room ? 'Как брать предметы' : 'Как управлять', 44, 82);
-    const steps = this.room ? [
+    const uvn = this.tutorKind === 'uvn';
+    x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText(uvn ? 'Указатель: как понять результат' : this.room ? 'Как брать предметы' : 'Как управлять', 44, 82);
+    const steps = uvn ? [
+      ['1', 'Сначала самопроверка', 'Коснитесь наконечником электрода проверочного устройства на полке стенда: мигает и пищит — указатель исправен.'],
+      ['2', 'Горит и пищит — напряжение есть', 'На контактах огонёк мигает красным и звучит сигнал: заземлять и работать нельзя.'],
+      ['3', 'Молчит, огонёк серый — напряжения нет', 'Но только после самопроверки: неисправный указатель тоже молчит.'],
+    ] : this.room ? [
       ['1', 'Подойдите к стенду справа от входа', 'Левый стик — ходьба, правый — поворот, курок по полу — переход к кольцу. На стенде — СИЗ, указатель, ПЗ, плакаты, замок, ограждение.'],
       // описание шага — не больше 2 строк, иначе обрезается «…»
       ['2', 'Боковая кнопка — взять и отпустить', 'Рука у предмета, боковая кнопка — взять. Ещё раз у нужного места — повесить, запереть, поставить; в стороне — уронить.'],
-      ['3', 'СИЗ и указатель', 'Перчатки и каска надеваются сразу. Указатель — к нижним контактам в отсеке тележки. Курок — переключить аппарат.'],
+      ['3', 'СИЗ и указатель', 'Перчатки и каска надеваются сразу. Указатель: сначала проверочное устройство на полке, потом нижние контакты.'],
     ] : [
       ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход туда, где кольцо (красное — не пройти).'],
       ['2', 'Боковая кнопка — указатель', 'Наведите луч и нажмите боковую кнопку (под средним пальцем) — проверка напряжения.'],
@@ -1410,26 +1466,42 @@ class View3D {
     this.fxList.push({ t: 0, life: 1.6, sph, pts, vel });
   }
   // Итог проверки указателем. Полигон — как в жизни: при напряжении указатель мигает и пищит (items.lampUntil, звук),
-  // без напряжения молчит; для обучения итог — строкой у прицела (ноутбук) и баннером (шлем), не табличкой в ячейке.
+  // без напряжения молчит и огонёк серый; для обучения итог — строкой у прицела (ноутбук), баннером (шлем)
+  // и табличкой на 2 с у указателя в руке («Нет напряжения» — нейтральная, «ЕСТЬ НАПРЯЖЕНИЕ» — красная), не в ячейке.
   // Площадка — подпись над аппаратом или проводом лицом к камере, поверх всего
   checkFx(d) {
     if (!this.active) return;
-    this.banner(d.text, d.live ? 'warn' : 'info');
     if (this.room) {
       const mt = this.app.permit.contactMount(d.target), place = mt ? placeText(mt, 3).replace(/ \(.+?\)/, '') : this.app.tr.nm(d.target);
       if (this.fpsOn()) this.walk.said(`${d.live ? 'Есть напряжение!' : 'Напряжения нет'} — ${place.charAt(0).toLowerCase() + place.slice(1)}`, d.live);
+      // в шлеме — табличка у указателя; баннер перед глазами — только если указателя в руке нет
+      if (!(this.items && this.items.tipLabel(d.live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', d.live ? 'live' : 'dead'))) this.banner(d.text, d.live ? 'warn' : 'info');
       return;
     }
+    // площадка: указатель касается выводов (пешком — из руки, в шлеме — из руки контроллера, в «Обзоре» — появляется у места);
+    // в шлеме итог — табличкой у рукоятки, а не баннером перед глазами
+    const xr = this.renderer.xr.isPresenting, pts = d.res ? this.probePoints(d) : [];
+    if (pts.length) {
+      const anchor = xr ? this.probeHand || (this.ctrls.find(q => q.src && q.hand === 'right') || {}).grip || null : this.fpsOn() ? this.camera : null;
+      this.probe.touch(pts, this.probe.kindFor(d.res.map(r => r.n)), anchor, xr ? g => this.probeLabel(g, d.live) : null);
+    }
+    if (!xr || !pts.length) this.banner(d.text, d.live ? 'warn' : 'info');
     // под подписью аппарата (её видно и пешком, и в обзоре) или над проводом; размер на экране один и тот же издалека и вблизи
     const dv = this.dev.get(d.target), p = dv && dv.labelPos ? dv.group.localToWorld(new THREE.Vector3(...dv.labelPos)) : this.posOf(d.target);
     if (!p) return;
     if (!dv) p.y = p.indoor ? p.y + 0.5 : H3 + 0.45; else if (dv.labelPos) p.y -= 0.5; else p.y += 0.6;
-    const sp = this.labelSprite(d.live ? 'Напряжение есть' : 'Напряжения нет', d.live ? 'live' : 'dead', 0.045, true);
+    const sp = this.labelSprite(d.live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', d.live ? 'live' : 'dead', 0.045, true);
     sp.position.copy(p);
     // подпись одна: новая проверка убирает прежнюю (иначе «есть» и «нет» лягут друг на друга)
     for (const f of this.fxList) if (f.mark) f.t = f.life;
     this.scene.add(sp);
     this.fxList.push({ t: 0, life: 2.6, mark: sp });
+  }
+  // Шлем: табличка итога у рукоятки указателя на 2 с («Нет напряжения» — нейтральная, «ЕСТЬ НАПРЯЖЕНИЕ» — красная)
+  probeLabel(g, live) {
+    const sp = this.labelSprite(live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', live ? 'live' : 'dead', 0.045);
+    sp.position.set(0, 0.09, -0.25); sp.renderOrder = 13; g.add(sp);
+    this.fxList.push({ t: 0, life: 2, mark: sp });
   }
   stepFx(dt) {
     if (this.arcLight.intensity > 0) this.arcLight.intensity = Math.max(0, this.arcLight.intensity - 180 * dt);
@@ -1456,7 +1528,7 @@ class View3D {
     for (const f of done) {
       if (f.sph) { this.scene.remove(f.sph); f.sph.material.dispose(); }
       if (f.pts) { this.scene.remove(f.pts); f.pts.geometry.dispose(); f.pts.material.dispose(); }
-      if (f.mark) { this.scene.remove(f.mark); f.mark.material.map.dispose(); f.mark.material.dispose(); }
+      if (f.mark) { if (f.mark.parent) f.mark.parent.remove(f.mark); f.mark.material.map.dispose(); f.mark.material.dispose(); }
     }
     if (done.length) this.fxList = this.fxList.filter(f => f.t < f.life);
   }
@@ -1596,7 +1668,7 @@ class View3D {
   }
   xrSelect(info) {
     this.app.userGesture();
-    if (this.tutor && this.tutor.m.visible) { this.showTutor(false); store.set(this.room ? 'ts.polyTutorVR' : 'ts.vrTutor', '1'); this.pulse(info, 0.3); return; }
+    if (this.tutor && this.tutor.m.visible) { this.showTutor(false); store.set(this.tutorKind === 'uvn' ? 'ts.uvnCard' : this.room ? 'ts.polyTutorVR' : 'ts.vrTutor', '1'); this.pulse(info, 0.3); return; }
     const hits = this.xrHits(info);
     // полигон: курок с предметом в этой руке — надеть, повесить, коснуться указателем по лучу
     if (this.room && this.items && this.items.select(info, hits)) return;
@@ -1606,6 +1678,7 @@ class View3D {
     if (u.board) { this.boardClick(h.uv); this.pulse(info, 0.3); return; }
     if (u.menu) { this.menuClick(h.uv); this.pulse(info, 0.5); return; }
     this.closeMenu3D();
+    this.noteHit(h); this.probeHand = info.grip;
     if (u.dev) { this.app.pick3D(u.dev, false, { menu3d: acts => this.showMenu3D(u.dev, acts, h.point) }); this.pulse(info, 0.7); return; }
     if (u.wire) { this.app.pickWire3D(u.wire, false); this.pulse(info, 0.5); return; }
     if (u.ground) {
@@ -1621,6 +1694,7 @@ class View3D {
     // полигон: боковая кнопка — взять предмет и отпустить (у места — повесить, поставить)
     if (this.room && this.items) { this.items.squeeze(info, this.xrHits(info)); this.drawWrist(); return; }
     const h = this.xrHit(info);
+    this.noteHit(h); this.probeHand = info.grip;
     if (h && h.object.userData.dev) { this.app.pick3D(h.object.userData.dev, true); this.pulse(info, 0.4); }
     else if (h && h.object.userData.wire) { this.app.pickWire3D(h.object.userData.wire, true); this.pulse(info, 0.4); }
   }
@@ -1817,6 +1891,12 @@ class View3D {
     if (p) this.beacon.position.set(p.x, 8, p.z);
   }
   say(text, level = 'info') { this.app.toast(text, level); this.banner(text, level); }
+  // Карточка «Указатель: как понять результат» — при первом взятии указателя (в обучении; в экзамене и показе — нет)
+  uvnCard() {
+    const app = this.app;
+    if ((app.exam && app.exam.active()) || app.demoOn || store.get('ts.uvnCard') === '1') return;
+    if (this.renderer.xr.isPresenting) this.showTutor(true, 'uvn'); else this.walk.intro(true, false, 'uvn');
+  }
   // G, «Перейти · G», «К следующему» (щит, B/Y в шлеме): к аппарату следующего шага
   goNext() {
     const app = this.app, g = app.guideNext();
@@ -1905,6 +1985,7 @@ class View3D {
   }
   onXRStart() {
     this.tp.cancel();
+    this.probe.dispose();
     this.showRoof(true);
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
@@ -1929,6 +2010,7 @@ class View3D {
   onXREnd() {
     // затемнение и метка не остаются после шлема
     this.tp.cancel();
+    this.probe.dispose();
     this.showRoof(this.yardWalk);
     Diag.sessionEnd();
     if (this.tutor) this.tutor.m.visible = false;

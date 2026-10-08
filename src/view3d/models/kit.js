@@ -39,7 +39,9 @@ const PAL = {
   volt: { dead: 0x7d8884, gnd: 0xF2C318, v220: 0xC9D52E, v110: 0x22B8F5, v35: 0xD8893E, v10: 0xB660E6, v6: 0x5A86FF, v04: 0xFF8B3D, vlow: 0xA0ADA8,
     on: 0xFF2D40, off: 0x1FD36C, blown: 0xFFA21F, lampDark: 0x2a2f2d, live: 0xff6a00, btnOn: 0xb81c2a, btnOff: 0x168a45 },
   ui: { rayIdle: 0x1f45ff, rayHot: 0xffd23f, ring: 0xffd23f, proxy: 0xffffff, lamp: 0xffffff, wireLine: 0x5f666a,
-    arc: 0xe6f6ff, sparks: 0xffd27a, arcLight: 0x9fd8ff, beacon: 0xff4d4d, beaconGlow: 0xff2020, window: 0xffcf70 },
+    arc: 0xe6f6ff, sparks: 0xffd27a, arcLight: 0x9fd8ff, beacon: 0xff4d4d, beaconGlow: 0xff2020, window: 0xffcf70,
+    // телепорт (teleport.js): метка «можно» и «нельзя», затемнение
+    tpOk: 0x8fe3ff, tpNo: 0xff3b4e, fade: 0x05080a },
   // подписи (холст, CSS-цвета): над аппаратами; итог проверки указателем на площадке — «нет» тёмным, «есть» красным (не зелёным, как плакат)
   label: { bg: 'rgba(14,20,18,0.82)', fg: '#ffffff', dead: 'rgba(14,20,18,0.9)', live: 'rgba(200,22,44,0.94)', edge: 'rgba(255,255,255,0.55)' },
   // свет и окружение: площадка под небом и закрытое помещение полигона
@@ -258,4 +260,4 @@ function makeKit(T, M, geoCache, nodeMatFor) {
   return k;
 }
 
-export { S3, H3, PAL, TEX, rng, texture, makeMaterials, makeKit };
+export { S3, H3, PAL, TEX, rng, css, texture, makeMaterials, makeKit };

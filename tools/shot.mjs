@@ -22,7 +22,10 @@ try {
   const body = readFileSync(file, 'utf8');
   const shots = [];
   await p.eval(`window.__shot = async name => { window.__shots = (window.__shots || []).concat(name); }`);
-  const res = await p.eval(`(async () => { ${body} })()`);
+  // как действие пользователя: сценарий может войти в VR (эмулятор iwer), включить звук, полноэкранный режим
+  const r = await p.send('Runtime.evaluate', { expression: `(async () => { ${body} })()`, awaitPromise: true, returnByValue: true, userGesture: true });
+  if (r.result && r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
+  const res = r.result && r.result.result.value;
   console.log(JSON.stringify(res, null, 1));
   await sleep(300);
   const name = (res && res.name) || res || 'shot';

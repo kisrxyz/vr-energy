@@ -8,7 +8,8 @@ import { wireMid } from '../view2d/scheme2d.js';
 import { buildRoom } from './room.js';
 import { Items } from './items.js';
 import { placeText } from '../core/permit.js';
-import { Walk } from './walk.js';
+import { Walk, REACH as WALK_REACH } from './walk.js';
+import { Teleport } from './teleport.js';
 import { footprints, makeYardWorld } from './world.js';
 
 /* ===== §6. 3D и VR =====
@@ -124,6 +125,7 @@ class View3D {
     this.orbit = { target: new T.Vector3(), r: 60, th: 0.42, ph: 0.98 };
     this.bindPointer();
     this.walk = new Walk(this);
+    this.tp = new Teleport(this);
     this.setupXR();
     Diag.on(t => { if (t === 'error') { this.drawBoard(); if (this.dbg && this.dbg.m.visible) this.drawDebug(); } });
     this.ro = new ResizeObserver(() => this.resize());
@@ -197,6 +199,7 @@ class View3D {
     for (const ch of [...this.root.children]) this.root.remove(ch);
     this.dev.clear(); this.nodeMats.clear(); this.pickables = []; this.hover = null; this.ring.visible = false;
     this.pzDev = new Map(); this.closeMenu3D();
+    if (this.tp) this.tp.cancel();
     if (this.items) { this.items.dispose(); this.items = null; }
     const poly = !!(s.room && Array.isArray(s.room.cells) && s.room.cells.length);
     this.setEnv(poly);
@@ -703,6 +706,7 @@ class View3D {
     if (trips || this._tripsWas) this.setLamps(blink);
     this._tripsWas = trips;
     this.stepFx(dt);
+    this.tp.step(dt);
     const xr = this.renderer.xr.isPresenting;
     if (this.labelMesh) this.labelMesh.material.uniforms.far.value = xr ? 32 : 0;
     if (xr) this.xrFrame(dt);
@@ -1027,12 +1031,12 @@ class View3D {
     // в полигоне — как брать предметы (то же на табличке над стендом)
     x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText(this.room ? 'Как брать предметы' : 'Как управлять', 44, 82);
     const steps = this.room ? [
-      ['1', 'Подойдите к стенду справа от входа', 'Левый стик — ходьба, правый — поворот, курок по полу — переход. На стенде — СИЗ, указатель, ПЗ, плакаты, замок, ограждение.'],
+      ['1', 'Подойдите к стенду справа от входа', 'Левый стик — ходьба, правый — поворот, курок по полу — переход к кольцу. На стенде — СИЗ, указатель, ПЗ, плакаты, замок, ограждение.'],
       // описание шага — не больше 2 строк, иначе обрезается «…»
       ['2', 'Боковая кнопка — взять и отпустить', 'Рука у предмета, боковая кнопка — взять. Ещё раз у нужного места — повесить, запереть, поставить; в стороне — уронить.'],
       ['3', 'СИЗ и указатель', 'Перчатки и каска надеваются сразу. Указатель — к нижним контактам в отсеке тележки. Курок — переключить аппарат.'],
     ] : [
-      ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход в эту точку.'],
+      ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход туда, где кольцо (красное — не пройти).'],
       ['2', 'Боковая кнопка — указатель', 'Наведите луч и нажмите боковую кнопку (под средним пальцем) — проверка напряжения.'],
       ['3', 'Стики', 'Левый стик — ходьба, правый — поворот. Кнопка A или X — отметка для отчёта теста.'],
     ];
@@ -1470,12 +1474,12 @@ class View3D {
     if (u.dev) { this.app.pick3D(u.dev, false, { menu3d: acts => this.showMenu3D(u.dev, acts, h.point) }); this.pulse(info, 0.7); return; }
     if (u.wire) { this.app.pickWire3D(u.wire, false); this.pulse(info, 0.5); return; }
     if (u.ground) {
-      // в помещении — только туда, где можно стоять (не в ячейку и не за стену)
-      if (this.world && !this.world.walkable(h.point.x, h.point.z)) { this.banner('Туда не пройти.', 'info'); return; }
-      const p = this.tmp.v;
-      this.camera.getWorldPosition(p);
-      this.rig.position.x += h.point.x - p.x;
-      this.rig.position.z += h.point.z - p.z;
+      // туда, где можно стоять (не в ячейку, не в аппарат, не за ограждение и стену): затемнение, перенос, кольцо прибытия
+      if (h.distance > this.floorReach()) { this.banner('Дальше 25 м — подойдите ближе.', 'info'); return; }
+      if (!this.canStand(h.point)) { this.banner('Туда не пройти.', 'info'); return; }
+      const p = this.camera.getWorldPosition(this.tmp.v);
+      this.tp.go(p, h.point, (x, z) => { const c = this.camera.getWorldPosition(this.tmp.v2); this.rig.position.x += x - c.x; this.rig.position.z += z - c.z; }, 'fade');
+      this.pulse(info, 0.2);
     }
   }
   xrSqueeze(info) {
@@ -1594,7 +1598,7 @@ class View3D {
     this.menu3d = null;
   }
   xrFrame(dt) {
-    let hoverId = null;
+    let hoverId = null, floor = null;
     const rays = this._rays || (this._rays = new Map());
     rays.clear();
     for (const info of this.ctrls) {
@@ -1611,6 +1615,8 @@ class View3D {
         if (hp.object.userData.dev) hoverId = hp.object.userData.dev;
       } else { info.line.scale.z = 6; info.dot.visible = false; }
       const u = hp && hp.object.userData, col = it || (u && (u.dev || u.board || u.menu || u.wire)) ? RAY.hot : RAY.idle;
+      // луч на полу — метка: куда встанете (дальше 25 м на площадке — нет)
+      if (!floor && hp && u.ground && !this.tp.busy && hp.distance <= this.floorReach()) floor = hp;
       info.line.material.color.setHex(col); info.dot.material.color.setHex(col);
       const gp = info.src.gamepad;
       // A (правый) или X (левый) — отметка для отчёта теста
@@ -1625,6 +1631,7 @@ class View3D {
       }
     }
     this.setHover(hoverId);
+    this.tp.aim(floor && floor.point, !!floor && this.canStand(floor.point));
     if (this.room && this.items) this.items.xrFrame(this.ctrls, rays);
     if (this.bannerH.m.visible && performance.now() > this.bannerUntil) this.bannerH.m.visible = false;
     const now = performance.now();
@@ -1634,6 +1641,9 @@ class View3D {
       if (!g.board) this.lastGaze = { label: g.label, t: now };
     }
   }
+  // Курок по полу: на площадке — до 25 м (как щелчок на ноутбуке), в помещении — до стены (пол только внутри)
+  floorReach() { return this.room ? 80 : WALK_REACH.floor; }
+  canStand(p) { return !this.world || this.world.walkable(p.x, p.z); }
   xrMove(ax, ay, dt) {
     if (Math.abs(ax) < 0.15 && Math.abs(ay) < 0.15) return;
     const f = this.tmp.dir;
@@ -1662,6 +1672,7 @@ class View3D {
     if (Math.abs(ax) < 0.3) info.turned = false;
   }
   onXRStart() {
+    this.tp.cancel();
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
     // ходьба на ноутбуке отключается до выхода из шлема; камера — снова в начале координат
@@ -1683,6 +1694,8 @@ class View3D {
     this.drawBoard();
   }
   onXREnd() {
+    // затемнение и метка не остаются после шлема
+    this.tp.cancel();
     Diag.sessionEnd();
     if (this.tutor) this.tutor.m.visible = false;
     this.handsOnly = false;

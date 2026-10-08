@@ -10,6 +10,7 @@
    Состояние захвата меняют только lockChanged и lockFailed: их можно вызвать и без настоящего захвата (проверка в headless). */
 import { store } from '../ui/store.js';
 import { esc } from '../core/elements.js';
+import { pathFree } from './teleport.js';
 
 const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
 // Площадка: до аппарата и провода (они высокие), до щита и меню, до земли для перехода, м
@@ -25,6 +26,8 @@ class Walk {
     this.locked = false; this.noLock = !('requestPointerLock' in HTMLElement.prototype); this.lockFails = 0;
     this.lockReq = null; this.unlockedAt = -Infinity; this.lockWait = false;
     this.drag = null; this.cursor = null; this.aim = null; this.hudText = {};
+    // touch — касание (телефон, планшет): мышь не захватывают, смотрят перетаскиванием, действие — касанием по месту
+    this.touch = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches);
     this.makeHud();
     this.bind();
   }
@@ -94,6 +97,7 @@ class Walk {
   }
   disable() {
     this.on = false; this.keys.clear();
+    if (this.v.tp) this.v.tp.aim(null);
     if (this.v.items) { this.v.items.hover(null); this.v.items.preview(null); }
     this.hud.root.hidden = true;
     delete this.v.host.dataset.fps;
@@ -117,7 +121,7 @@ class Walk {
   // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
   showClick() {
     const h = this.hud;
-    h.click.hidden = !this.on || this.locked || this.noLock || !h.intro.hidden;
+    h.click.hidden = !this.on || this.locked || this.noLock || this.touch || !h.intro.hidden;
     h.clickWhy.textContent = this.lockWait ? 'Браузер ещё не отпустил мышь — щёлкните ещё раз' : 'Esc — снова отпустить мышь';
   }
   lock() {
@@ -196,8 +200,11 @@ class Walk {
     if (t === 'pointerdown') {
       this.v.app.userGesture();
       if (!this.hud.intro.hidden) return;
+      if (e.pointerType === 'touch' && !this.touch) { this.touch = true; this.showClick(); }
       if (this.locked) { if (e.button === 0) this.action(); else if (e.button === 2) this.drop(); return; }
-      if (!this.noLock) { this.lock(); return; }
+      // касание — не захват: щелчок по месту там, где коснулись
+      if (e.pointerType === 'touch') this.cursor = { x: e.clientX, y: e.clientY };
+      if (!this.noLock && e.pointerType !== 'touch') { this.lock(); return; }
       this.drag = { x: e.clientX, y: e.clientY, moved: false, btn: e.button };
       try { e.target.setPointerCapture(e.pointerId); } catch (_) { /* без захвата */ }
       return;
@@ -216,7 +223,11 @@ class Walk {
     if (t === 'pointerup' || t === 'pointercancel') {
       const d = this.drag;
       this.drag = null;
-      if (d && !d.moved && t === 'pointerup') { if (d.btn === 0) this.action(); else if (d.btn === 2) this.drop(); }
+      if (d && !d.moved && t === 'pointerup') {
+        // действие — по тому, что под пальцем или курсором сейчас (касание не двигало курсор до нажатия)
+        this.cursor = { x: e.clientX, y: e.clientY }; this.updateAim();
+        if (d.btn === 0) this.action(); else if (d.btn === 2) this.drop();
+      }
     }
     if (t === 'pointerleave') this.cursor = null;
   }
@@ -224,6 +235,8 @@ class Walk {
   // ---------- каждый кадр ----------
   step(dt) {
     if (!this.on) return;
+    // идёт переход (teleport.js): место меняет он, клавиши ждут
+    if (this.v.tp && this.v.tp.busy) { this.vx = 0; this.vz = 0; this.updateAim(); return; }
     const k = this.keys, has = (...a) => a.some(c => k.has(c));
     const f = (has('KeyW', 'ArrowUp') ? 1 : 0) - (has('KeyS', 'ArrowDown') ? 1 : 0);
     const s = (has('KeyD', 'ArrowRight') ? 1 : 0) - (has('KeyA', 'ArrowLeft') ? 1 : 0);
@@ -242,7 +255,7 @@ class Walk {
   updateAim() {
     const v = this.v, T = v.kit.T, cv = v.renderer.domElement, r = cv.getBoundingClientRect();
     let nx = 0, ny = 0;
-    if (!this.locked && this.noLock && this.cursor) { nx = ((this.cursor.x - r.left) / r.width) * 2 - 1; ny = -((this.cursor.y - r.top) / r.height) * 2 + 1; }
+    if (!this.locked && (this.noLock || this.touch) && this.cursor) { nx = ((this.cursor.x - r.left) / r.width) * 2 - 1; ny = -((this.cursor.y - r.top) / r.height) * 2 + 1; }
     this._ndc = this._ndc || new T.Vector2();
     this._ndc.set(nx, ny);
     v.camera.updateMatrixWorld();
@@ -252,13 +265,18 @@ class Walk {
     const hits = v.ray.intersectObjects(v.pickables, false);
     if (yard) {
       this.aim = this.pickYard(hits);
-      // на землю — только если перед ней ничего нет (провода над головой не в счёт) и там можно стоять
+      // на землю — только если перед ней ничего нет (провода над головой не в счёт); можно ли там стоять — метка покажет
       const first = hits.find(h => !h.object.userData.wire);
-      this.floor = !this.aim && first && first.object.userData.ground && first.distance <= REACH.floor && this.world.walkable(first.point.x, first.point.z) ? first : null;
+      this.floor = !this.aim && first && first.object.userData.ground && first.distance <= REACH.floor ? first : null;
     } else {
       this.aim = v.items ? v.items.pick(hits, 'desk', 2.6) : null;
-      this.floor = hits.find(h => h.object.userData.ground) || null;
+      // полигон: переход по полу — без захвата мыши (тачпад, телефон); с захватом ходят клавишами.
+      // Места для предметов на полу (коробки ограждения перед ячейками) пол не закрывают
+      const first = hits.find(h => !h.object.userData.mount);
+      this.floor = !this.aim && (this.noLock || this.touch) && first && first.object.userData.ground && first.distance < 9 ? first : null;
     }
+    this.floorOk = !!this.floor && this.world.walkable(this.floor.point.x, this.floor.point.z);
+    if (v.tp) v.tp.aim(this.floor && !v.tp.busy ? this.floor.point : null, this.floorOk);
     this.drawHud();
   }
   // Площадка: аппарат, провод (с указателем или ПЗ), щит или меню под прицелом — как щелчок мышью в обзоре (view3d.firstHit)
@@ -276,7 +294,8 @@ class Walk {
     const lab = !this.aim ? '' : yard ? v.targetText(this.aim.h) : it ? it.label(this.aim, 'desk') : '', hot = !!(this.aim && lab);
     const key = !this.aim ? '' : this.aim.type === 'item' || this.aim.type === 'mount' || this.aim.type === 'stand' ? 'E' : 'E или щелчок';
     // у места подпись уже начинается с клавиши: «E — поставить ограждение у яч.2»
-    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(lab) : `${esc(lab)}<small>${key}</small>`) : yard && this.floor ? 'Перейти сюда<small>щелчок или E</small>' : '');
+    const go = !this.floor ? '' : this.floorOk ? `Перейти сюда<small>${this.touch ? 'касание' : 'щелчок или E'}</small>` : 'Туда не пройти';
+    set('aim', h.aim, hot ? (lab.startsWith('E — ') ? esc(lab) : `${esc(lab)}<small>${key}</small>`) : go);
     h.cross.classList.toggle('hot', hot);
     // без захвата курсор над сценой — обычная стрелка (перекрестие на сцене не видно); без захвата вообще — рука над предметом
     const cur = this.noLock && hot ? 'pointer' : 'default';
@@ -304,12 +323,8 @@ class Walk {
     if (!v.items) return;
     const r = v.items.act('desk', tgt);
     if (r !== 'pass') return;
-    // без захвата мыши (тачпад, планшет): щелчок по полу — перейти туда, как курок по полу в шлеме
-    if (!tgt) {
-      const f = this.floor;
-      if (this.noLock && f && f.distance < 9 && this.world.walkable(f.point.x, f.point.z)) { this.x = f.point.x; this.z = f.point.z; this.apply(); }
-      return;
-    }
+    // без захвата мыши (тачпад, планшет, телефон): щелчок по полу — перейти туда, как курок по полу в шлеме
+    if (!tgt) { this.goFloor(); return; }
     if (tgt.type === 'dev') v.app.pickEl(tgt.id, false, { menu3d: acts => v.showMenu3D(tgt.id, acts, tgt.h.point) });
     else if (tgt.type === 'board') v.boardClick(tgt.h.uv);
     else if (tgt.type === 'menu') v.menuClick(tgt.h.uv);
@@ -318,15 +333,19 @@ class Walk {
   // земля — перейти туда (площадка большая, как курок по полу в шлеме)
   actYard(t) {
     const v = this.v, app = v.app;
-    if (!t) {
-      const f = this.floor;
-      if (f) { this.x = f.point.x; this.z = f.point.z; this.vx = 0; this.vz = 0; this.apply(); }
-      return;
-    }
+    if (!t) { this.goFloor(); return; }
     if (t.type === 'menu') v.menuClick(t.h.uv);
     else if (t.type === 'board') v.boardClick(t.h.uv);
     else if (t.type === 'wire') { v.closeMenu3D(); app.pickWire3D(t.id, false); }
     else { v.closeMenu3D(); app.pick3D(t.id, false, { menu3d: acts => v.showMenu3D(t.id, acts, t.h.point) }); }
+  }
+  // Перейти к метке на полу: путь по прямой свободен — плавно, иначе затемнением; туда нельзя — сказать у прицела
+  goFloor() {
+    const f = this.floor, tp = this.v.tp;
+    if (!f || tp.busy) return;
+    if (!this.floorOk) { this.said('Туда не пройти'); return; }
+    const from = { x: this.x, z: this.z }, to = { x: f.point.x, z: f.point.z, y: f.point.y };
+    tp.go(from, to, (x, z) => { this.x = x; this.z = z; this.vx = 0; this.vz = 0; this.apply(); }, pathFree(this.world, from, to, R) ? 'glide' : 'fade');
   }
   drop() {
     const it = this.v.items;
@@ -335,4 +354,4 @@ class Walk {
   }
 }
 
-export { Walk, EYE };
+export { Walk, EYE, REACH };

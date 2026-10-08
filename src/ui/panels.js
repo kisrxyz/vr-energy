@@ -270,16 +270,19 @@ const Panels = {
     const hands = this.scheme.room && this.mode === '3d';
     const tools = hands ? '' : `<button class="btn" data-act="tool-check" aria-pressed="${this.tool === 'check'}">Указатель напряжения</button>
         <button class="btn" data-act="tool-pz" aria-pressed="${this.tool === 'pz'}" title="Наложить или снять переносное заземление на провод или шину">Переносное заземление</button>`;
-    return `${welcome}<div class="sec" id="taskSec"></div>${poly}
-      <div class="sec"><h3>Инструменты</h3>${hands ? '<p class="muted">Указатель напряжения и переносное заземление — предметы на стенде у входа: возьмите их руками (E на ноутбуке, боковая кнопка в шлеме).</p>' : ''}
+    // В 3D панель — рядом со сценой: сверху задание и следующий шаг, остальное свёрнуто (раскрытое запоминается)
+    const fold = (key, title, body) => d3 ? `<details class="sec fold" data-fold="${key}"${this.folds.has(key) ? ' open' : ''}><summary><h3>${title}</h3></summary>${body}</details>` : `<div class="sec"><h3>${title}</h3>${body}</div>`;
+    const toolsBody = `${hands ? '<p class="muted">Указатель напряжения и переносное заземление — предметы на стенде у входа: возьмите их руками (E на ноутбуке, боковая кнопка в шлеме).</p>' : ''}
         <div class="row">${tools}
         <button class="btn" data-act="ack" id="ackBtn" ${this.tr.hasAlarms() ? '' : 'disabled'}>Квитировать</button>
         ${exam ? '' : '<button class="btn" data-act="reset">Нормальный режим</button>'}</div>
         <label class="switch"><span>Блокировки<small>${exam ? 'Задал экзаменатор' : 'Не дают выполнить опасную операцию'}</small></span><input type="checkbox" data-opt="interlocks" ${o.interlocks ? 'checked' : ''}${dis}></label>
-        <label class="switch"><span>Проверка напряжения перед ЗН<small>В свободной тренировке; в задании — по эталону</small></span><input type="checkbox" data-opt="requireCheck" ${o.requireCheck ? 'checked' : ''}${dis}></label>
-      </div>
-      <div class="sec"><h3>Журнал <span class="chip" id="logCount">0</span></h3><ul class="log" id="log"></ul></div>
-      <div class="sec" id="recSec"></div>`;
+        <label class="switch"><span>Проверка напряжения перед ЗН<small>В свободной тренировке; в задании — по эталону</small></span><input type="checkbox" data-opt="requireCheck" ${o.requireCheck ? 'checked' : ''}${dis}></label>`;
+    const welcomeD3 = d3 && welcome ? welcome : '', polyD3 = d3 && poly ? fold('poly', 'VR-полигон', poly.replace(/^<div class="sec"><h3>VR-полигон<\/h3>/, '').replace(/<\/div>$/, '')) : poly;
+    return `${d3 ? '' : welcome}<div class="sec" id="taskSec"></div>${welcomeD3}${polyD3}
+      ${fold('tools', 'Инструменты', toolsBody)}
+      ${fold('log', 'Журнал <span class="chip" id="logCount">0</span>', '<ul class="log" id="log"></ul>')}
+      ${d3 ? `<details class="sec fold" data-fold="rec"${this.folds.has('rec') ? ' open' : ''}><summary><h3>Режим инструктора</h3></summary><div id="recSec" data-fold="1"></div></details>` : '<div class="sec" id="recSec"></div>'}`;
   },
   renderTask() {
     const box = document.getElementById('taskSec');
@@ -382,19 +385,21 @@ const Panels = {
   renderRec() {
     const box = document.getElementById('recSec');
     if (!box) return;
+    // в 3D раздел свёрнут, заголовок — у свёртки
+    const H = box.dataset.fold ? '' : '<h3>Режим инструктора</h3>';
     if (this.exam && this.exam.active()) { box.innerHTML = ''; return; }
     const r = this.tr.rec;
-    if (this.tr.run && !this.tr.run.done) { box.innerHTML = '<h3>Режим инструктора</h3><p>Доступен после завершения задания.</p>'; return; }
+    if (this.tr.run && !this.tr.run.done) { box.innerHTML = H + '<p>Доступен после завершения задания.</p>'; return; }
     // запись не умеет мероприятия допуска (СИЗ, плакаты, замок, порядок этапов) — задание вышло бы без порядка
     if (!r && this.scheme.room) {
-      box.innerHTML = '<h3>Режим инструктора</h3><p>В VR-полигоне запись эталона пока недоступна: она запомнит переключения и предметы, но не технические мероприятия и их порядок. Задание полигона — готовое.</p><div class="row"><button class="btn" data-act="rec-start" disabled>Записать задание</button></div>';
+      box.innerHTML = H + '<p>В VR-полигоне запись эталона пока недоступна: она запомнит переключения и предметы, но не технические мероприятия и их порядок. Задание полигона — готовое.</p><div class="row"><button class="btn" data-act="rec-start" disabled>Записать задание</button></div>';
       return;
     }
     if (!r) {
-      box.innerHTML = '<h3>Режим инструктора</h3><p>Запишите эталон: выполните переключения сами, и программа сделает из них задание для ученика.</p><div class="row"><button class="btn" data-act="rec-start">Записать задание</button></div>';
+      box.innerHTML = H + '<p>Запишите эталон: выполните переключения сами, и программа сделает из них задание для ученика.</p><div class="row"><button class="btn" data-act="rec-start">Записать задание</button></div>';
       return;
     }
-    box.innerHTML = `<h3>Режим инструктора <span class="chip rec">запись</span></h3><p>Шагов записано: ${r.steps.length}${r.errors ? ` · ошибок: ${r.errors}` : ''}. Исходное положение аппаратов уже запомнено.</p>
+    box.innerHTML = `${box.dataset.fold ? '<p><span class="chip rec">запись</span></p>' : '<h3>Режим инструктора <span class="chip rec">запись</span></h3>'}<p>Шагов записано: ${r.steps.length}${r.errors ? ` · ошибок: ${r.errors}` : ''}. Исходное положение аппаратов уже запомнено.</p>
       <div class="row"><button class="btn primary" data-act="rec-save" ${r.steps.length ? '' : 'disabled'}>Сохранить задание</button><button class="btn" data-act="rec-cancel">Отменить</button></div>`;
   },
   renderLog() {

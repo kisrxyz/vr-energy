@@ -29,6 +29,14 @@ const app = Object.assign({
     try { if (window.claude && typeof window.claude.use === 'function') window.claude.use('downloads').then(d => { this.dl = d; }, () => {}); } catch (e) { this.dl = null; }
     this.welcomeSeen = store.get('ts.welcome') === '1';
     this.welcome3d = store.get('ts.welcome3d') === '1';
+    // раскрытые разделы боковой панели в 3D (инструменты, журнал…): по умолчанию свёрнуты
+    try { this.folds = new Set(JSON.parse(store.get('ts.folds') || '[]')); } catch (e) { this.folds = new Set(); }
+    document.getElementById('side').addEventListener('toggle', e => {
+      const d = e.target;
+      if (!d.dataset || !d.dataset.fold) return;
+      if (d.open) this.folds.add(d.dataset.fold); else this.folds.delete(d.dataset.fold);
+      store.set('ts.folds', JSON.stringify([...this.folds]));
+    }, true);
     this.stepGuide = store.get('ts.stepGuide') !== '0';
     const th = store.get('ts.theme');
     if (th === 'dark' || th === 'light') document.documentElement.dataset.theme = th;
@@ -168,8 +176,26 @@ const app = Object.assign({
     document.getElementById('zSel').hidden = m !== 'edit';
     if (m !== 'edit') this.view.setBoxMode(false);
     if (m === '3d') this.show3D(); else if (this.v3) this.v3.hide();
+    this.syncMax3D();
     this.view.render(); this.renderSide(); this.renderLegend(); this.renderStatus();
     try { history.replaceState(null, '', '#' + m); } catch (e) { /* адрес не меняем */ }
+  },
+  // Телефон (узкий экран): 3D-вид — на весь экран по умолчанию (на 390×844 иначе остаётся 350 px), «Панель» — вернуть задание и журнал.
+  // В показе и экзамене — как раньше: панель ведущего и «задание N из M» нужны на экране
+  phone() { return !!(window.matchMedia && matchMedia('(max-width: 760px)').matches); },
+  setMax3D(on, byUser) {
+    if (byUser) this.max3dOff = !on;
+    this.max3d = !!on;
+    const root = document.getElementById('app');
+    if (on) root.dataset.max = '1'; else delete root.dataset.max;
+    const b = document.getElementById('btnFull');
+    if (b) b.textContent = this.phone() ? (on ? 'Панель' : 'Во весь экран') : 'На весь экран';
+    if (this.v3 && this.v3.ready) this.v3.resize();
+  },
+  syncMax3D() {
+    const want = this.mode === '3d' && this.phone() && !this.max3dOff && !this.demoOn && !(this.exam && this.exam.active());
+    if (want !== !!this.max3d || (this.mode !== '3d' && this.max3d)) this.setMax3D(want && this.mode === '3d');
+    else this.setMax3D(this.max3d);
   },
   async show3D() {
     const load = document.getElementById('v3load');
@@ -233,7 +259,12 @@ const app = Object.assign({
       if (acts.length > 1) { if (at && at.menu3d) at.menu3d(acts); else this.showActMenu(id, acts, at); return; }
       this.tr.operate(id);
     } else if (TYPES[el.t].cls === 'source') this.tr.toggleSource(id);
-    else { const sub = elSubtitle(el), g = GLOSSARY[el.t]; this.toast(`${el.name}${sub ? ' (' + sub + ')' : ''}: ${g ? g.what : TYPES[el.t].title} Не переключается.`); }
+    else {
+      // справка о неизменяемом аппарате: тостом; в 3D — и у прицела (пешком), в шлеме — табличкой у аппарата и на щите
+      const sub = elSubtitle(el), g = GLOSSARY[el.t], text = `${el.name}${sub ? ' (' + sub + ')' : ''}: ${g ? g.what : TYPES[el.t].title} Не переключается.`;
+      this.toast(text);
+      if (this.mode === '3d' && this.v3 && this.v3.ready) this.v3.infoFx(text, id);
+    }
   },
   // Меню аппарата с несколькими действиями (выкатная тележка)
   showActMenu(id, acts, at) {
@@ -549,6 +580,8 @@ const app = Object.assign({
     document.addEventListener('keydown', e => this.onKey(e));
     document.getElementById('btnVR').addEventListener('click', () => { if (this.v3) this.v3.enterVR(); });
     document.getElementById('btnFull').addEventListener('click', () => {
+      // телефон: 3D на весь экран и обратно (панель с заданием) — без Fullscreen API (в Safari его нет); компьютер — полноэкранный режим
+      if (this.phone()) { this.setMax3D(!this.max3d, true); return; }
       const v = document.getElementById('view3d');
       try { if (document.fullscreenElement) document.exitFullscreen(); else if (v.requestFullscreen) v.requestFullscreen().catch(() => this.toast('Полноэкранный режим недоступен в этом окне.', 'warn')); }
       catch (e) { this.toast('Полноэкранный режим недоступен в этом окне.', 'warn'); }

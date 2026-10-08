@@ -1439,8 +1439,11 @@ class View3D {
     } else para('Свободная тренировка: наведите луч на аппарат и нажмите курок.', 26, 500, '#ffffff', 2);
     y = Math.max(y + 12, 392);
     x.fillStyle = '#2b3a34'; x.fillRect(32, y - 30, W - 64, 2);
+    // справка о неизменяемом аппарате, нажатом в шлеме (infoFx) — 20 с вместо первой записи журнала
+    const info = this.boardInfo && performance.now() < this.boardInfo.until ? this.boardInfo.text : null;
+    if (info) { x.font = F(500, 21); x.fillStyle = '#9fd0ff'; x.fillText(this.fit(x, 'Справка: ' + info, W - 64), 32, y); y += 30; }
     x.font = F(400, 21);
-    for (const e of tr.log.slice(0, 3)) {
+    for (const e of tr.log.slice(0, info ? 2 : 3)) {
       x.fillStyle = e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#c6d3cd';
       x.fillText(this.fit(x, e.text, W - 64), 32, y); y += 30;
     }
@@ -1613,6 +1616,37 @@ class View3D {
     this.scene.add(sp);
     this.fxList.push({ t: 0, life: 2.6, mark: sp });
   }
+  // Справка о неизменяемом аппарате (трансформатор, шина, ТТ…): пешком — у прицела; в шлеме — табличка у аппарата на 6 с
+  // и строка на щите (20 с); тост показывает приложение
+  infoFx(text, id) {
+    if (!this.active) return;
+    if (this.fpsOn()) this.walk.said(text, false, 6000);
+    if (!this.renderer.xr.isPresenting) return;
+    this.boardInfo = { text, until: performance.now() + 20000 };
+    this.drawBoard();
+    const p = this.hitAt && this.hitAt.id === id && performance.now() - this.hitAt.t < 1500 ? this.hitAt.p.clone() : this.posOf(id);
+    if (!p) return;
+    const T = THREE, c = document.createElement('canvas'), x = c.getContext('2d'), F = (w, sz) => `${w} ${sz}px "Golos Text", system-ui, sans-serif`;
+    c.width = 900;
+    x.font = F(500, 34);
+    const lines = this.wrap(x, text, c.width - 60, 4);
+    c.height = 40 + lines.length * 46;
+    x.fillStyle = 'rgba(16,24,21,0.94)'; rr(x, 0, 0, c.width, c.height, 22); x.fill();
+    x.fillStyle = '#ffffff'; x.font = F(500, 34);
+    lines.forEach((l, i) => x.fillText(l, 30, 54 + i * 46));
+    const tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace;
+    const w = 0.9, m = new T.Mesh(new T.PlaneGeometry(w, w * c.height / c.width), new T.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false }));
+    m.renderOrder = 11; m.raycast = () => {};
+    // у луча: в 1,6 м перед человеком в сторону аппарата (ближе, если аппарат ближе), чуть ниже глаз, лицом к человеку
+    const cam = this.camera.getWorldPosition(new T.Vector3()), dir = p.clone().sub(cam).setY(0), dist = dir.length();
+    if (dist < 1e-6) dir.set(0, 0, -1);
+    dir.normalize();
+    m.position.copy(cam).addScaledVector(dir, Math.min(1.6, Math.max(0.8, dist - 0.4))); m.position.y = clamp(cam.y - 0.12, 0.9, 2.4);
+    m.lookAt(cam.x, m.position.y, cam.z);
+    for (const f of this.fxList) if (f.panel) f.t = f.life;
+    this.scene.add(m);
+    this.fxList.push({ t: 0, life: 6, panel: m });
+  }
   // Шлем: табличка итога у рукоятки указателя на 2 с («Нет напряжения» — нейтральная, «ЕСТЬ НАПРЯЖЕНИЕ» — красная)
   probeLabel(g, live) {
     const sp = this.labelSprite(live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', live ? 'live' : 'dead', 0.045);
@@ -1639,12 +1673,14 @@ class View3D {
         f.pts.material.opacity = Math.max(0, 1 - k);
       }
       if (f.mark) f.mark.material.opacity = k > 0.75 ? Math.max(0, (1 - k) * 4) : 1;
+      if (f.panel) f.panel.material.opacity = k > 0.85 ? Math.max(0, (1 - k) * 6.6) : 1;
     }
     const done = this.fxList.filter(f => f.t >= f.life);
     for (const f of done) {
       if (f.sph) { this.scene.remove(f.sph); f.sph.material.dispose(); }
       if (f.pts) { this.scene.remove(f.pts); f.pts.geometry.dispose(); f.pts.material.dispose(); }
       if (f.mark) { if (f.mark.parent) f.mark.parent.remove(f.mark); f.mark.material.map.dispose(); f.mark.material.dispose(); }
+      if (f.panel) { this.scene.remove(f.panel); f.panel.material.map.dispose(); f.panel.material.dispose(); f.panel.geometry.dispose(); }
     }
     if (done.length) this.fxList = this.fxList.filter(f => f.t < f.life);
   }

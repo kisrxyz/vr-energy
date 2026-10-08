@@ -53,6 +53,7 @@ class Demo {
       this.saved = { source: app.source, json: mine ? null : JSON.stringify(app.scheme), mode: app.mode, opt: Object.assign({}, app.tr.opt), taskIdx: app.taskIdx };
       this.on = true; app.demoOn = true;
       document.getElementById('app').dataset.demo = '1';
+      app.syncMax3D();
       document.getElementById('btnDemo').setAttribute('aria-pressed', 'true');
       this.steps = demoSteps(n => this.has(n));
       this.bar.hidden = false;
@@ -64,6 +65,7 @@ class Demo {
     this.autoOn = false; this.paused = false;
     this.on = false; app.demoOn = false;
     delete document.getElementById('app').dataset.demo;
+    app.syncMax3D();
     document.body.classList.remove('demo-auto');
     document.getElementById('btnDemo').setAttribute('aria-pressed', 'false');
     this.bar.hidden = true; this.caption('');

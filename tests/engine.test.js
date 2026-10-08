@@ -10,6 +10,7 @@ import { WHY, MISPLACED } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
+import { findKRU } from '../src/view3d/zru.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
@@ -931,6 +932,28 @@ function doMeasure(tr, pm, m) {
       ok(!bad && tr.run.done && tr.run.completed && tr.run.grade.score === 100 && tr.peek() === null, `${smp.key} «${t.title}»: peek leads to 100 without cost` + (bad ? ' :: ' + bad : ''));
     }
   }
+}
+
+{
+  console.log('ZRU on yards: KRU cells recognised from the topology (3D only, engine unchanged)');
+  const kru = key => { const s = E.SAMPLES.find(x => x.key === key).make(); return { s, r: findKRU(s, engine.buildTopo(s)) }; };
+  ok(kru('ps110').r === null && kru('tp10').r === null, 'no KRU on ПС 110/10 and ТП 10/0,4 — yards as before');
+  const { s, r } = kru('rp10');
+  const names = r.cells.map(c => c.cart ? c.cart.name : c.parts[0].el.name);
+  ok(r.cells.length === 13 && r.buses.map(b => b.name).join() === '1С-10,2С-10', 'РП-10: 13 cells on two sections');
+  ok(names.join() === 'В-10 Ввод-1,ТН-1 тележка,ТСН тележка,В-10 Л-1,В-10 Л-3,В-10 Л-5,СВ-10,СР-10,В-10 Л-2,В-10 Л-4,В-10 Л-6,ТН-2 тележка,В-10 Ввод-2', 'row order by x: ' + names);
+  const l1 = r.cells.find(c => c.cart && c.cart.name === 'В-10 Л-1');
+  ok(l1.parts.map(p => p.el.name).sort().join() === 'ЗН Л-1,ТТ Л-1' && l1.down.el.name === 'КЛ-10 Л-1', 'line cell: CT and earthing switch inside, cable outside');
+  const vt = r.cells.find(c => c.cart && c.cart.name === 'ТН-1 тележка');
+  ok(vt.kind === 'vt' && vt.parts.map(p => p.el.t).sort().join() === 'fuse,vt' && !vt.down, 'VT cell: fuse and VT inside');
+  ok(r.cells.find(c => c.cart && c.cart.name === 'ТСН тележка').down.el.name === 'ТСН', 'auxiliary transformer stays outside (bus bridge)');
+  ok(r.cells.filter(c => c.tie).map(c => c.cart.name).join() === 'СВ-10,СР-10', 'section breaker and section disconnector — two tie cells');
+  ok(['ТП-1 «Школа»', 'КЛ-10 Л-1', 'ВН ТП-1', 'В-10 Ф-7 ПС «Северная»'].every(n => !r.inside.has(s.els.find(e => e.name === n).id)), 'TP, cables and the far end stay outside');
+  const p = kru('ps35').r;
+  ok(p.cells.length === 14 && p.cells.filter(c => c.kind === 'aux').map(c => c.parts[0].el.name).join() === 'ОПН-10 1С,ОПН-10 2С', 'ПС 110/35/10: 14 cells, surge arresters in cells without a trolley');
+  ok(p.cells.find(c => c.cart && c.cart.name === 'В-10 Т1').down.el.name === 'Т1', 'transformer input cell: Т1 outside (bus bridge)');
+  const poly = kru('poly').r;
+  ok(poly && poly.cells.length === 6, 'the polygon scheme is recognised too (but it has its own room)');
 }
 
 /* ===== Полигон: правки по обзору ===== */

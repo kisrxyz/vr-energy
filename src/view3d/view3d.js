@@ -615,10 +615,11 @@ class View3D {
     });
     const tex = new T.CanvasTexture(c);
     tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 4;
-    const n = list.length, center = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), lid = new Float32Array(n * 4), idx = [];
+    const n = list.length, center = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), lid = new Float32Array(n * 4), lod = new Float32Array(n * 4), idx = [];
     // номер подписи — чтобы подпись аппарата под прицелом показать крупнее (uniform hot)
     this.labelIdx = new Map();
-    list.forEach((d, i) => { lid.fill(i, i * 4, i * 4 + 4); if (d.el) this.labelIdx.set(d.el.id, i); });
+    // lod 1 — подпись ячейки ЗРУ: в «Обзоре» не рисуется (иначе десяток подписей в куче над рядами), видна под курсором
+    list.forEach((d, i) => { lid.fill(i, i * 4, i * 4 + 4); lod.fill(d.labelLod || 0, i * 4, i * 4 + 4); if (d.el) this.labelIdx.set(d.el.id, i); });
     const v = new T.Vector3();
     this.root.updateMatrixWorld(true);
     list.forEach((d, i) => {
@@ -638,20 +639,21 @@ class View3D {
     geo.setAttribute('corner', new T.BufferAttribute(corner, 2));
     geo.setAttribute('uv', new T.BufferAttribute(uv, 2));
     geo.setAttribute('lid', new T.BufferAttribute(lid, 1));
+    geo.setAttribute('lod', new T.BufferAttribute(lod, 1));
     geo.setIndex(idx);
     geo.computeBoundingSphere();
     const mat = new T.ShaderMaterial({
       // grow: дальше 9 м подпись растёт с расстоянием (до grow раз) — пешком и в шлеме читается с 15–20 м; в «Обзоре» grow = 1, как было.
       // hot — подпись аппарата под прицелом: в 1,4 раза крупнее и поверх всего. Подписи пишут глубину: ближняя закрывает дальнюю целиком
-      uniforms: { map: { value: tex }, far: { value: 0 }, hot: { value: -1 }, grow: { value: 1 } },
-      vertexShader: `attribute vec2 corner; attribute float lid; varying vec2 vUv; uniform float far; uniform float hot; uniform float grow;
+      uniforms: { map: { value: tex }, far: { value: 0 }, hot: { value: -1 }, grow: { value: 1 }, overview: { value: 0 } },
+      vertexShader: `attribute vec2 corner; attribute float lid; attribute float lod; varying vec2 vUv; uniform float far; uniform float hot; uniform float grow; uniform float overview;
         void main() { vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0);
           float k = clamp(-mv.z / 9.0, 1.0, grow); bool h = abs(lid - hot) < 0.5;
           if (h) k *= 1.4;
           mv.xy += corner * k;
           gl_Position = projectionMatrix * mv;
           if (h) gl_Position.z = -gl_Position.w * 0.999;
-          else if (far > 0.0 && -mv.z > far) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }`,
+          else if ((far > 0.0 && -mv.z > far) || (overview > 0.5 && lod > 0.5)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }`,
       fragmentShader: `uniform sampler2D map; varying vec2 vUv;
         void main() { vec4 c = texture2D(map, vUv); if (c.a < 0.02) discard; gl_FragColor = c;
           #include <colorspace_fragment>
@@ -802,7 +804,7 @@ class View3D {
     this.tp.step(dt);
     const xr = this.renderer.xr.isPresenting;
     // пешком и в шлеме дальние подписи (дальше LABEL.far) не рисуются — они только загромождают; ближние растут с расстоянием
-    if (this.labelMesh) { const u = this.labelMesh.material.uniforms, near = xr || this.fpsOn(); u.far.value = near ? LABEL.far : 0; u.grow.value = near ? LABEL.grow : 1; }
+    if (this.labelMesh) { const u = this.labelMesh.material.uniforms, near = xr || this.fpsOn(); u.far.value = near ? LABEL.far : 0; u.grow.value = near ? LABEL.grow : 1; u.overview.value = near || this.room ? 0 : 1; }
     // маяк заметен издалека, а вблизи (у самого аппарата) почти прозрачен — не слепит и не закрывает аппарат
     if (this.beacon.visible) {
       const c = this.camera.getWorldPosition(this.tmp.v2), d = Math.hypot(c.x - this.beacon.position.x, c.z - this.beacon.position.z);
@@ -1131,8 +1133,8 @@ class View3D {
     d.group.getWorldPosition(p);
     this.ring.position.set(p.x, 0.06, p.z);
     this.ring.scale.setScalar(d.kind === 'transformer' || d.kind === 'tr3' ? 2.3 : d.kind === 'load' ? 2.6 : 1.25);
-    // в ЗРУ — маленькое кольцо на полу коридора перед ячейкой
-    if (d.zru) { this.ring.scale.setScalar(0.4); this.ring.position.z += 0.5; }
+    // в ЗРУ — маленькое кольцо на полу коридора перед ячейкой (ряд B повёрнут: «перед» — в местных осях ячейки)
+    if (d.zru) { const q = d.group.localToWorld(this.tmp.v2.set(0, 0, 0.5)); this.ring.scale.setScalar(0.4); this.ring.position.set(q.x, 0.06, q.z); }
     this.ring.visible = d.kind !== 'bus';
   }
   tip(text, x, y) {

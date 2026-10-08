@@ -49,6 +49,7 @@ try {
     await p.eval(`(async () => { TS.app.chooseScheme('${s.key}'); TS.app.setMode('3d'); await TS.app.v3.show(); })()`);
     await p.fn(s => {
       const v = TS.app.v3, T = v.kit.T, w = v.walk, tr = TS.app.tr;
+      tr.opt.interlocks = true;
       if (s.walk) {
         if (!v.yardWalk) v.toggleWalk();
         // аппарат в ЗРУ (с 0.5) — стоим в коридоре перед ячейкой (в её местных осях: ряд лицом в коридор), на улице — как задано от точки схемы

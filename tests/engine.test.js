@@ -10,7 +10,7 @@ import { WHY, MISPLACED, WHY_OP, whyOf } from '../src/core/explain.js';
 import { makeLibrary } from '../src/ui/myschemes.js';
 import * as THREE from 'three';
 import { footprints, mergeBoxes, makeYardWorld } from '../src/view3d/world.js';
-import { findKRU } from '../src/view3d/zru.js';
+import { findKRU, layoutZRU, shortName } from '../src/view3d/zru.js';
 import { Batch, geoSig } from '../src/view3d/batch.js';
 import * as Ed from '../src/core/edit.js';
 import * as Plan from '../src/core/plan.js';
@@ -996,6 +996,14 @@ function doMeasure(tr, pm, m) {
   ok(p.cells.find(c => c.cart && c.cart.name === 'В-10 Т1').down.el.name === 'Т1', 'transformer input cell: Т1 outside (bus bridge)');
   const poly = kru('poly').r;
   ok(poly && poly.cells.length === 6, 'the polygon scheme is recognised too (but it has its own room)');
+  // 0.6: два ряда лицом друг к другу; СВ и СР — в конце рядов друг напротив друга; номера — как видит человек в коридоре
+  const L = layoutZRU(r), at = n => L.cells.find(q => (q.c.cart ? q.c.cart.name : q.c.parts[0].el.name) === n);
+  ok(L.two && L.rows.join() === 'A,B' && L.cells.filter(q => q.row === 'A').length === 7 && L.cells.filter(q => q.row === 'B').length === 6, 'РП-10: two rows (7 + 6 cells)');
+  ok(at('СВ-10').row === 'A' && at('СР-10').row === 'B' && at('СВ-10').slot === L.L - 1 && at('СР-10').slot === L.L - 1, 'section breaker and section disconnector opposite each other at the far end');
+  ok(at('В-10 Ввод-1').no === 1 && at('СВ-10').no === 7 && at('СР-10').no === 8 && at('В-10 Ввод-2').no === 13, 'numbering: row A 1…7 left to right, row B 8…13 from the tie cell');
+  ok(new Set(L.cells.map(q => q.no)).size === 13 && L.cells.every(q => q.no >= 1 && q.no <= 13), 'numbers 1…13, unique');
+  ok(['В-10 Л-1', 'ТН-1 тележка', 'ТСН тележка', 'СВ-10', 'СР-10', 'В-10 Ввод-1', 'ОПН-10 1С'].map(shortName).join() === 'Л-1,ТН-1,ТСН,СВ,СР,Ввод-1,ОПН 1С', 'short names for plates and labels');
+  ok(layoutZRU(p).two && layoutZRU(p).cells.length === 14, 'ПС 110/35/10: two rows, 14 cells');
 }
 
 /* ===== Полигон: правки по обзору ===== */

@@ -71,7 +71,7 @@ async function vrRows(p, key, info) {
   const spots = await p.eval(`(() => {
     const v = TS.app.v3, T = v.kit.T, out = [{ name: ${info.poly ? "'у входа'" : "'у ворот'"}, x: v.start.x, z: v.start.z }];
     if (v.room) out.push({ name: 'в середине', x: v.room.view.x, z: v.room.view.z });
-    else if (v.zru) { const c = v.zru.group.localToWorld(new T.Vector3(0, 0, 1.5)); out.push({ name: 'в ЗРУ', x: c.x, z: c.z }); }
+    else if (v.zru) out.push({ name: 'в ЗРУ', x: v.zru.view.x, z: v.zru.view.z });
     else out.push({ name: 'в середине', x: 0, z: 0 });
     return out;
   })()`);

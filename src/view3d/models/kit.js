@@ -64,6 +64,8 @@ const PAL = {
     rCavity: [0x262b2a, { roughness: 0.9 }], rShutter: [0xb8432e, { roughness: 0.6 }], rTrolley: [0xa9b2ad, { metalness: 0.05, roughness: 0.75, tex: 'paint' }],
     rPole: [0x5b3328, { roughness: 0.5 }], rCopper: [0xc8823e, { metalness: 0.6, roughness: 0.35 }],
     rStand: [0x50646f, { roughness: 0.7, tex: 'paint' }], rShelf: [0x8b6b4a, { roughness: 0.8 }], rRed: [0xc8202c, { roughness: 0.45 }],
+    // ЗРУ на площадке: рифлёные стальные плиты кабельного канала, стекло окон (светлое — день за окном)
+    rPlate: [0x9aa0a3, { metalness: 0.55, roughness: 0.45, tex: 'plate' }], rWin: [0xcfe3f0, { roughness: 0.15, metalness: 0.1, emissive: 0x5d7180 }],
   },
   roomTube: 0xfafcff,   // светящиеся трубки светильников
   // предметы полигона
@@ -146,6 +148,13 @@ const TEX = {
     x.strokeStyle = css(C[3], 1, 0.45); x.lineWidth = 3; x.strokeRect(0, 0, w, h);
   } },
   // контур заземления: жёлто-зелёные полосы
+  // рифлёная плита: ромбовидные выступы рядами (кабельный канал ЗРУ)
+  plate: { size: 128, draw(x, w, h) {
+    x.fillStyle = grey(200); x.fillRect(0, 0, w, h);
+    x.strokeStyle = grey(240); x.lineWidth = 3; x.lineCap = 'round';
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const cx = c * 16 + (r % 2) * 8 + 4, cy = r * 16 + 8, d = r % 2 ? 1 : -1; x.beginPath(); x.moveTo(cx - 4, cy - 3 * d); x.lineTo(cx + 4, cy + 3 * d); x.stroke(); }
+    x.strokeStyle = grey(150); x.lineWidth = 2; x.strokeRect(1, 1, w - 2, h - 2);
+  } },
   gstrip: { size: 128, height: 16, draw(x, w, h) {
     const [g, y] = PAL.tex.gstrip;
     x.fillStyle = css(g); x.fillRect(0, 0, w, h); x.fillStyle = css(y);

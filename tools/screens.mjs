@@ -48,8 +48,10 @@ try {
       const v = TS.app.v3, T = v.kit.T, w = v.walk;
       if (s.walk) {
         if (!v.yardWalk) v.toggleWalk();
-        const el = TS.app.scheme.els.find(e => e.name === s.walk.el), c = v.toWorld([el.x, el.y]);
-        const x = c.x + s.walk.dx, z = c.z + s.walk.dz;
+        // аппарат в ЗРУ (с 0.5) — стоим в коридоре перед ячейкой, на улице — как задано от точки схемы
+        const el = TS.app.scheme.els.find(e => e.name === s.walk.el), d = v.dev.get(el.id), zru = d && d.zru;
+        const c = zru ? d.group.getWorldPosition(new T.Vector3()) : v.toWorld([el.x, el.y]);
+        const x = c.x + (zru ? -1.9 : s.walk.dx), z = c.z + (zru ? 2.5 : s.walk.dz);
         w.pose({ x, z, yaw: Math.atan2(-(c.x - x), -(c.z - z)), pitch: Math.atan2(s.walk.look - 1.62, Math.hypot(c.x - x, c.z - z)) });
       } else if (s.gate) {
         if (!v.yardWalk) v.toggleWalk(); else w.reset(v.world.start);

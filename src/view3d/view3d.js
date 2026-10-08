@@ -10,6 +10,7 @@ import { Items } from './items.js';
 import { placeText } from '../core/permit.js';
 import { Walk, REACH as WALK_REACH } from './walk.js';
 import { Teleport } from './teleport.js';
+import { findKRU, buildZRU } from './zru.js';
 import { footprints, makeYardWorld } from './world.js';
 
 /* ===== §6. 3D и VR =====
@@ -226,6 +227,10 @@ class View3D {
     this.mergeStatic();
     this.makeLamps();
     this.makeLabels();
+    // крыша и светильники ЗРУ: в «Обзоре» спрятаны — видно ячейки сверху
+    this.zruTop = [];
+    if (this.zru) this.root.traverse(o => { if (o.isMesh && this.zru.topMats.has(o.material)) this.zruTop.push(o); });
+    this.showRoof(false);
     if (this.room) {
       // потолок, передняя стена, светильники и дверь прячутся в обзоре сверху
       this.room.topMeshes = this.root.children.filter(o => o.isMesh && this.room.hideTop.has(o.material));
@@ -271,9 +276,19 @@ class View3D {
     this.root.add(yard); this.pickables.push(yard);
     this.buildFence(hx, hz);
     this.buildRoads(hx, hz);
+    // ЗРУ: ячейки КРУ (тележка, ТТ, ЗН, ТН, предохранитель) — в здании (zru.js); на улице их не строим
+    const kru = findKRU(s, topo);
+    this.zru = kru ? buildZRU(this, s, topo, kru, W) : null;
     // Провода: видимые трубы (сливаются по узлам) и невидимые коробки для луча — на провод накладывают ПЗ и ставят указатель
     const pmat = new T.MeshBasicMaterial({ color: PAL.ui.proxy });
     for (const w of s.wires) {
+      // провод внутри ЗРУ (шины, узлы ячеек) не висит над площадкой: его коробка — у нижних контактов ячейки или у шин
+      const wn = topo.wireNode.get(w.id);
+      if (this.zru && this.zru.nodes.has(wn)) {
+        const p = this.zru.inner(wn);
+        if (p) { const px = new T.Mesh(this.boxGeo(0.5, 0.25, 0.3), pmat); px.position.copy(p); px.visible = false; px.userData.wire = w.id; px.userData.proxy = true; this.root.add(px); this.pickables.push(px); }
+        continue;
+      }
       const pts = wireRoute(w).map(p => { const v = W(p); v.y = H3; return v; });
       const mat = this.nodeMat(topo.wireNode.get(w.id));
       for (let i = 0; i < pts.length - 1; i++) {
@@ -287,24 +302,28 @@ class View3D {
       }
     }
     for (const el of s.els) {
+      if (this.zru && this.zru.inside.has(el.id)) continue;
       const g = this.model(el, topo);
       if (!g) continue;
       g.position.copy(W([el.x, el.y]));
       g.rotation.y = -el.r * Math.PI / 2;
       this.root.add(g);
     }
+    // КЛ из ячеек — лотком к муфтам, к трансформаторам — шинный мост (выводы уличных элементов уже на месте)
+    if (this.zru) { this.root.updateMatrixWorld(true); this.zru.links(); }
     const board = this.makeBoard();
     this.makeProxies();
-    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus').map(d => d.group), [board]);
+    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus' && !d.zru).map(d => d.group), [board]);
     // Пешком: граница — ограждение с воротами, препятствия — детали моделей (и щита), до которых не дотянуться над головой.
     // Дальние части (линия от энергосистемы) не мешают; провода и шины на высоте 3,4 м — тоже
-    const blocks = footprints(T, board);
+    const blocks = footprints(T, board).concat(this.zru ? this.zru.blocks : []);
     for (const d of this.dev.values()) {
+      if (d.zru) continue;
       const far = new Set();
       for (const f of d.far || []) f.traverse(o => far.add(o));
       blocks.push(...footprints(T, d.group, o => far.has(o)));
     }
-    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks });
+    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks, dyn: this.zru && this.zru.dyn });
     this.start = new T.Vector3(this.world.start.x, 0, this.world.start.z);
   }
   buildFence(hx, hz) {
@@ -403,6 +422,7 @@ class View3D {
     const mat = this._proxyMat || (this._proxyMat = new T.MeshBasicMaterial({ color: PAL.ui.proxy }));
     const b = new T.Box3(), size = new T.Vector3(), c = new T.Vector3(), out = [];
     for (const [id, d] of only || this.dev) {
+      if (d.zru) continue;   // у ячеек ЗРУ коробки свои (cell.js, zru.js)
       b.makeEmpty();
       for (const ch of d.group.children) if (!(d.far && d.far.includes(ch))) b.expandByObject(ch);
       if (b.isEmpty()) continue;
@@ -630,8 +650,10 @@ class View3D {
       const k = this.kit.forEl(el, tr.topo, d);
       MODELS.pz.build(k, el, d);
       this.mergeInto(d.show);
-      d.group.position.copy(this.toWorld(pl.p));
-      d.group.rotation.y = -pl.r * Math.PI / 2;
+      // ПЗ на проводе внутри ЗРУ — на нижних контактах ячейки (модель меньше: зажим на контактах, провод — к полу)
+      const q = this.posOf(id);
+      if (q && q.indoor) { d.group.scale.setScalar(0.6); d.group.position.set(q.x, q.y - (H3 - 0.04) * 0.6, q.z); }
+      else { d.group.position.copy(this.toWorld(pl.p)); d.group.rotation.y = -pl.r * Math.PI / 2; }
       d.where = where(id);
       this.root.add(d.group);
       this.dev.set(id, d);
@@ -799,6 +821,7 @@ class View3D {
     const w = this.walk;
     if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
     else { this.walkPose = { x: w.x, z: w.z, yaw: w.yaw, pitch: w.pitch }; w.disable(); this.applyOrbit(); }
+    this.showRoof(this.yardWalk);
     this.camButtons();
   }
   // Кнопки вида: «Пешком»/«Обзор» — только на площадке; «Вид сверху» пешком на площадке не нужен
@@ -808,6 +831,8 @@ class View3D {
     if (b) b.hidden = !this.room && this.yardWalk;
     this.app.renderStatus();
   }
+  // Крыша ЗРУ на площадке: пешком и в шлеме — есть, в «Обзоре» — нет
+  showRoof(on) { for (const m of this.zruTop || []) m.visible = on; }
   // Потолок, передняя стена и светильники полигона: в обзоре сверху спрятаны
   showTop(on) { if (this.room && this.room.topMeshes) for (const m of this.room.topMeshes) m.visible = on; }
   pan(dx, dy) {
@@ -951,6 +976,8 @@ class View3D {
     d.group.getWorldPosition(p);
     this.ring.position.set(p.x, 0.06, p.z);
     this.ring.scale.setScalar(d.kind === 'transformer' || d.kind === 'tr3' ? 2.3 : d.kind === 'load' ? 2.6 : 1.25);
+    // в ЗРУ — маленькое кольцо на полу коридора перед ячейкой
+    if (d.zru) { this.ring.scale.setScalar(0.4); this.ring.position.z += 0.5; }
     this.ring.visible = d.kind !== 'bus';
   }
   tip(text, x, y) {
@@ -1315,7 +1342,14 @@ class View3D {
   posOf(id) {
     if (this.room) return this.room.posOf(id);
     const p = new THREE.Vector3(), dv = this.dev.get(id);
+    // в ЗРУ: аппарат — на своей высоте, провод внутри — у нижних контактов ячейки (indoor — высоту не менять)
+    if (dv && dv.zru) { dv.group.getWorldPosition(p); p.y += dv.fxY != null ? dv.fxY : 0.3; p.indoor = true; return p; }
     if (dv) { dv.group.getWorldPosition(p); return p; }
+    if (this.zru) {
+      const tp = this.app.tr.topo, at = isPzId(id) ? id.slice(3) : id, n = tp.wireNode.has(at) ? tp.wireNode.get(at) : (tp.term.get(at) || [])[0];
+      const q = n != null && this.zru.nodes.has(n) ? this.zru.inner(n) : null;
+      if (q) { q.indoor = true; return q; }
+    }
     if (isPzId(id)) { const pl = this.app.view.pzPlace(id); return pl ? this.toWorld(pl.p) : null; }
     const w = this.app.scheme.wires.find(v => v.id === id);
     return w ? this.toWorld(wireMid(w)) : null;
@@ -1324,7 +1358,7 @@ class View3D {
     if (!this.active) return;
     const p = this.posOf(d.id);
     if (!p) return;
-    if (!this.room) p.y = H3;
+    if (!this.room && !p.indoor) p.y = H3;
     this.arc(p);
   }
   arc(p) {
@@ -1360,7 +1394,7 @@ class View3D {
     // под подписью аппарата (её видно и пешком, и в обзоре) или над проводом; размер на экране один и тот же издалека и вблизи
     const dv = this.dev.get(d.target), p = dv && dv.labelPos ? dv.group.localToWorld(new THREE.Vector3(...dv.labelPos)) : this.posOf(d.target);
     if (!p) return;
-    if (!dv) p.y = H3 + 0.45; else p.y -= 0.5;
+    if (!dv) p.y = p.indoor ? p.y + 0.5 : H3 + 0.45; else if (dv.labelPos) p.y -= 0.5; else p.y += 0.6;
     const sp = this.labelSprite(d.live ? 'Напряжение есть' : 'Напряжения нет', d.live ? 'live' : 'dead', 0.045, true);
     sp.position.copy(p);
     // подпись одна: новая проверка убирает прежнюю (иначе «есть» и «нет» лягут друг на друга)
@@ -1743,6 +1777,7 @@ class View3D {
   guidePoint(t) {
     if (!t) return null;
     if (t.dev) return this.dev.get(t.dev).group.getWorldPosition(new THREE.Vector3());
+    if (this.zru) { const n = this.app.tr.topo.wireNode.get(t.wire), q = this.zru.nodes.has(n) ? this.zru.inner(n) : null; if (q) return q; }
     const w = this.app.scheme.wires.find(q => q.id === t.wire);
     return w ? this.toWorld(wireMid(w)) : null;
   }
@@ -1841,6 +1876,7 @@ class View3D {
   }
   onXRStart() {
     this.tp.cancel();
+    this.showRoof(true);
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
     // ходьба на ноутбуке отключается до выхода из шлема; камера — снова в начале координат
@@ -1864,6 +1900,7 @@ class View3D {
   onXREnd() {
     // затемнение и метка не остаются после шлема
     this.tp.cancel();
+    this.showRoof(this.yardWalk);
     Diag.sessionEnd();
     if (this.tutor) this.tutor.m.visible = false;
     this.handsOnly = false;

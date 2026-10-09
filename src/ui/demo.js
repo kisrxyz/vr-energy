@@ -37,7 +37,8 @@ class Demo {
     document.addEventListener('pointerdown', stop, true);
     document.addEventListener('keydown', stop, true);
     let q = '';
-    try { q = new URLSearchParams(location.search).get('demo') || ''; } catch (e) { q = ''; }
+    // speed — только для автопроходки (?demo=auto&speed=4): паузы и переходы короче, длина показа по замыслу — plannedMs
+    try { const u = new URLSearchParams(location.search); q = u.get('demo') || ''; this.speed = Math.min(10, Math.max(1, +u.get('speed') || 1)); } catch (e) { q = ''; }
     if (q === '1' || q === 'auto') this.open(0).then(() => { if (q === 'auto') this.auto(); });
   }
   has(need) { return need === 'exam' ? !!this.app.exam : SAMPLES.some(s => s.key === need); }
@@ -53,6 +54,7 @@ class Demo {
       this.saved = { source: app.source, json: mine ? null : JSON.stringify(app.scheme), mode: app.mode, opt: Object.assign({}, app.tr.opt), taskIdx: app.taskIdx };
       this.on = true; app.demoOn = true;
       document.getElementById('app').dataset.demo = '1';
+      app.syncMax3D();
       document.getElementById('btnDemo').setAttribute('aria-pressed', 'true');
       this.steps = demoSteps(n => this.has(n));
       this.bar.hidden = false;
@@ -64,6 +66,7 @@ class Demo {
     this.autoOn = false; this.paused = false;
     this.on = false; app.demoOn = false;
     delete document.getElementById('app').dataset.demo;
+    app.syncMax3D();
     document.body.classList.remove('demo-auto');
     document.getElementById('btnDemo').setAttribute('aria-pressed', 'false');
     this.bar.hidden = true; this.caption('');
@@ -197,6 +200,7 @@ class Demo {
     document.body.classList.add('demo-auto');
     this.fold(true);
     const t0 = Date.now();
+    this.plannedMs = 0;
     for (let i = this.i; i < this.steps.length; i++) {
       if (!this.autoOn) return;
       await this.go(i);
@@ -217,6 +221,8 @@ class Demo {
   async hold() { while (this.autoOn && this.paused) await sleep(100); }
   // Пауза автопоказа: время идёт, только пока он не на паузе
   async wait(ms) {
+    this.plannedMs = (this.plannedMs || 0) + ms;
+    ms /= this.speed || 1;
     for (let t = 0; t < ms && this.autoOn; t += 100) { await this.hold(); await sleep(Math.min(100, ms - t)); }
   }
   idOf(name) { const el = this.app.scheme.els.find(e => e.name === name); return el ? el.id : null; }
@@ -289,6 +295,8 @@ class Demo {
     while (dy > Math.PI) dy -= 2 * Math.PI;
     while (dy < -Math.PI) dy += 2 * Math.PI;
     const t0 = performance.now();
+    this.plannedMs = (this.plannedMs || 0) + ms;
+    ms /= this.speed || 1;
     for (;;) {
       await this.hold();
       if (!this.autoOn) return;

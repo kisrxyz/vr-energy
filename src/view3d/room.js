@@ -77,7 +77,7 @@ function makeAtlas(v) {
       ['1', 'Подойдите к стенду: ходьба — стик или WASD, переход — курок по полу.'],
       // каждый шаг — не больше 2 строк: третий шаг из 3 строк выходил за край таблички
       ['2', 'Шлем: боковая кнопка у предмета — взять, ещё раз — повесить или отпустить. Ноутбук: E — взять, применить; Q — положить.'],
-      ['3', 'Перчатки и каска надеваются сразу, как их взяли. Указателем коснитесь нижних контактов в отсеке тележки.'],
+      ['3', 'Перчатки и каска надеваются сразу. Указатель: сначала проверочное устройство на полке, потом нижние контакты.'],
     ];
     let y = 116;
     for (const [n, t] of steps) {
@@ -96,6 +96,12 @@ function makeAtlas(v) {
     center(String(i + 1), w / 2, 58, F(700, 50), '#1b2330');
   });
   area('zru', 512, 160, 384, 110, (w, h) => { x.fillStyle = '#21303a'; x.fillRect(0, 0, w, h); center('ЗРУ-10 кВ', w / 2, 72, F(700, 52), '#ffffff'); });
+  // проверочное устройство указателя на полке стенда: надпись и стрелка к электроду
+  area('tester', 512, 80, 320, 80, (w, h) => {
+    x.fillStyle = '#1a4fb0'; x.fillRect(0, 0, w, h);
+    center('ПРОВЕРКА УВН', w / 2 - 18, 36, F(700, 30), '#ffffff'); center('коснуться электрода', w / 2 - 18, 66, F(500, 20), '#dce6ff');
+    x.fillStyle = '#ffd23f'; x.beginPath(); x.moveTo(w - 34, 22); x.lineTo(w - 8, 40); x.lineTo(w - 34, 58); x.closePath(); x.fill();
+  });
   const t = new T.CanvasTexture(c);
   t.colorSpace = T.SRGBColorSpace; t.anisotropy = 4;
   const mat = new T.MeshBasicMaterial({ map: t, toneMapped: false }), matF = new T.MeshBasicMaterial({ map: t, toneMapped: false });
@@ -228,6 +234,16 @@ function buildRoom(v, s, topo) {
   const head = atlas.plane('standHead', 1.6, 0.25); head.position.set(0, 2.06, 0.055); st.add(head);
   const how = atlas.plane('howto', 1.7, 0.6); how.position.set(0, 2.62, 0.035); st.add(how);
   proxy(st, 2.0, 1.6, 0.36, 0, 1.0, 0.2, { stand: true });
+  // проверочное устройство указателя (самопроверка перед проверкой): корпус на полке, надпись, электрод спереди справа.
+  // Место tester — для указателя: коснуться электрода (E, в шлеме — наконечником)
+  const TS = { x: -0.72, y: 1.135, z: 0.2 };
+  st.add(k.box(0.26, 0.13, 0.14, M.cabinet, TS.x, TS.y + 0.065, TS.z));
+  st.add(k.box(0.26, 0.02, 0.15, M.dark, TS.x, TS.y + 0.01, TS.z));
+  const tl = atlas.plane('tester', 0.17, 0.0425); tl.position.set(TS.x - 0.035, TS.y + 0.075, TS.z + 0.0705); st.add(tl);
+  st.add(k.cyl(0.022, 0.012, M.dark, TS.x + 0.09, TS.y + 0.075, TS.z + 0.076, 'z'));
+  st.add(k.cyl(0.012, 0.03, M.rCopper, TS.x + 0.09, TS.y + 0.075, TS.z + 0.09, 'z'));
+  const tm = mount('tester', st, [TS.x + 0.09, TS.y + 0.075, TS.z + 0.105 + 0.06], 0, { pw: 0.3, ph: 0.18, pd: 0.2, touch: true });
+  touch.push(tm);
   obstacles.push({ x0: STAND.x - 0.42, x1: STAND.x + 0.2, z0: STAND.z - 1.02, z1: STAND.z + 1.02 });
   // дома предметов на стенде (местные координаты стенда): [x, y, z], поворот
   const homes = {

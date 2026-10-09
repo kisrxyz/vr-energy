@@ -16,7 +16,11 @@ import { WHY, EARLY, MISPLACED } from './explain.js';
    Места (mount): drive:N — привод (ключ управления) ячейки N, door:N — дверь ячейки, earth:N — привод ЗН,
    cart:N — выкаченная тележка, shutter:N — шторка шинных контактов в отсеке тележки, contact:N:lo — нижние (линейные)
    разъёмные контакты, contact:N:up — верхние (шинные, закрыты шторкой), zone:N — пол перед ячейкой (ограждение),
-   fence — на поставленном ограждении. Отсек тележки открыт только в ремонтном положении.
+   fence — на поставленном ограждении, tester — проверочное устройство на стенде (самопроверка указателя).
+   Отсек тележки открыт только в ремонтном положении.
+   Самопроверка указателя (как по ПТБ — непосредственно перед применением): коснуться проверочного устройства —
+   «указатель исправен»; годна, пока указатель не вернули на стенд (untest). Проверка без самопроверки засчитывается,
+   но с замечанием (run.remarks — баллы не снижает; нужна ли ошибка — вопрос преподавателю).
    Мероприятие задания: { k, stage, id?, wire?, pos?, poster?, at?: [места], title? },
    k: ppe — СИЗ надеты; off — аппарат id отключён; rack — тележка id в положении pos; sign — плакат poster на одном из мест at;
       lock — замок на месте at; check — проверено отсутствие напряжения в узле провода wire; earth — включён ЗН id
@@ -44,7 +48,7 @@ const ITEMS = [
 for (const i of ITEMS) if (i.poster) i.title = `Плакат «${POSTERS[i.poster].title}»`;
 const ITEM = Object.fromEntries(ITEMS.map(i => [i.id, i]));
 // Что физически вешают или ставят на место
-const TAKES = { drive: ['poster', 'lock'], door: ['poster'], earth: ['poster'], cart: ['poster'], shutter: ['poster'], fence: ['poster'], contact: ['pz', 'uvn'], zone: ['fence'] };
+const TAKES = { drive: ['poster', 'lock'], door: ['poster'], earth: ['poster'], cart: ['poster'], shutter: ['poster'], fence: ['poster'], contact: ['pz', 'uvn'], zone: ['fence'], tester: ['uvn'] };
 const MAX_POSTERS = 3;
 // Свободный режим: предупреждение «без СИЗ» (тост, баннер, звук) — не чаще раза в QUIET мс; в журнал — каждый раз
 const QUIET = 15000;
@@ -56,7 +60,7 @@ const AFTER = {
 };
 
 function parseMount(id) {
-  if (id === 'fence') return { type: 'fence', n: null, side: null };
+  if (id === 'fence' || id === 'tester') return { type: id, n: null, side: null };
   const m = /^(drive|door|earth|cart|shutter|zone|contact):(\d+)(?::(up|lo))?$/.exec(String(id || ''));
   if (!m || (m[1] === 'contact') !== !!m[3]) return null;
   return { type: m[1], n: +m[2], side: m[3] || null };
@@ -70,6 +74,7 @@ const PLACE = {
   shutter: n => [`на шторку шин яч.${n}`, `на шторке шин яч.${n}`, `со шторки шин яч.${n}`, `Шторка шин яч.${n}`],
   zone: n => [`у яч.${n}`, `у яч.${n}`, `у яч.${n}`, `Место работ у яч.${n}`],
   fence: () => ['на ограждение', 'на ограждении', 'с ограждения', 'Ограждение'],
+  tester: () => ['на проверочное устройство', 'на проверочном устройстве', 'с проверочного устройства', 'Проверочное устройство указателя'],
   contact: (n, side) => side === 'up' ? [`на верхние контакты яч.${n}`, `на верхних контактах яч.${n}`, `с верхних контактов яч.${n}`, `Верхние (шинные) контакты яч.${n}`]
                                       : [`на нижние контакты яч.${n}`, `на нижних контактах яч.${n}`, `с нижних контактов яч.${n}`, `Нижние (линейные) контакты яч.${n}`],
 };
@@ -94,6 +99,8 @@ class Permit {
   clear() {
     this.at = new Map(ITEMS.filter(i => i.kind !== 'pz').map(i => [i.id, null]));   // null — свободен; 'worn' — надет; иначе место
     this.doneAt = new Map(); this.flagged = new Set(); this.miss = new Set(); this.ppeWarnAt = -Infinity;
+    // самопроверка указателя и замечания задания (не ошибки)
+    this.tested = false; this.remarks = []; this.remarkAt = -Infinity;
   }
   cell(n) { return this.room ? this.room.cells.find(c => c.n === n) || null : null; }
   cellByCart(id) { return this.room ? this.room.cells.find(c => c.cart === id) || null : null; }
@@ -137,6 +144,7 @@ class Permit {
   mountState(mount) {
     const m = parseMount(mount);
     if (!m || !this.active) return { ok: false, text: 'Сюда ничего не вешают.' };
+    if (m.type === 'tester') return { ok: true, m };
     if (m.type === 'fence') {
       const f = this.at.get('fence');
       return f && f.startsWith('zone:') ? { ok: true, m } : { ok: false, text: 'Ограждение ещё не поставлено.' };
@@ -160,7 +168,7 @@ class Permit {
     const add = mt => { const s = this.mountState(mt); if (s.ok && (TAKES[s.m.type] || []).includes(it.kind)) out.push(mt); };
     for (const c of this.room.cells) for (const t of ['drive', 'door', 'earth', 'cart', 'shutter', 'zone']) add(`${t}:${c.n}`);
     for (const c of this.room.cells) add(`contact:${c.n}:lo`);
-    add('fence');
+    add('fence'); add('tester');
     return out;
   }
 
@@ -176,7 +184,8 @@ class Permit {
       : m.k === 'check' ? it.kind === 'uvn' : m.k === 'earth' ? it.kind === 'pz' && !!m.wire : false;
     const m = open.find(q => q.stage === stage && fits(q));
     if (!m) return [];
-    const at = m.k === 'check' || m.k === 'earth' ? [this.contactMount(m.wire)] : m.at || [];
+    // проверка: сначала самопроверка указателя на проверочном устройстве
+    const at = m.k === 'check' && !this.tested ? ['tester'] : m.k === 'check' || m.k === 'earth' ? [this.contactMount(m.wire)] : m.at || [];
     return at.filter(a => a && this.mountState(a).ok);
   }
 
@@ -239,13 +248,24 @@ class Permit {
     if (!moving) this.changed();
     return { ok: true, text, from: cur };
   }
-  // Указатель напряжения коснулся контактов: проверка идёт в движок
+  // Указатель напряжения коснулся контактов: проверка идёт в движок; проверочного устройства — самопроверка
   touch(mount) {
     const ms = this.mountState(mount);
     if (!ms.ok) return { err: true, text: ms.text };
+    if (ms.m.type === 'tester') return this.selfTest();
     if (ms.m.type !== 'contact') return { err: true, text: 'Указателем касаются токоведущих частей.' };
     return this.tr.check(ms.m.side === 'up' ? ms.c.up : ms.c.lo);
   }
+  // Самопроверка: огонёк и звук на проверочном устройстве — указатель исправен. Не операция и не мероприятие
+  selfTest() {
+    this.tested = true;
+    const text = 'Указатель исправен: на проверочном устройстве огонёк горит и звук есть.';
+    this.tr.addLog('ok', text);
+    this.tr.emit('field', { test: true });
+    return { ok: true, test: true, text };
+  }
+  // Указатель вернули на стенд: перед следующей проверкой — снова самопроверка
+  untest() { this.tested = false; }
   applyPz(mount, ms) {
     const wire = ms.m.side === 'up' ? ms.c.up : ms.c.lo, cur = this.pzMount();
     if (cur === mount) return { ok: true, text: '' };
@@ -302,12 +322,28 @@ class Permit {
       const t = `Операция под плакатом «Не включать! Работают люди»: ${what} (яч.${c.n}).`;
       tr.addLog('err', t, el.id);
       tr.note('safety', t, el.id, { why: WHY.nevklOp });
-      this.warn(t);
+      this.warn(t, WHY.nevklOp);
     }
   }
   afterCheck(d) {
+    if (!this.tested) this.remark(d.target);
     if (this.ppeOn()) return;
     this.violation(`Проверка указателем без СИЗ ${this.checkWhere(d.target) || 'у ' + this.tr.nm(d.target)} — ${this.ppeMissing()}.`, d.target, WHY.ppeCheck);
+  }
+  // Проверка без самопроверки: в журнал каждый раз, в задание — одно замечание (баллы не снижает), показать — сразу
+  // (в свободном режиме — не чаще раза в 15 с, как «без СИЗ»)
+  remark(target) {
+    const tr = this.tr, text = `Замечание: проверка указателем ${this.checkWhere(target) || 'у ' + tr.nm(target)} без самопроверки — исправность указателя не проверена на проверочном устройстве (стенд у входа).`;
+    tr.addLog('warn', text, target);
+    if (this.measures()) {
+      if (this.remarks.length) return;
+      this.remarks.push({ text, t: Math.round(tr.elapsed()) });
+    } else {
+      const t = this.now();
+      if (t - this.remarkAt < QUIET) return;
+      this.remarkAt = t;
+    }
+    this.warn(text);
   }
   // Где проверяли указателем — для журнала движка: «на нижних контактах яч.3» (остальное движок называет сам)
   checkWhere(target) {
@@ -325,9 +361,10 @@ class Permit {
       if (t - this.ppeWarnAt < QUIET) return;
       this.ppeWarnAt = t;
     }
-    this.warn(text);
+    this.warn(text, why);
   }
-  warn(text) { this.tr.emit('field', { warn: text }); }
+  // why — почему опасно: 3D показывает его у прицела и в баннере шлема, тост — второй строкой
+  warn(text, why) { this.tr.emit('field', { warn: text, why: why || null }); }
   changed(full = true) {
     if (full) this.evaluate();
     this.tr.emit('field', {});
@@ -366,7 +403,7 @@ class Permit {
     const tr = this.tr, fresh = [];
     ms.forEach((m, i) => { if (!this.doneAt.has(i) && this.performed(m)) fresh.push(i); });
     fresh.sort((a, b) => ms[a].stage - ms[b].stage);
-    let warn = null;
+    let warn = null, why = null;
     for (const i of fresh) {
       this.doneAt.set(i, Math.round(tr.elapsed()));
       const m = ms[i], missing = [];
@@ -378,7 +415,7 @@ class Permit {
         this.flagged.add(chk);
         const t = `${this.earthText(m)} без проверки отсутствия напряжения указателем.`;
         tr.addLog('err', t, m.id); tr.note('safety', t, m.id, { why: WHY.check });
-        warn = warn || t;
+        if (!warn) { warn = t; why = WHY.check; }
         missing.splice(missing.indexOf(chk), 1);
       }
       if (!missing.length || this.flagged.has(i)) continue;
@@ -387,11 +424,12 @@ class Permit {
       const names = missing.length === 1 ? nm(missing[0]) : missing.length === 2 ? `${nm(missing[0])} и ${nm(missing[1])}` : `${nm(missing[0])}, ${nm(missing[1])} и ещё ${missing.length - 2}`;
       const t = `Нарушен порядок: ${lowFirst(this.title(m))} — раньше, чем ${names}.`;
       const own = (AFTER[this.key(m)] || []).some(k => missing.some(j => this.key(ms[j]) === k));
+      const w = (own && EARLY[this.key(m)]) || WHY[this.key(ms[missing[0]])];
       tr.addLog('warn', t, m.id);
-      tr.note('safety', t, m.id, { why: (own && EARLY[this.key(m)]) || WHY[this.key(ms[missing[0]])] });
-      warn = warn || t;
+      tr.note('safety', t, m.id, { why: w });
+      if (!warn) { warn = t; why = w; }
     }
-    if (warn) this.warn(warn);
+    if (warn) this.warn(warn, why);
   }
   earthText(m) {
     if (m.id && this.tr.isOn(m.id)) return `${this.tr.nm(m.id)} включён`;
@@ -415,7 +453,7 @@ class Permit {
     const text = bad.text(m.n);
     this.tr.addLog('err', text);
     this.tr.note('safety', text, null, { why: bad.why });
-    this.warn(text);
+    this.warn(text, bad.why);
   }
   title(m) {
     if (m.title) return m.title;
@@ -458,6 +496,7 @@ class Permit {
     });
     run.measures = this.statusList(ms);
     run.guide = this.guide;
+    run.remarks = this.remarks.slice();
   }
   hint() {
     const ms = this.measures();

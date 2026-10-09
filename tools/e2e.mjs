@@ -32,20 +32,21 @@ let page = null;
 const SUITES = {};
 // Набор проверок: SUITES[name] = { fn(keys), perScheme } — perScheme: идёт по схемам (ключи SAMPLES), --only=<схема> его сужает
 const onlySuites = () => ONLY.filter(o => SUITES[o]), onlyKeys = () => ONLY.filter(o => !SUITES[o]);
-async function check(name, key, fn) {
-  const t = Date.now(), e0 = page.errors.length;
+// pg — страница проверки (автопоказ идёт на второй странице параллельно остальным)
+async function check(name, key, fn, pg = page) {
+  const t = Date.now(), e0 = pg.errors.length;
   let ok = true, info = '';
   try { info = (await fn()) || ''; }
   catch (e) { ok = false; info = e.message || String(e); }
-  const errs = page.errors.slice(e0);
-  const diag = await page.eval('TS.Diag.errors().length').catch(() => 0);
+  const errs = pg.errors.slice(e0);
+  const diag = await pg.eval('TS.Diag.errors().length').catch(() => 0);
   if (errs.length) { ok = false; info += ' · ошибки консоли: ' + errs.slice(0, 3).join(' | '); }
-  if (diag) { ok = false; info += ` · журнал ошибок приложения: ${diag}`; await page.eval('TS.Diag.clearErrors()').catch(() => {}); }
-  const bad = await page.eval('E2E.badText()').catch(() => null);
+  if (diag) { ok = false; info += ` · журнал ошибок приложения: ${diag}`; await pg.eval('TS.Diag.clearErrors()').catch(() => {}); }
+  const bad = await pg.eval('E2E.badText()').catch(() => null);
   if (bad) { ok = false; info += ` · на экране: «${bad}»`; }
   rows.push({ проверка: name, схема: key || '', итог: ok ? 'ok' : 'СБОЙ', подробно: info.slice(0, 160), с: ((Date.now() - t) / 1000).toFixed(1) });
   console.log(`${ok ? '  ok ' : '  СБОЙ'} ${name}${key ? ' · ' + key : ''}${info ? ' — ' + info : ''}`);
-  if (!ok && SHOTS) await page.shot(`${OUT}/fail-${name}-${key}.png`.replace(/[^\w./-]+/g, '_'));
+  if (!ok && SHOTS) await pg.shot(`${OUT}/fail-${name}-${key}.png`.replace(/[^\w./-]+/g, '_'));
   return ok;
 }
 const fail = msg => { throw new Error(msg); };
@@ -126,6 +127,9 @@ async function grab(item) {
   if (held) { await page.key('KeyQ'); await sleep(40); }
   await aimE({ item }, 'предмет ' + item);
   await page.waitFor(`E2E.held() === ${JSON.stringify(item)}`, 1500, 'предмет в руке: ' + item);
+  // указатель в первый раз — карточка «как понять результат»: «Понятно», мышь снова захвачена (в headless — вызовом)
+  const card = await page.fn(() => E2E.box('.v3-intro [data-intro]'));
+  if (card) { await clickAt(card, '«Понятно» на карточке указателя'); await page.eval('TS.app.v3.walk.lockChanged(true)'); }
 }
 async function act3D(a) {
   switch (a.do) {
@@ -156,6 +160,8 @@ async function doAction(a, i, poly) {
   const after = await page.eval('E2E.run()');
   if (!after) fail(`шаг ${i + 1} «${text}»: задание пропало`);
   if (after.errors.length > before.errors.length) fail(`шаг ${i + 1} «${text}»: ошибка — ${after.errors.slice(before.errors.length).join('; ')}`);
+  // самопроверка указателя — не операция: её итог — «Указатель исправен» в журнале
+  if (a.self) { if (after.ops !== before.ops || !(await page.eval('/исправен/.test(TS.app.tr.log[0].text)'))) fail(`шаг ${i + 1} «${text}»: самопроверки нет`); return; }
   if (after.ops !== before.ops + 1) fail(`шаг ${i + 1} «${text}»: щелчок не сработал (операций ${before.ops} → ${after.ops})`);
 }
 // Открыть схему для задания: 2D — вкладка «Тренажёр», полигон — 3D пешком (захват мыши в headless — вызовом)
@@ -648,6 +654,77 @@ SUITES.guide = { perScheme: true, fn: async keys => {
   });
 } };
 
+// Обучение «за руку» (src/view3d/coach.js): первый вход в 3D площадки — предложение; «Начать» — задание, «Пешком» у щита рядом
+// с первым аппаратом, карточки ведут по шагам (G, V, E) до «Обучение пройдено», 100 баллов; «Пропустить» — больше не предлагается.
+// Остальные проверки идут с отметкой «обучение пройдено» (ставится при запуске), здесь её снимают
+const coachCard = `(() => { const c = document.querySelector('.v3-coach'); return c && !c.hidden ? c.querySelector('.t').textContent : ''; })()`;
+SUITES.coach = { perScheme: false, fn: async () => {
+  const fresh = async key => {
+    await page.eval("localStorage.removeItem('ts.coach')");
+    await page.goto(page.base); await page.eval(HELPER);
+    await chooseScheme(key); await setMode('3d');
+    await page.waitFor('!!(TS.app.v3 && TS.app.v3.ready && TS.app.v3.world)', 15000, '3D');
+  };
+  await check('coach', 'ps110: от предложения до «Обучение пройдено»', async () => {
+    try {
+      await fresh('ps110');
+      const b = await page.fn(() => E2E.box('.v3-coach [data-coach="start"]'));
+      if (!b) fail('нет предложения обучения при первом входе в 3D');
+      await clickAt(b, '«Начать»');
+      await page.waitFor('TS.app.v3.yardWalk && !!TS.app.tr.run', 3000, 'задание и «Пешком»');
+      await page.eval('TS.app.v3.walk.lockChanged(true)');
+      await settle();
+      const st0 = await page.eval(`(() => { const v = TS.app.v3, w = v.walk, b = v.boardG.position, h = v.boardHome.pos; return { far: Math.hypot(b.x - h.x, b.z - h.z), d: Math.hypot(w.x - b.x, w.z - b.z) }; })()`);
+      if (st0.far < 3 || st0.d > 6) fail('щит не у первого аппарата или начало не у щита: ' + JSON.stringify(st0));
+      const seen = [await page.eval(coachCard)];
+      if (!/шаг 1 из 5/.test(seen[0])) fail('первая карточка: ' + seen[0]);
+      for (let i = 0; i < 30; i++) {
+        if (await page.eval('!TS.app.tr.run || TS.app.tr.run.done')) break;
+        const st = await page.eval(guideState);
+        await page.key('KeyG'); await sleep(30);
+        await page.waitFor('!TS.app.v3.tp.busy', 3000, 'переход по G');
+        await page.eval(frames2);
+        const tool = st.op === 'check' ? 'check' : String(st.id).startsWith('pz:') ? 'pz' : null;
+        if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await page.eval(frames2); }
+        await sleep(200);
+        seen.push(await page.eval(coachCard));
+        await page.key('KeyE'); await sleep(80);
+        if (await page.eval('!!TS.app.v3.menu3d')) {
+          const item = await page.eval(`(() => { const st = TS.app.tr.peek().step; return st.op === 'pos' ? TS.Plan.menuPos(st.pos) : TS.Plan.menuOn(st.op === 'on'); })()`);
+          await aimE({ menu: item }, 'пункт «' + item + '»');
+        }
+        if (tool) { await page.key(tool === 'check' ? 'KeyV' : 'KeyP'); await sleep(40); }
+        await sleep(250);
+        seen.push(await page.eval(coachCard));
+      }
+      const r = await waitReport();
+      if (r.score !== 100) fail(`отчёт: ${r.score}, «${r.verdict}»`);
+      await closeModal();
+      const last = await page.eval(coachCard);
+      for (const k of ['шаг 3 из 5', 'шаг 4 из 5', 'шаг 5 из 5']) if (!seen.some(t => t.includes(k))) fail(`не было карточки «${k}»: ${[...new Set(seen)].join(' → ')}`);
+      if (last !== 'Обучение пройдено') fail('в конце карточка: ' + last);
+      return [...new Set(seen.filter(Boolean))].map(t => t.replace('Обучение · ', '')).join(' → ') + ' → пройдено, 100 баллов';
+    } finally {
+      await page.eval("localStorage.setItem('ts.coach', '1')");
+    }
+  });
+  await check('coach', 'tp10: «Пропустить»', async () => {
+    try {
+      await fresh('tp10');
+      const b = await page.fn(() => E2E.box('.v3-coach [data-coach="skip"]'));
+      if (!b) fail('нет предложения обучения');
+      await clickAt(b, '«Пропустить»');
+      const r = await page.eval(`({ card: ${coachCard}, seen: localStorage.getItem('ts.coach'), run: !!TS.app.tr.run })`);
+      if (r.card || r.seen !== '1' || r.run) fail('после «Пропустить»: ' + JSON.stringify(r));
+      await setMode('train'); await setMode('3d');
+      if (await page.eval(coachCard)) fail('предложение снова появилось');
+      return 'карточка закрыта, задание не началось, больше не предлагается';
+    } finally {
+      await page.eval("localStorage.setItem('ts.coach', '1')");
+    }
+  });
+} };
+
 // «Показ»: вручную — «Дальше» от начала до конца, каждый шаг готовится как в expect; выход возвращает схему, вид,
 // блокировки и не трогает «Мои схемы»; телефон 390×844 — панель снизу и не закрывает схему
 const demoReady = 'TS.app.demo.on && !TS.app.demo.busy && TS.app.demo.check().length === 0';
@@ -728,24 +805,36 @@ SUITES.demo = { perScheme: false, fn: async () => {
   });
 } };
 // Автопоказ: ?demo=auto доходит до конца сам за 2–3 минуты, без ошибок
+// Автопоказ идёт 2–3 минуты по замыслу; в проверке — вчетверо быстрее (?speed=4: паузы и переходы короче, действия те же).
+// Длина настоящего показа = паузы по замыслу (plannedMs) + время самих действий (то, что вышло сверх пауз, делённых на 4) — 2–3 минуты.
+// pg — страница проверки
+const AUTO_SPEED = 4;
+async function autoRun(pg) {
+  await pg.goto(pg.base + '?demo=auto&speed=' + AUTO_SPEED);
+  await pg.eval(HELPER);
+  const t0 = Date.now();
+  let shot = 0;
+  while (!(await pg.eval('TS.app.demo.done'))) {
+    if (Date.now() - t0 > 240000) fail('автопоказ не закончился за 4 минуты');
+    if (!(await pg.eval('TS.app.demo.autoOn'))) fail('автопоказ остановился на шаге ' + ((await pg.eval('TS.app.demo.i')) + 1));
+    if (SHOTS && Date.now() - t0 > shot * 15000) { await pg.shot(`${OUT}/auto-${String(shot).padStart(2, '0')}.png`); shot++; }
+    await sleep(500);
+  }
+  const wall = await pg.eval('TS.app.demo.autoMs'), plan = await pg.eval('TS.app.demo.plannedMs');
+  const ms = plan + Math.max(0, wall - plan / AUTO_SPEED);
+  if (ms < 120000 || ms > 180000) fail(`автопоказ шёл бы ${Math.round(ms / 1000)} с — нужно 2–3 минуты (паузы ${Math.round(plan / 1000)} с, ускоренно — ${Math.round(wall / 1000)} с)`);
+  const b = await pg.fn(() => E2E.box('#demo [data-d="exit"]'));
+  if (!b || b.ok === false) fail('не нажать «Выйти»');
+  await pg.click(b.x, b.y);
+  await sleep(40);
+  return `до конца: показ ≈ ${Math.round(ms / 1000)} с (в проверке — ${Math.round(wall / 1000)} с, ×${AUTO_SPEED})`;
+}
 SUITES.auto = { perScheme: false, fn: async () => {
   await check('auto', '?demo=auto', async () => {
-    await page.goto(page.base + '?demo=auto');
-    await page.eval(HELPER);
-    const t0 = Date.now();
-    let shot = 0;
-    while (!(await page.eval('TS.app.demo.done'))) {
-      if (Date.now() - t0 > 240000) fail('автопоказ не закончился за 4 минуты');
-      if (!(await page.eval('TS.app.demo.autoOn'))) fail('автопоказ остановился на шаге ' + ((await page.eval('TS.app.demo.i')) + 1));
-      if (SHOTS && Date.now() - t0 > shot * 15000) { await page.shot(`${OUT}/auto-${String(shot).padStart(2, '0')}.png`); shot++; }
-      await sleep(500);
-    }
-    const ms = await page.eval('TS.app.demo.autoMs');
-    if (ms < 120000 || ms > 180000) fail(`автопоказ шёл ${Math.round(ms / 1000)} с — нужно 2–3 минуты`);
-    await clickBtn('#demo [data-d="exit"]', null, '«Выйти»');
+    const r = await autoRun(page);
     await page.goto(page.base);
     await page.eval(HELPER);
-    return `до конца за ${Math.round(ms / 1000)} с`;
+    return r;
   });
 } };
 
@@ -995,6 +1084,8 @@ async function main() {
     page.base = url;
     await page.goto(url);
     await page.eval(HELPER);
+    // обучение «за руку» на площадках не предлагается (его проверяет coach): предложение — карточка поверх 3D
+    await page.eval("localStorage.setItem('ts.coach', '1')");
     const keys = await page.eval('TS.SAMPLES.map(s => s.key)');
     const su = onlySuites(), ok = onlyKeys();
     for (const [name, s] of Object.entries(SUITES)) {
@@ -1003,6 +1094,7 @@ async function main() {
       if (!s.perScheme && !su.length && ok.length) continue;
       await s.fn(ok.length ? keys.filter(k => ok.includes(k)) : keys);
     }
+
   } catch (e) {
     console.error('Сбой прогона:', e.message || e);
     rows.push({ проверка: 'прогон', схема: '', итог: 'СБОЙ', подробно: String(e.message || e).slice(0, 160), с: '' });

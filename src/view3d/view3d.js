@@ -8,10 +8,17 @@ import { wireMid } from '../view2d/scheme2d.js';
 import { buildRoom } from './room.js';
 import { Items } from './items.js';
 import { placeText } from '../core/permit.js';
+import { whyOf } from '../core/explain.js';
 import { Walk, REACH as WALK_REACH } from './walk.js';
 import { Teleport } from './teleport.js';
 import { findKRU, buildZRU } from './zru.js';
 import { footprints, makeYardWorld } from './world.js';
+import { Batch } from './batch.js';
+import { Probe } from './probe.js';
+import { Coach } from './coach.js';
+import { THREE, loadThree } from './three.js';
+import { Board, rr } from './board.js';
+import { Guide } from './guide.js';
 
 /* ===== §6. 3D и VR =====
    Схема → открытое распределительное устройство: координаты схемы становятся планом на земле
@@ -24,12 +31,6 @@ import { footprints, makeYardWorld } from './world.js';
    на ноутбуке — ходьба от первого лица (walk.js); «Вид сверху» там — обзор помещения без потолка.
    Площадка: «Обзор» (облёт мышью, «Вид сверху») или «Пешком» — та же ходьба, мир для неё (граница — ограждение,
    препятствия — детали моделей) собирает buildYard (world.js). В шлеме стик и телепорт тоже не проходят сквозь препятствия. */
-let THREE = null;
-// three.js подгружается отдельным куском только при входе в 3D
-async function loadThree() {
-  if (!THREE) THREE = await import('three');
-  return THREE;
-}
 // цвета 3D — в models/kit.js (PAL)
 const RAY = { idle: PAL.ui.rayIdle, hot: PAL.ui.rayHot };
 const YARD_GATE = 3;                                // ворота ограждения площадки: полуширина, м
@@ -38,13 +39,6 @@ const MENU = { minW: 560, maxW: 900, pad: 34, font: 28, line: 34, row: 84, top: 
 const COL3 = PAL.volt;
 // Подписи пешком и в шлеме: видны до far м, дальше 9 м растут с расстоянием до grow раз (с 15–20 м читаются на 1366×860 и в шлеме)
 const LABEL = { far: 28, grow: 2.2 };
-function rr(x, X, Y, W, H, R) {
-  x.beginPath();
-  x.moveTo(X + R, Y); x.lineTo(X + W - R, Y); x.quadraticCurveTo(X + W, Y, X + W, Y + R);
-  x.lineTo(X + W, Y + H - R); x.quadraticCurveTo(X + W, Y + H, X + W - R, Y + H);
-  x.lineTo(X + R, Y + H); x.quadraticCurveTo(X, Y + H, X, Y + H - R);
-  x.lineTo(X, Y + R); x.quadraticCurveTo(X, Y, X + R, Y); x.closePath();
-}
 
 class View3D {
   constructor(app, box) {
@@ -75,11 +69,15 @@ class View3D {
     this.update(true);
     this.renderer.setAnimationLoop((t, f) => this.loop(t, f));
     this.checkVR();
+    // первый вход в 3D площадки — предложить обучение; идёт обучение — показать текущий шаг
+    if (this.coach.on) this.coach.update(true); else this.coach.offer();
   }
   hide() {
     this.active = false;
     if (this.renderer && !this.renderer.xr.isPresenting) this.renderer.setAnimationLoop(null);
     if (this.walk) this.walk.disable();
+    if (this.probe) this.probe.dispose();
+    if (this.coach) this.coach.hide();
     this.closeMenu3D();
     this.tip(null);
   }
@@ -118,6 +116,8 @@ class View3D {
     this.tmp = { m: new T.Matrix4(), v: new T.Vector3(), v2: new T.Vector3(), dir: new T.Vector3(), up: new T.Vector3(0, 1, 0) };
     this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 12, 8) };
     this.makeMats();
+    // указатель напряжения на площадке: в руке и касание по месту (probe.js)
+    this.probe = new Probe(this);
     this.ring = new T.Mesh(this.geo.ring, new T.MeshBasicMaterial({ color: PAL.ui.ring }));
     // небо с дальними холмами — одна сфера вокруг площадки (в помещении спрятана); рисуется первой, без тумана
     this.sky = new T.Mesh(new T.SphereGeometry(800, 32, 16), new T.MeshBasicMaterial({ map: texture(T, 'sky'), side: T.BackSide, fog: false, depthWrite: false, toneMapped: false }));
@@ -130,6 +130,8 @@ class View3D {
     this.walk = new Walk(this);
     this.tp = new Teleport(this);
     this.makeBeacon();
+    // обучение «за руку» на площадке (coach.js)
+    this.coach = new Coach(this);
     this.setupXR();
     Diag.on(t => { if (t === 'error') { this.drawBoard(); if (this.dbg && this.dbg.m.visible) this.drawDebug(); } });
     this.ro = new ResizeObserver(() => this.resize());
@@ -204,6 +206,10 @@ class View3D {
     this.dev.clear(); this.nodeMats.clear(); this.pickables = []; this.hover = null; this.ring.visible = false;
     this.pzDev = new Map(); this.closeMenu3D();
     if (this.tp) this.tp.cancel();
+    if (this.probe) this.probe.dispose();
+    // новая схема: обучение — заново (предложение — на новой площадке), щит — у ворот
+    if (this.coach) { this.coach.stop(false); this.coach.offered = false; }
+    this.taskStart = null; this.boardG = null;
     if (this.items) { this.items.dispose(); this.items = null; }
     const poly = !!(s.room && Array.isArray(s.room.cells) && s.room.cells.length);
     this.setEnv(poly);
@@ -223,7 +229,12 @@ class View3D {
     }
     // мир ходьбы нужен и вне «Пешком»: «Перейти к аппарату» в шлеме ищет место тем же walk.seek
     if (this.walk) this.walk.world = this.world;
+    this.partBoxes();
     this.compactParts();
+    // таблица узлов и инстансы одинаковых подвижных частей (batch.js) — до слияния неподвижного
+    if (this.batch) this.batch.dispose();
+    this.batch = new Batch(this);
+    this.batch.instance();
     this.mergeStatic();
     this.makeLamps();
     this.makeLabels();
@@ -311,19 +322,25 @@ class View3D {
     }
     // КЛ из ячеек — лотком к муфтам, к трансформаторам — шинный мост (выводы уличных элементов уже на месте)
     if (this.zru) { this.root.updateMatrixWorld(true); this.zru.links(); }
-    const board = this.makeBoard();
+    // щит с заданием переезжает к первому аппарату задания (placeBoard): его детали не сливаются с неподвижными
+    const board = this.boardG = this.makeBoard();
+    this.mergeInto(board);
+    board.traverse(o => { o.userData.dyn = true; });
+    this.boardHome = { pos: board.position.clone(), ry: board.rotation.y };
+    this.boardBlocks = footprints(T, board);
     this.makeProxies();
-    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus' && !d.zru).map(d => d.group), [board]);
+    this.makeShadows([...this.dev.values()].filter(d => d.kind !== 'bus' && !d.zru).map(d => d.group));
     // Пешком: граница — ограждение с воротами, препятствия — детали моделей (и щита), до которых не дотянуться над головой.
     // Дальние части (линия от энергосистемы) не мешают; провода и шины на высоте 3,4 м — тоже
-    const blocks = footprints(T, board).concat(this.zru ? this.zru.blocks : []);
+    const blocks = [].concat(this.zru ? this.zru.blocks : []);
     for (const d of this.dev.values()) {
       if (d.zru) continue;
       const far = new Set();
       for (const f of d.far || []) f.traverse(o => far.add(o));
       blocks.push(...footprints(T, d.group, o => far.has(o)));
     }
-    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks, dyn: this.zru && this.zru.dyn });
+    const zdyn = this.zru && this.zru.dyn;
+    this.world = makeYardWorld({ hx, hz, gate: YARD_GATE, blocks, dyn: () => (zdyn ? zdyn() : []).concat(this.boardBlocks) });
     this.start = new T.Vector3(this.world.start.x, 0, this.world.start.z);
   }
   buildFence(hx, hz) {
@@ -435,6 +452,19 @@ class View3D {
     }
     return out;
   }
+  // Коробки деталей каждого аппарата площадки — до слияния (потом детали разных аппаратов в одной сетке): по ним щелчок и прицел
+  // выбирают аппарат, чья деталь ближе по лучу, когда невидимые коробки соседей перекрываются (ЗН у трансформатора, ТТ у выключателя)
+  partBoxes() {
+    const T = THREE, b = new T.Box3();
+    this.root.updateMatrixWorld(true);
+    for (const d of this.dev.values()) {
+      if (d.zru) continue;
+      const far = new Set();
+      for (const f of d.far || []) f.traverse(o => far.add(o));
+      d.pick = [];
+      d.group.traverse(o => { if (!o.isMesh || o.userData.proxy || far.has(o)) return; b.setFromObject(o); if (!b.isEmpty()) d.pick.push(b.clone().expandByScalar(0.03)); });
+    }
+  }
   // Подвижная часть из нескольких фигур (тележка, ротор, ПЗ) сливается по материалам в своей системе координат
   // d.merge — свои группы для слияния (тележка ячейки полигона: лицевая панель и начинка отдельно)
   compactParts() {
@@ -458,7 +488,7 @@ class View3D {
   }
   joinGeos(parts) {
     const T = THREE, out = new T.BufferGeometry();
-    for (const nm of ['position', 'normal', 'uv']) {
+    for (const nm of ['position', 'normal', 'uv', 'nodeIdx']) {
       if (!parts.every(q => q.attributes[nm])) continue;
       let len = 0;
       for (const q of parts) len += q.attributes[nm].array.length;
@@ -471,26 +501,42 @@ class View3D {
     out.computeBoundingSphere();
     return out;
   }
-  // Неподвижные детали с одинаковым материалом сливаются в одну сетку: меньше вызовов отрисовки в шлеме
+  // Неподвижные детали с одинаковым материалом сливаются в одну сетку: меньше вызовов отрисовки в шлеме.
+  // Провода, шины и выводы всех узлов — одна сетка с материалом таблицы узлов, окна всех потребителей — тоже одна (batch.js)
   mergeStatic() {
-    const T = THREE, dyn = new Set();
+    const T = THREE, dyn = new Set(), B = this.batch, topo = this.app.tr.topo;
     for (const d of this.dev.values()) {
       for (const k of ['pivot', 'lever', 'slide', 'show', 'mark', 'beacon']) if (d[k]) d[k].traverse(o => dyn.add(o));
       if (d.spin) for (const sp of d.spin) sp.traverse(o => dyn.add(o));
+    }
+    // окна потребителя светятся по его узлу (вывод 0)
+    const winIdx = new Map();
+    for (const d of this.dev.values()) {
+      if (!d.win || !B) continue;
+      const i = B.table.idx.get((topo.term.get(d.el.id) || [])[0]);
+      if (i != null) d.group.traverse(o => { if (o.material === d.win) winIdx.set(o, i); });
     }
     const buckets = new Map();
     this.root.updateMatrixWorld(true);
     this.root.traverse(o => {
       if (!o.isMesh || o.isInstancedMesh || dyn.has(o) || o.userData.proxy || o.userData.ground || o.userData.board || o.userData.dyn) return;
-      if (o.material && o.material.map && o.material.emissiveMap) return;
-      let l = buckets.get(o.material);
-      if (!l) buckets.set(o.material, l = []);
+      let key = o.material;
+      if (B && B.nodeIdx(o.material) >= 0) key = 'node';
+      else if (winIdx.has(o)) key = 'win';
+      else if (o.material && o.material.map && o.material.emissiveMap) return;
+      let l = buckets.get(key);
+      if (!l) buckets.set(key, l = []);
       l.push(o);
     });
-    for (const [mat, list] of buckets) {
-      if (list.length < 2) continue;
-      const out = this.joinGeos(list.map(m => { const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); g.applyMatrix4(m.matrixWorld); return g; }));
-      this.root.add(new T.Mesh(out, mat));
+    for (const [key, list] of buckets) {
+      const shared = key === 'node' || key === 'win';
+      if (list.length < 2 && !shared) continue;
+      const out = this.joinGeos(list.map(m => {
+        const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+        g.applyMatrix4(m.matrixWorld);
+        return key === 'node' ? B.tag(g, B.nodeIdx(m.material)) : key === 'win' ? B.tag(g, winIdx.get(m)) : g;
+      }));
+      this.root.add(new T.Mesh(out, key === 'node' ? B.nodeMat : key === 'win' ? B.winFor(list[0].material) : key));
       for (const m of list) m.parent.remove(m);
     }
   }
@@ -573,10 +619,11 @@ class View3D {
     });
     const tex = new T.CanvasTexture(c);
     tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 4;
-    const n = list.length, center = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), lid = new Float32Array(n * 4), idx = [];
+    const n = list.length, center = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), lid = new Float32Array(n * 4), lod = new Float32Array(n * 4), idx = [];
     // номер подписи — чтобы подпись аппарата под прицелом показать крупнее (uniform hot)
     this.labelIdx = new Map();
-    list.forEach((d, i) => { lid.fill(i, i * 4, i * 4 + 4); if (d.el) this.labelIdx.set(d.el.id, i); });
+    // lod 1 — подпись ячейки ЗРУ: в «Обзоре» не рисуется (иначе десяток подписей в куче над рядами), видна под курсором
+    list.forEach((d, i) => { lid.fill(i, i * 4, i * 4 + 4); lod.fill(d.labelLod || 0, i * 4, i * 4 + 4); if (d.el) this.labelIdx.set(d.el.id, i); });
     const v = new T.Vector3();
     this.root.updateMatrixWorld(true);
     list.forEach((d, i) => {
@@ -596,20 +643,21 @@ class View3D {
     geo.setAttribute('corner', new T.BufferAttribute(corner, 2));
     geo.setAttribute('uv', new T.BufferAttribute(uv, 2));
     geo.setAttribute('lid', new T.BufferAttribute(lid, 1));
+    geo.setAttribute('lod', new T.BufferAttribute(lod, 1));
     geo.setIndex(idx);
     geo.computeBoundingSphere();
     const mat = new T.ShaderMaterial({
       // grow: дальше 9 м подпись растёт с расстоянием (до grow раз) — пешком и в шлеме читается с 15–20 м; в «Обзоре» grow = 1, как было.
       // hot — подпись аппарата под прицелом: в 1,4 раза крупнее и поверх всего. Подписи пишут глубину: ближняя закрывает дальнюю целиком
-      uniforms: { map: { value: tex }, far: { value: 0 }, hot: { value: -1 }, grow: { value: 1 } },
-      vertexShader: `attribute vec2 corner; attribute float lid; varying vec2 vUv; uniform float far; uniform float hot; uniform float grow;
+      uniforms: { map: { value: tex }, far: { value: 0 }, hot: { value: -1 }, grow: { value: 1 }, overview: { value: 0 } },
+      vertexShader: `attribute vec2 corner; attribute float lid; attribute float lod; varying vec2 vUv; uniform float far; uniform float hot; uniform float grow; uniform float overview;
         void main() { vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0);
           float k = clamp(-mv.z / 9.0, 1.0, grow); bool h = abs(lid - hot) < 0.5;
           if (h) k *= 1.4;
           mv.xy += corner * k;
           gl_Position = projectionMatrix * mv;
           if (h) gl_Position.z = -gl_Position.w * 0.999;
-          else if (far > 0.0 && -mv.z > far) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }`,
+          else if ((far > 0.0 && -mv.z > far) || (overview > 0.5 && lod > 0.5)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }`,
       fragmentShader: `uniform sampler2D map; varying vec2 vUv;
         void main() { vec4 c = texture2D(map, vUv); if (c.a < 0.02) discard; gl_FragColor = c;
           #include <colorspace_fragment>
@@ -676,7 +724,9 @@ class View3D {
       let col, ei;
       if (kv != null) { col = COL3[vClass(kv)]; ei = 0.55; } else if (st.G.has(n)) { col = COL3.gnd; ei = 0.3; } else { col = COL3.dead; ei = 0; }
       m.color.setHex(col); m.emissive.setHex(col); m.emissiveIntensity = ei;
+      if (this.batch) this.batch.setNode(n, col, ei);
     }
+    if (this.batch) this.batch.commit();
     for (const [id, d] of this.dev) {
       const sw = tr.sim.st[id], tm = tr.topo.term.get(id) || [];
       d.trip = sw ? !!sw.trip : false;
@@ -691,6 +741,7 @@ class View3D {
       }
     }
     this.setLamps(true);
+    if (this.batch) this.batch.sync();
     if (this.items) this.items.sync();
     this.syncGuide();
     this.drawBoard();
@@ -704,10 +755,15 @@ class View3D {
     // предмет на полу, на который выкатили тележку, отодвигается из-под неё — иначе его не достать
     if (this.items) this.items.unbury();
   }
-  // Предметы, плакаты и мероприятия изменились (событие 'field' движка)
+  // Предметы, плакаты и мероприятия изменились (событие 'field' движка); test — самопроверка указателя на проверочном устройстве
   onField(d = {}) {
     if (!this.ready) return;
     if (this.items) this.items.sync(!!d.reset);
+    // в шлеме — табличка у указателя (вместо баннера перед глазами), на ноутбуке — строка у прицела
+    if (d.test && this.active) {
+      if (!(this.items && this.items.tipLabel('Указатель исправен', 'dead'))) this.banner('Указатель исправен: огонёк горит, звук есть.', 'info');
+      if (this.fpsOn()) this.walk.said('Указатель исправен — огонёк горит, звук есть');
+    }
     this.drawBoard();
   }
   // Кадр: ошибка в шаге или отрисовке уходит в журнал, сессия VR продолжается
@@ -719,36 +775,40 @@ class View3D {
   step(time) {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const blink = Math.floor(time / 350) % 2 === 0;
-    let trips = false;
+    let trips = false, moved = false;
     for (const d of this.dev.values()) {
       if (d.pivot && d.angT != null && d.ang !== d.angT) {
+        moved = true;
         const diff = d.angT - d.ang;
         d.ang += Math.sign(diff) * Math.min(Math.abs(diff), 2.4 * dt);
         d.pivot.rotation.x = d.ang;
       }
       if (d.lever && d.leverT != null) {
         const ax = d.leverAxis || 'x', cur = d.lever.rotation[ax], diff = d.leverT - cur;
-        if (diff) d.lever.rotation[ax] = cur + Math.sign(diff) * Math.min(Math.abs(diff), 9 * dt);
+        if (diff) { d.lever.rotation[ax] = cur + Math.sign(diff) * Math.min(Math.abs(diff), 9 * dt); moved = true; }
       }
       if (d.slide && d.slideT != null && d.slideX !== d.slideT) {
         const diff = d.slideT - d.slideX;
         d.slideX += Math.sign(diff) * Math.min(Math.abs(diff), 0.8 * dt);
         d.slide.position[d.slideAxis || 'x'] = d.slideX;
         this.slideMoved(d);
+        moved = true;
       }
       if (d.spin && d.spin.length) {
         d.speed += (d.speedT - d.speed) * Math.min(1, dt * (d.speedT > d.speed ? 0.9 : 0.45));
-        if (d.speed > 0.01) for (const sp of d.spin) sp.rotation.x += d.speed * dt;
+        if (d.speed > 0.01) { for (const sp of d.spin) sp.rotation.x += d.speed * dt; moved = true; }
       }
       if (d.trip) trips = true;
     }
+    // инстансы подвижных частей — за своими местами (batch.js)
+    if (moved && this.batch) this.batch.sync();
     if (trips || this._tripsWas) this.setLamps(blink);
     this._tripsWas = trips;
     this.stepFx(dt);
     this.tp.step(dt);
     const xr = this.renderer.xr.isPresenting;
     // пешком и в шлеме дальние подписи (дальше LABEL.far) не рисуются — они только загромождают; ближние растут с расстоянием
-    if (this.labelMesh) { const u = this.labelMesh.material.uniforms, near = xr || this.fpsOn(); u.far.value = near ? LABEL.far : 0; u.grow.value = near ? LABEL.grow : 1; }
+    if (this.labelMesh) { const u = this.labelMesh.material.uniforms, near = xr || this.fpsOn(); u.far.value = near ? LABEL.far : 0; u.grow.value = near ? LABEL.grow : 1; u.overview.value = near || this.room ? 0 : 1; }
     // маяк заметен издалека, а вблизи (у самого аппарата) почти прозрачен — не слепит и не закрывает аппарат
     if (this.beacon.visible) {
       const c = this.camera.getWorldPosition(this.tmp.v2), d = Math.hypot(c.x - this.beacon.position.x, c.z - this.beacon.position.z);
@@ -756,9 +816,48 @@ class View3D {
     }
     if (xr) this.xrFrame(dt);
     else if (this.fpsOn()) this.walk.step(dt);
+    this.holdProbe(xr);
+    this.probe.step(dt, time);
+    if (this.coach.on && time - (this._coachT || 0) > 150) { this._coachT = time; this.coach.update(); }
     if (this.items) this.items.step(dt, time);
     if (this.menu3d && (performance.now() > this.menu3d.until || this.menuFar())) this.closeMenu3D();
   }
+
+  // Указатель на площадке в руке, пока включён инструмент: пешком — у края кадра (модель — по аппарату под прицелом),
+  // в шлеме — в правой руке. В «Обзоре» и в полигоне (там указатель — предмет со стенда) — нет
+  holdProbe(xr) {
+    let anchor = null, kind = this.probeKind || 'uvn';
+    if (!this.room && this.app.tool === 'check') {
+      if (xr) { const c = this.ctrls.find(q => q.src && q.hand === 'right') || this.ctrls.find(q => q.src); anchor = c ? c.grip : null; }
+      else if (this.fpsOn()) {
+        anchor = this.camera;
+        const a = this.walk.aim;
+        if (a && a.id && (a.type === 'dev' || a.type === 'wire' || a.type === 'far')) kind = this.probeKind = this.probe.kindForTarget(a.id);
+      }
+    }
+    this.probe.hold(anchor, kind);
+  }
+  // Куда коснуться указателем (площадка): выводы аппарата — каждая проверяемая сторона, провод — точка попадания на высоте проводов,
+  // в ЗРУ — нижние контакты ячейки
+  probePoints(d) {
+    const T = THREE, tr = this.app.tr, dv = this.dev.get(d.target), out = [];
+    const h = this.hitAt && this.hitAt.id === d.target && performance.now() - this.hitAt.t < 1500 ? this.hitAt.p : null;
+    if (dv && !dv.zru && dv.ports && dv.ports.length) {
+      const tm = tr.topo.term.get(d.target) || [];
+      for (const r of d.res) {
+        const i = tm.indexOf(r.n), pp = dv.ports[i >= 0 ? i : 0];
+        if (pp) out.push({ p: dv.group.localToWorld(new T.Vector3(...pp)), live: r.kv != null });
+      }
+      return out;
+    }
+    const p = !dv && h ? h.clone() : this.posOf(d.target);
+    if (!p) return out;
+    if (!dv && !p.indoor) p.y = H3;
+    out.push({ p, live: d.live });
+    return out;
+  }
+  // Щелчок, E или луч по аппарату и проводу: где попали — туда коснётся указатель
+  noteHit(h) { const u = h && h.object.userData; if (u && (u.dev || u.wire)) this.hitAt = { id: u.dev || u.wire, p: h.point.clone(), t: performance.now() }; }
 
   // ---------- камера и мышь ----------
   applyOrbit() {
@@ -819,7 +918,8 @@ class View3D {
     this.closeMenu3D(); this.tip(null); this.setHover(null);
     // «Обзор» и обратно — на то же место: начало у ворот только у новой площадки
     const w = this.walk;
-    if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
+    // начало: прежнее место, иначе у щита с заданием (задание идёт), иначе у ворот
+    if (this.yardWalk) { this.top = false; if (this.walkPose) w.pose(this.walkPose); else if (this.taskStart) w.pose(this.taskStart); else w.reset(this.world.start); if (this.active) w.enable(this.world); }
     else { this.walkPose = { x: w.x, z: w.z, yaw: w.yaw, pitch: w.pitch }; w.disable(); this.applyOrbit(); }
     this.showRoof(this.yardWalk);
     this.camButtons();
@@ -906,6 +1006,7 @@ class View3D {
     const u = h.object.userData;
     if (u.board) { this.boardClick(h.uv); return; }
     if (u.menu) { this.menuClick(h.uv); return; }
+    this.noteHit(h);
     if (u.dev) { this.app.pick3D(u.dev, shift, { cx, cy }); this.hover = null; this.hoverAt(cx, cy); return; }
     if (u.wire) this.app.pickWire3D(u.wire, shift);
   }
@@ -924,10 +1025,26 @@ class View3D {
     const h = hits.find(q => q.object.userData.menu) || hits.find(q => { const u = q.object.userData; return !u.ground && (tool || !u.wire) && !u.item && !u.mount && !u.stand; }) || null;
     return h && h.object.userData.dev ? this.centered(h, hits) : h;
   }
-  // Коробки соседних аппаратов перекрываются (ЗН у разъединителя, ТТ у выключателя): из аппаратов не дальше 3 м за первым
-  // берём тот, чей центр ближе к лучу (в долях размера коробки) — щелчок по середине аппарата попадает в него, а не в соседа
+  // Коробки соседних аппаратов перекрываются (ЗН у трансформатора, ТТ у выключателя): из аппаратов не дальше 3 м за первым
+  // берём тот, чью деталь луч встречает раньше (коробки деталей — partBoxes); луч мимо деталей — тот, чей центр ближе к лучу
+  // (в долях размера коробки): щелчок по середине аппарата попадает в него, а не в соседа
   centered(first, hits) {
     const T = THREE, ray = this.ray.ray, c = this.tmp.v, p = this.tmp.v2, inv = this._inv || (this._inv = new T.Matrix4());
+    if (this.pickParts !== false) {
+      const seen = new Set();
+      let pb = null, pd = Infinity;
+      // по деталям — и за пустыми коробками впереди (луч прошёл коробку ЗН мимо его деталей — виден трансформатор за ней)
+      for (const h of hits) {
+        if (h.distance > first.distance + 12) break;
+        const id = h.object.userData.dev, d = id && !seen.has(id) ? this.dev.get(id) : null;
+        if (!d) continue;
+        seen.add(id);
+        // шина — тонкая и длинная, проходит над аппаратами: по деталям её не выбираем (кроме ПЗ) — щелчок рядом с ней — по аппарату
+        if (d.kind === 'bus' && this.app.tool !== 'pz') continue;
+        for (const b of d.pick || []) if (ray.intersectBox(b, c)) { const dist = c.distanceTo(ray.origin); if (dist < pd) { pd = dist; pb = h; } }
+      }
+      if (pb) return pb;
+    }
     let best = first, bk = Infinity;
     for (const h of hits) {
       if (h.distance > first.distance + 3) break;
@@ -976,8 +1093,8 @@ class View3D {
     d.group.getWorldPosition(p);
     this.ring.position.set(p.x, 0.06, p.z);
     this.ring.scale.setScalar(d.kind === 'transformer' || d.kind === 'tr3' ? 2.3 : d.kind === 'load' ? 2.6 : 1.25);
-    // в ЗРУ — маленькое кольцо на полу коридора перед ячейкой
-    if (d.zru) { this.ring.scale.setScalar(0.4); this.ring.position.z += 0.5; }
+    // в ЗРУ — маленькое кольцо на полу коридора перед ячейкой (ряд B повёрнут: «перед» — в местных осях ячейки)
+    if (d.zru) { const q = d.group.localToWorld(this.tmp.v2.set(0, 0, 0.5)); this.ring.scale.setScalar(0.4); this.ring.position.set(q.x, 0.06, q.z); }
     this.ring.visible = d.kind !== 'bus';
   }
   tip(text, x, y) {
@@ -1024,46 +1141,6 @@ class View3D {
     const side = { left: 'левый', right: 'правый', none: 'без стороны' };
     return [...s.inputSources].map(i => `${side[i.handedness] || i.handedness}: ${(i.profiles && i.profiles[0]) || '?'}, ${i.hand ? 'руки' : i.gamepad ? 'контроллер' : i.targetRayMode}`);
   }
-  mkPanel(w, h, pw, ph) {
-    const T = THREE, c = document.createElement('canvas'); c.width = w; c.height = h;
-    const t = new T.CanvasTexture(c); t.colorSpace = T.SRGBColorSpace;
-    const m = new T.Mesh(new T.PlaneGeometry(pw, ph), new T.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, toneMapped: false }));
-    m.renderOrder = 12; m.visible = false;
-    return { c, t, m };
-  }
-  // Панель отладки у левого края взгляда. В шлеме — кнопка «Отладка» на щите, на компьютере в 3D — клавиша F.
-  toggleDebug(on) {
-    if (!this.ready) return;
-    if (!this.dbg) { this.dbg = this.mkPanel(640, 560, 0.4, 0.35); this.dbg.m.position.set(-0.36, 0.1, -0.9); this.camera.add(this.dbg.m); }
-    this.dbg.m.visible = on == null ? !this.dbg.m.visible : on;
-    if (this.dbg.m.visible) this.drawDebug();
-    this.drawBoard();
-  }
-  drawDebug() {
-    const { c, t } = this.dbg, x = c.getContext('2d'), p = this.perf || {}, xr = this.renderer.xr, s = xr.getSession && xr.getSession();
-    const F = (w, sz) => `${w} ${sz}px "JetBrains Mono", ui-monospace, monospace`;
-    x.clearRect(0, 0, c.width, c.height);
-    x.fillStyle = 'rgba(8,12,10,0.88)'; rr(x, 0, 0, c.width, c.height, 20); x.fill();
-    let y = 44;
-    const line = (text, color = '#e8efe9', size = 24, w = 500) => { x.font = F(w, size); x.fillStyle = color; x.fillText(this.fit(x, text, c.width - 40), 20, y); y += size + 10; };
-    const fps = Math.round(p.fps || 0), minFps = p.hist && p.hist.length ? Math.min(...p.hist) : 0;
-    line(`FPS ${fps}  (мин. за 10 с: ${minFps})`, fps >= 68 ? '#5ee08f' : fps >= 50 ? '#f5b544' : '#ff6b7d', 34, 600);
-    line(`Отрисовка: ${p.calls || 0} вызовов${xr.isPresenting ? ' (оба глаза)' : ''}, ${Math.round((p.tris || 0) / 1000)} тыс. треуг.`);
-    if (xr.isPresenting) { x.font = F(500, 22); x.fillStyle = '#e8efe9'; this.wrap(x, `VR: ${this.refInfo || '?'}`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 30; }); }
-    else line('VR: не запущен (3D на экране)');
-    const ins = this.inputList();
-    if (!ins.length) line('Ввод: нет', '#93a69e');
-    for (const i of ins.slice(0, 3)) line('· ' + i, '#c6d3cd', 22);
-    const cp = this.camera.getWorldPosition(this.tmp.v2);
-    line(`Где стою: x ${cp.x.toFixed(1)} м, z ${cp.z.toFixed(1)} м, глаза ${cp.y.toFixed(2)} м`, '#c6d3cd', 22);
-    const d = Diag.data();
-    line(`Отметок: ${d.marks.length} · ошибок в журнале: ${Diag.errors().length}`, '#c6d3cd', 22);
-    x.font = F(400, 18); x.fillStyle = '#93a69e';
-    this.wrap(x, navigator.userAgent, c.width - 40, 3).forEach(l => { x.fillText(l, 20, y); y += 24; });
-    const e = Diag.pageErrors ? Diag.lastError() : null;
-    if (e) { y += 4; x.font = F(600, 20); x.fillStyle = '#ff6b7d'; this.wrap(x, `Ошибка: ${e.where}: ${e.msg}`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 26; }); }
-    t.needsUpdate = true;
-  }
   // Что сейчас перед глазами: аппарат, провод, щит, земля
   gazeLabel() {
     const cam = this.camera, o = this.tmp.v.setFromMatrixPosition(cam.matrixWorld), dir = this.tmp.dir;
@@ -1098,40 +1175,6 @@ class View3D {
     this.banner(`Отметка ${m.n} сохранена: ${m.look}`, 'info');
     if (this.dbg && this.dbg.m.visible) this.drawDebug();
   }
-  // Короткое обучение перед лицом: при первом входе в VR и по кнопке «Обучение» на щите; закрывается курком
-  showTutor(on = true) {
-    if (!this.tutor) { this.tutor = this.mkPanel(1024, 600, 1.0, 0.586); this.tutor.m.position.set(0, -0.05, -1.25); this.camera.add(this.tutor.m); }
-    this.tutor.m.visible = on;
-    if (!on) return;
-    const { c, t } = this.tutor, x = c.getContext('2d'), F = (w, sz) => `${w} ${sz}px "Golos Text", system-ui, sans-serif`;
-    x.clearRect(0, 0, c.width, c.height);
-    x.fillStyle = 'rgba(16,24,21,0.94)'; rr(x, 0, 0, c.width, c.height, 28); x.fill();
-    x.fillStyle = '#3b4fd1'; rr(x, 0, 0, c.width, 10, 4); x.fill();
-    // в полигоне — как брать предметы (то же на табличке над стендом)
-    x.fillStyle = '#ffffff'; x.font = F(600, 44); x.fillText(this.room ? 'Как брать предметы' : 'Как управлять', 44, 82);
-    const steps = this.room ? [
-      ['1', 'Подойдите к стенду справа от входа', 'Левый стик — ходьба, правый — поворот, курок по полу — переход к кольцу. На стенде — СИЗ, указатель, ПЗ, плакаты, замок, ограждение.'],
-      // описание шага — не больше 2 строк, иначе обрезается «…»
-      ['2', 'Боковая кнопка — взять и отпустить', 'Рука у предмета, боковая кнопка — взять. Ещё раз у нужного места — повесить, запереть, поставить; в стороне — уронить.'],
-      ['3', 'СИЗ и указатель', 'Перчатки и каска надеваются сразу. Указатель — к нижним контактам в отсеке тележки. Курок — переключить аппарат.'],
-    ] : [
-      ['1', 'Луч и курок', 'Наведите луч на аппарат и нажмите курок — он переключится. Курок по земле — переход туда, где кольцо (красное — не пройти).'],
-      ['2', 'Боковая кнопка — указатель', 'Наведите луч и нажмите боковую кнопку (под средним пальцем) — проверка напряжения.'],
-      ['3', 'Стики и кнопки', 'Левый стик — ходьба, правый — поворот. B или Y — к аппарату следующего шага, A или X — отметка для отчёта.'],
-    ];
-    let y = 150;
-    for (const [n, h, d] of steps) {
-      x.fillStyle = '#3b4fd1'; x.beginPath(); x.arc(72, y - 4, 26, 0, Math.PI * 2); x.fill();
-      x.fillStyle = '#ffffff'; x.font = F(700, 30); x.textAlign = 'center'; x.fillText(n, 72, y + 7); x.textAlign = 'left';
-      x.font = F(600, 32); x.fillText(h, 120, y + 6);
-      x.font = F(400, 26); x.fillStyle = '#c6d3cd';
-      this.wrap(x, d, c.width - 160, 2).forEach((l, i) => x.fillText(l, 120, y + 46 + i * 32));
-      y += 140;
-    }
-    x.fillStyle = '#ffd23f'; x.font = F(600, 30); x.textAlign = 'center';
-    x.fillText('Нажмите курок, чтобы начать', c.width / 2, c.height - 30); x.textAlign = 'left';
-    t.needsUpdate = true;
-  }
   // Руки без контроллеров: луч и щипок работают не полностью — честно просим взять контроллеры
   checkHands() {
     const s = this.renderer.xr.getSession && this.renderer.xr.getSession();
@@ -1140,200 +1183,6 @@ class View3D {
     if (hands === !!this.handsOnly) return;
     this.handsOnly = hands;
     if (hands) this.banner('Возьмите контроллеры: управление руками в тренажёре не поддерживается.', 'warn');
-    this.drawBoard();
-  }
-
-  // ---------- щит с заданием ----------
-  makeBoard(place) {
-    const T = THREE;
-    if (!this.boardCanvas) {
-      // рисуем в координатах 1024×720, текстура в 1,5 раза плотнее — чтобы читалось в шлеме с 2–3 м
-      this.boardCanvas = document.createElement('canvas');
-      this.boardW = 1024; this.boardH = 720; this.boardK = 1.5;
-      this.boardCanvas.width = this.boardW * this.boardK; this.boardCanvas.height = this.boardH * this.boardK;
-      this.boardTex = new T.CanvasTexture(this.boardCanvas);
-      this.boardTex.colorSpace = T.SRGBColorSpace;
-      this.boardTex.anisotropy = 4;
-    }
-    const g = new T.Group();
-    const panel = new T.Mesh(new T.PlaneGeometry(3.2, 2.25), new T.MeshBasicMaterial({ map: this.boardTex, toneMapped: false }));
-    panel.position.y = 2.25; panel.userData.board = true; g.add(panel);
-    g.add(this.box(3.32, 2.37, 0.08, this.M.dark, 0, 2.25, -0.05));
-    // place — щит на стене помещения (полигон): без стоек, уменьшенный
-    if (place) {
-      g.position.set(place.pos[0], place.pos[1], place.pos[2]); g.rotation.y = place.ry; g.scale.setScalar(place.scale);
-    } else {
-      for (const x of [-1.35, 1.35]) g.add(this.box(0.1, 1.2, 0.1, this.M.galv, x, 0.6, -0.05));
-      g.position.set(-4.4, 0, this.bounds.hz - 1.4);
-      g.rotation.y = 0.5;
-    }
-    this.root.add(g);
-    this.pickables.push(panel);
-    this.drawBoard();
-    return g;
-  }
-  wrap(x, text, maxW, maxLines) {
-    const words = String(text).split(/\s+/), lines = [];
-    let cur = '';
-    for (const w of words) {
-      const t = cur ? cur + ' ' + w : w;
-      if (x.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
-    }
-    if (cur) lines.push(cur);
-    if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = this.fit(x, lines[maxLines - 1] + '…', maxW); }
-    return lines;
-  }
-  fit(x, text, maxW) {
-    if (x.measureText(text).width <= maxW) return text;
-    let t = text;
-    while (t.length > 1 && x.measureText(t + '…').width > maxW) t = t.slice(0, -1);
-    return t + '…';
-  }
-  drawBoard() {
-    if (!this.boardCanvas) return;
-    const c = this.boardCanvas, x = c.getContext('2d'), app = this.app, tr = app.tr, W = this.boardW, H = this.boardH;
-    const F = (w, s) => `${w} ${s}px "Golos Text", system-ui, sans-serif`;
-    x.setTransform(this.boardK, 0, 0, this.boardK, 0, 0);
-    x.textAlign = 'left'; x.textBaseline = 'alphabetic';
-    x.fillStyle = '#14201b'; x.fillRect(0, 0, W, H);
-    x.fillStyle = '#3b4fd1'; x.fillRect(0, 0, W, 8);
-    x.fillStyle = '#eef4f1'; x.font = F(600, 32); x.fillText(this.fit(x, app.scheme.title, W - 64), 32, 58);
-    x.fillStyle = '#93a69e'; x.font = F(400, 22);
-    const poly = !!this.room, pm = app.permit;
-    const mode = poly ? 'предметы: боковая кнопка в шлеме, E на ноутбуке' : app.tool === 'check' ? 'режим указателя напряжения' : app.tool === 'pz' ? 'переносное заземление: курок по проводу или шине' : 'курок — операция, боковая кнопка — указатель';
-    x.fillText(this.fit(x, `Блокировки ${tr.opt.interlocks ? 'включены' : 'выключены'} · ${mode}`, W - 64), 32, 92);
-    let y = 142;
-    const para = (text, size, weight, color, maxLines) => {
-      x.font = F(weight, size); x.fillStyle = color;
-      for (const l of this.wrap(x, text, W - 64, maxLines)) { x.fillText(l, 32, y); y += Math.round(size * 1.3); }
-    };
-    const run = tr.run, tasks = app.scheme.tasks;
-    // экзамен: «задание 1 из 2» и время; подсказок и эталона нет
-    const exam = !!(app.exam && app.exam.active());
-    if (exam) { x.font = F(600, 24); x.fillStyle = '#ffd23f'; x.fillText(this.fit(x, app.exam.boardLine(), W - 64), 32, y); y += 38; }
-    if (run) {
-      para(run.task.title, 30, 600, '#ffffff', 2);
-      if (!run.done) {
-        para(run.task.desc, 22, 400, '#c6d3cd', poly ? 2 : 3);
-        const g = tr.grade(run);
-        y += 8; x.font = F(600, 26); x.fillStyle = run.errors.length ? '#ffb4bd' : '#eef4f1';
-        x.fillText(`Время ${fmtTime(tr.elapsed())} · операций ${g.myOps} · ошибок ${run.errors.length}`, 32, y); y += 40;
-        // площадка с подсказками шагов — следующий шаг (без штрафа, Trainer.peek)
-        const nx = poly ? null : app.guideNext();
-        if (nx) para('Следующий шаг: ' + nx.text, 26, 600, '#ffd23f', 2);
-        // полигон: сколько мероприятий сделано, СИЗ и подсказка «следующее мероприятие»
-        if (poly && run.task.measures) {
-          const st = pm.status();
-          x.font = F(500, 22); x.fillStyle = '#c6d3cd';
-          x.fillText(`Мероприятия: ${st.n} из ${st.total} · СИЗ: перчатки ${st.ppe.gloves ? '✓' : '—'}, каска ${st.ppe.helmet ? '✓' : '—'}`, 32, y); y += 34;
-          if (st.guide && st.next) para('Следующее: ' + st.next, 26, 600, '#ffd23f', 2);
-        }
-      } else {
-        const g = run.grade;
-        y += 6; x.font = F(600, 30); x.fillStyle = g.tone === 'good' ? '#4ade80' : g.tone === 'mid' ? '#f5a524' : '#ff5a6e';
-        x.fillText(`${g.verdict} · ${g.score} из 100`, 32, y); y += 42;
-        x.font = F(400, 22); x.fillStyle = '#c6d3cd';
-        x.fillText(`Время ${fmtTime(g.secs)} · операций ${g.myOps} (эталон ${g.refOps}) · ошибок ${run.errors.length}`, 32, y); y += 36;
-      }
-    } else if (tasks.length) {
-      const i = clamp(app.taskIdx, 0, tasks.length - 1);
-      x.font = F(500, 22); x.fillStyle = '#93a69e';
-      x.fillText(`Задание ${i + 1} из ${tasks.length}: выберите стрелками и нажмите «Начать»`, 32, y); y += 40;
-      para(tasks[i].title, 30, 600, '#ffffff', 2);
-      para(tasks[i].desc, 22, 400, '#c6d3cd', 3);
-    } else para('Свободная тренировка: наведите луч на аппарат и нажмите курок.', 26, 500, '#ffffff', 2);
-    y = Math.max(y + 12, 392);
-    x.fillStyle = '#2b3a34'; x.fillRect(32, y - 30, W - 64, 2);
-    x.font = F(400, 21);
-    for (const e of tr.log.slice(0, 3)) {
-      x.fillStyle = e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#c6d3cd';
-      x.fillText(this.fit(x, e.text, W - 64), 32, y); y += 30;
-    }
-    // в полигоне ПЗ — предмет со стенда, а вместо платной подсказки — «следующее мероприятие» (вкл/выкл)
-    const btns = [], pz = poly ? [] : [['pz', 'ПЗ']];
-    if (exam) {
-      if (run && !run.done) btns.push(['ack', 'Квитировать'], ...pz, ['stop', 'Завершить задание']);
-      else if (app.exam.between) btns.push(['exnext', 'Следующее задание']);
-    } else if (run && !run.done) {
-      // полигон — «Подсказки» мероприятий; площадка — «Подсказки» шагов и «К следующему» (с ними платная «Подсказка» не нужна)
-      const help = poly && run.task.measures ? [['guide', pm.guide ? 'Подсказки: вкл' : 'Подсказки: выкл']]
-        : poly ? [['hint', 'Подсказка']] : app.stepGuide ? [['sguide', 'Подсказки: вкл'], ['goto', 'К следующему']] : [['hint', 'Подсказка'], ['sguide', 'Подсказки: выкл']];
-      btns.push(...help, ['ack', 'Квитировать'], ...pz, ['stop', 'Завершить']);
-    }
-    else if (run && run.done) btns.push(['again', 'Ещё раз'], ['exit', 'Свободный режим'], ['lock', tr.opt.interlocks ? 'Блокировки: вкл' : 'Блокировки: выкл']);
-    else {
-      if (tasks.length) btns.push(['prev', '‹'], ['next', '›'], ['start', 'Начать']);
-      btns.push(['ack', 'Квитировать'], ...pz, ['reset', 'Сброс'], ['lock', tr.opt.interlocks ? 'Блок.: вкл' : 'Блок.: выкл']);
-    }
-    // узкие кнопки: стрелки и ПЗ
-    const fixed = { prev: 76, next: 76, pz: 92 };
-    const bh = 64, by = H - bh - 22, gap = 12, fx = btns.reduce((a, b) => a + (fixed[b[0]] || 0), 0), nf = btns.filter(b => fixed[b[0]]).length;
-    const bigW = (W - 64 - fx - gap * (btns.length - 1)) / (btns.length - nf);
-    let bx = 32;
-    this.boardBtns = [];
-    for (const [act, label] of btns) {
-      const w = fixed[act] || bigW;
-      const lit = act === 'start' || act === 'again' || (act === 'pz' && app.tool === 'pz');
-      x.fillStyle = lit ? '#3b4fd1' : '#24332d'; rr(x, bx, by, w, bh, 12); x.fill();
-      x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
-      x.fillStyle = '#ffffff'; x.font = F(600, act === 'prev' || act === 'next' ? 40 : 24); x.textAlign = 'center';
-      x.fillText(label, bx + w / 2, by + (act === 'prev' || act === 'next' ? 46 : 41));
-      x.textAlign = 'left';
-      this.boardBtns.push({ act, x: bx, y: by, w, h: bh });
-      bx += w + gap;
-    }
-    // служебный ряд для теста: слева последняя ошибка (красным), справа отметка, отладка, обучение
-    const sy = by - 62, sh = 50, sw = 150;
-    const util = [['mark', 'Отметка'], ['debug', 'Отладка'], ['tutor', 'Обучение']];
-    util.forEach(([act, label], i) => {
-      const ux = W - 32 - (util.length - i) * (sw + 10) + 10, lit = act === 'debug' && this.dbg && this.dbg.m.visible;
-      x.fillStyle = lit ? '#3b4fd1' : '#1d2a25'; rr(x, ux, sy, sw, sh, 10); x.fill();
-      x.strokeStyle = '#3d5048'; x.lineWidth = 2; x.stroke();
-      x.fillStyle = '#dfe8e3'; x.font = F(600, 22); x.textAlign = 'center'; x.fillText(label, ux + sw / 2, sy + 33); x.textAlign = 'left';
-      this.boardBtns.push({ act, x: ux, y: sy, w: sw, h: sh });
-    });
-    const err = Diag.pageErrors ? Diag.lastError() : null;
-    if (err) {
-      x.fillStyle = '#ff6b7d'; x.font = F(600, 20);
-      this.wrap(x, `Ошибка: ${err.where}: ${err.msg}`, W - 64 - util.length * (sw + 10) - 10, 2).forEach((l, i) => x.fillText(l, 32, sy + 20 + i * 24));
-    }
-    if (this.handsOnly) {
-      x.fillStyle = 'rgba(165,92,0,0.96)'; rr(x, 32, 300, W - 64, 120, 16); x.fill();
-      x.fillStyle = '#ffffff'; x.font = F(600, 36); x.fillText('Возьмите контроллеры', 56, 350);
-      x.font = F(400, 24); x.fillText('Управление руками в тренажёре не поддерживается: нужны курок и стики.', 56, 392);
-    }
-    x.setTransform(1, 0, 0, 1, 0, 0);
-    this.boardTex.needsUpdate = true;
-    if (this.wrist && this.renderer && this.renderer.xr.isPresenting) this.drawWrist();
-  }
-  boardClick(uv) {
-    if (!uv || !this.boardBtns) return;
-    const px = uv.x * this.boardW, py = (1 - uv.y) * this.boardH;
-    const b = this.boardBtns.find(q => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
-    if (b) this.boardAction(b.act);
-  }
-  boardAction(act) {
-    const app = this.app, tr = app.tr, n = app.scheme.tasks.length;
-    Sound.play('check');
-    if (act === 'prev' && n) app.taskIdx = (app.taskIdx - 1 + n) % n;
-    else if (act === 'next' && n) app.taskIdx = (app.taskIdx + 1) % n;
-    else if (act === 'start') app.startTask(app.scheme.tasks[app.taskIdx]);
-    else if (act === 'again' && tr.run) app.startTask(tr.run.task);
-    else if (act === 'stop') tr.stopTask();
-    else if (act === 'hint') { if (app.exam && app.exam.active()) this.banner('В экзамене подсказок нет.', 'warn'); else if (!tr.hint()) this.banner('Все эталонные шаги выполнены.', 'info'); }
-    else if (act === 'exnext' && app.exam) app.exam.next();
-    else if (act === 'ack') { if (!tr.ack()) this.banner('Сигналов нет.', 'info'); }
-    else if (act === 'reset') { if (!tr.resetToNormal()) this.banner('Сначала завершите задание.', 'warn'); }
-    else if (act === 'lock') { tr.opt.interlocks = !tr.opt.interlocks; app.toast(`Блокировки: ${tr.opt.interlocks ? 'включены' : 'выключены'}.`); }
-    else if (act === 'exit') tr.exitTask();
-    else if (act === 'pz') app.toggleTool('pz');
-    else if (act === 'guide') { const on = app.permit.toggleGuide(); this.banner(`Подсказки мероприятий ${on ? 'включены' : 'выключены'}.`, 'info'); }
-    else if (act === 'sguide') { app.setStepGuide(!app.stepGuide); this.banner(`Подсказки шагов ${app.stepGuide ? 'включены' : 'выключены'}.`, 'info'); }
-    else if (act === 'goto') this.goNext();
-    else if (act === 'mark') this.addMark('щит');
-    else if (act === 'debug') this.toggleDebug();
-    else if (act === 'tutor') { if (this.room && !this.renderer.xr.isPresenting) this.walk.intro(true); else this.showTutor(true); }
-    app.renderSide();
     this.drawBoard();
   }
 
@@ -1381,26 +1230,42 @@ class View3D {
     this.fxList.push({ t: 0, life: 1.6, sph, pts, vel });
   }
   // Итог проверки указателем. Полигон — как в жизни: при напряжении указатель мигает и пищит (items.lampUntil, звук),
-  // без напряжения молчит; для обучения итог — строкой у прицела (ноутбук) и баннером (шлем), не табличкой в ячейке.
+  // без напряжения молчит и огонёк серый; для обучения итог — строкой у прицела (ноутбук), баннером (шлем)
+  // и табличкой на 2 с у указателя в руке («Нет напряжения» — нейтральная, «ЕСТЬ НАПРЯЖЕНИЕ» — красная), не в ячейке.
   // Площадка — подпись над аппаратом или проводом лицом к камере, поверх всего
   checkFx(d) {
     if (!this.active) return;
-    this.banner(d.text, d.live ? 'warn' : 'info');
     if (this.room) {
       const mt = this.app.permit.contactMount(d.target), place = mt ? placeText(mt, 3).replace(/ \(.+?\)/, '') : this.app.tr.nm(d.target);
       if (this.fpsOn()) this.walk.said(`${d.live ? 'Есть напряжение!' : 'Напряжения нет'} — ${place.charAt(0).toLowerCase() + place.slice(1)}`, d.live);
+      // в шлеме — табличка у указателя; баннер перед глазами — только если указателя в руке нет
+      if (!(this.items && this.items.tipLabel(d.live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', d.live ? 'live' : 'dead'))) this.banner(d.text, d.live ? 'warn' : 'info');
       return;
     }
+    // площадка: указатель касается выводов (пешком — из руки, в шлеме — из руки контроллера, в «Обзоре» — появляется у места);
+    // в шлеме итог — табличкой у рукоятки, а не баннером перед глазами
+    const xr = this.renderer.xr.isPresenting, pts = d.res ? this.probePoints(d) : [];
+    if (pts.length) {
+      const anchor = xr ? this.probeHand || (this.ctrls.find(q => q.src && q.hand === 'right') || {}).grip || null : this.fpsOn() ? this.camera : null;
+      this.probe.touch(pts, this.probe.kindFor(d.res.map(r => r.n)), anchor, xr ? g => this.probeLabel(g, d.live) : null);
+    }
+    if (!xr || !pts.length) this.banner(d.text, d.live ? 'warn' : 'info');
     // под подписью аппарата (её видно и пешком, и в обзоре) или над проводом; размер на экране один и тот же издалека и вблизи
     const dv = this.dev.get(d.target), p = dv && dv.labelPos ? dv.group.localToWorld(new THREE.Vector3(...dv.labelPos)) : this.posOf(d.target);
     if (!p) return;
     if (!dv) p.y = p.indoor ? p.y + 0.5 : H3 + 0.45; else if (dv.labelPos) p.y -= 0.5; else p.y += 0.6;
-    const sp = this.labelSprite(d.live ? 'Напряжение есть' : 'Напряжения нет', d.live ? 'live' : 'dead', 0.045, true);
+    const sp = this.labelSprite(d.live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', d.live ? 'live' : 'dead', 0.045, true);
     sp.position.copy(p);
     // подпись одна: новая проверка убирает прежнюю (иначе «есть» и «нет» лягут друг на друга)
     for (const f of this.fxList) if (f.mark) f.t = f.life;
     this.scene.add(sp);
     this.fxList.push({ t: 0, life: 2.6, mark: sp });
+  }
+  // Шлем: табличка итога у рукоятки указателя на 2 с («Нет напряжения» — нейтральная, «ЕСТЬ НАПРЯЖЕНИЕ» — красная)
+  probeLabel(g, live) {
+    const sp = this.labelSprite(live ? 'ЕСТЬ НАПРЯЖЕНИЕ' : 'Нет напряжения', live ? 'live' : 'dead', 0.045);
+    sp.position.set(0, 0.09, -0.25); sp.renderOrder = 13; g.add(sp);
+    this.fxList.push({ t: 0, life: 2, mark: sp });
   }
   stepFx(dt) {
     if (this.arcLight.intensity > 0) this.arcLight.intensity = Math.max(0, this.arcLight.intensity - 180 * dt);
@@ -1422,12 +1287,14 @@ class View3D {
         f.pts.material.opacity = Math.max(0, 1 - k);
       }
       if (f.mark) f.mark.material.opacity = k > 0.75 ? Math.max(0, (1 - k) * 4) : 1;
+      if (f.panel) f.panel.material.opacity = k > 0.85 ? Math.max(0, (1 - k) * 6.6) : 1;
     }
     const done = this.fxList.filter(f => f.t >= f.life);
     for (const f of done) {
       if (f.sph) { this.scene.remove(f.sph); f.sph.material.dispose(); }
       if (f.pts) { this.scene.remove(f.pts); f.pts.geometry.dispose(); f.pts.material.dispose(); }
-      if (f.mark) { this.scene.remove(f.mark); f.mark.material.map.dispose(); f.mark.material.dispose(); }
+      if (f.mark) { if (f.mark.parent) f.mark.parent.remove(f.mark); f.mark.material.map.dispose(); f.mark.material.dispose(); }
+      if (f.panel) { this.scene.remove(f.panel); f.panel.material.map.dispose(); f.panel.material.dispose(); f.panel.geometry.dispose(); }
     }
     if (done.length) this.fxList = this.fxList.filter(f => f.t < f.life);
   }
@@ -1505,48 +1372,14 @@ class View3D {
     r.xr.addEventListener('sessionstart', () => this.onXRStart());
     r.xr.addEventListener('sessionend', () => this.onXREnd());
   }
-  attachWrist(info) { info.grip.add(this.wrist.m); this.wrist.m.visible = true; this.drawWrist(); }
-  drawWrist() {
-    const { c, t } = this.wrist, x = c.getContext('2d'), tr = this.app.tr;
-    x.clearRect(0, 0, c.width, c.height);
-    x.fillStyle = 'rgba(16,24,21,0.9)'; rr(x, 0, 0, c.width, c.height, 22); x.fill();
-    x.fillStyle = '#93a69e'; x.font = '500 22px "Golos Text", system-ui, sans-serif';
-    let top = this.app.tool === 'check' ? 'Указатель напряжения включён' : this.app.tool === 'pz' ? 'ПЗ: курок по проводу или шине' : 'Курок — операция · боковая — указатель';
-    // полигон: СИЗ и что в руках
-    if (this.room) {
-      const pp = this.app.permit.status().ppe, held = this.items ? [0, 1].map(h => this.items.heldIn(h)).filter(Boolean).map(id => this.items.list.get(id).it.title) : [];
-      top = `Перчатки ${pp.gloves ? '✓' : '—'} · каска ${pp.helmet ? '✓' : '—'}${held.length ? ' · в руках: ' + held.join(', ') : ''}`;
-    }
-    // площадка с заданием: задание, следующий шаг (с подсказками), последняя ошибка (или последнее событие)
-    const run = tr.run, g = !this.room && run && !run.done ? this.app.guideNext() : null;
-    if (!this.room && run && !run.done) top = run.task.title;
-    x.fillText(this.fit(x, top, c.width - 40), 20, 38);
-    let y = 80, lines = 3;
-    if (g) {
-      x.fillStyle = '#ffd23f'; x.font = '600 24px "Golos Text", system-ui, sans-serif';
-      this.wrap(x, `Следующий: ${g.text} · B/Y — перейти`, c.width - 40, 2).forEach(l => { x.fillText(l, 20, y); y += 30; lines--; });
-      y += 6;
-    }
-    const last = run && !run.done && run.errors.length ? run.errors[run.errors.length - 1] : null;
-    const e = last ? { level: 'err', text: last.text } : tr.log[0];
-    x.fillStyle = !e ? '#c6d3cd' : e.level === 'err' ? '#ff6b7d' : e.level === 'warn' ? '#f5b544' : e.level === 'ok' ? '#5ee08f' : '#eef4f1';
-    x.font = '600 26px "Golos Text", system-ui, sans-serif';
-    this.wrap(x, e ? e.text : 'Событий пока нет', c.width - 40, Math.max(1, lines)).forEach((l, i) => x.fillText(l, 20, y + i * 34));
-    const err = Diag.pageErrors ? Diag.lastError() : null;
-    if (err) { x.fillStyle = '#ff6b7d'; x.font = '600 20px "Golos Text", system-ui, sans-serif'; this.wrap(x, `Ошибка: ${err.msg}`, c.width - 40, 2).forEach((l, i) => x.fillText(l, 20, 206 + i * 24)); }
-    t.needsUpdate = true;
-  }
-  banner(text, level) {
-    if (!this.ready || !this.renderer.xr.isPresenting || !this.bannerH) return;
-    const { c, t, m } = this.bannerH, x = c.getContext('2d');
-    x.clearRect(0, 0, c.width, c.height);
-    x.fillStyle = level === 'err' ? 'rgba(200,20,45,0.92)' : level === 'warn' ? 'rgba(165,92,0,0.92)' : 'rgba(18,30,26,0.9)';
-    rr(x, 0, 0, c.width, c.height, 24); x.fill();
-    x.fillStyle = '#ffffff'; x.font = '600 32px "Golos Text", system-ui, sans-serif';
-    this.wrap(x, text, c.width - 60, 3).forEach((l, i) => x.fillText(l, 30, 54 + i * 42));
-    t.needsUpdate = true;
-    m.visible = true;
-    this.bannerUntil = performance.now() + (level === 'err' ? 5500 : 3500);
+  // Ошибка задания на площадке и в полигоне: что случилось и почему опасно — у прицела (пешком), в баннере (шлем);
+  // в «Обзоре» объяснение — в тосте (app.toast). e — { kind, text, why? }
+  errFx(e) {
+    if (!this.ready || !this.active) return;
+    // в шлеме — баннер (его показывает приложение вместе с тостом)
+    if (this.renderer.xr.isPresenting || !this.fpsOn()) return;
+    const why = whyOf(e);
+    this.walk.said(e.text, true, why ? 9000 : 5000, why ? 'Почему опасно: ' + why : '');
   }
   xrHits(info) {
     const c = info.c;
@@ -1567,7 +1400,7 @@ class View3D {
   }
   xrSelect(info) {
     this.app.userGesture();
-    if (this.tutor && this.tutor.m.visible) { this.showTutor(false); store.set(this.room ? 'ts.polyTutorVR' : 'ts.vrTutor', '1'); this.pulse(info, 0.3); return; }
+    if (this.tutor && this.tutor.m.visible) { this.showTutor(false); store.set(this.tutorKind === 'uvn' ? 'ts.uvnCard' : this.room ? 'ts.polyTutorVR' : 'ts.vrTutor', '1'); this.pulse(info, 0.3); return; }
     const hits = this.xrHits(info);
     // полигон: курок с предметом в этой руке — надеть, повесить, коснуться указателем по лучу
     if (this.room && this.items && this.items.select(info, hits)) return;
@@ -1577,6 +1410,7 @@ class View3D {
     if (u.board) { this.boardClick(h.uv); this.pulse(info, 0.3); return; }
     if (u.menu) { this.menuClick(h.uv); this.pulse(info, 0.5); return; }
     this.closeMenu3D();
+    this.noteHit(h); this.probeHand = info.grip;
     if (u.dev) { this.app.pick3D(u.dev, false, { menu3d: acts => this.showMenu3D(u.dev, acts, h.point) }); this.pulse(info, 0.7); return; }
     if (u.wire) { this.app.pickWire3D(u.wire, false); this.pulse(info, 0.5); return; }
     if (u.ground) {
@@ -1592,6 +1426,7 @@ class View3D {
     // полигон: боковая кнопка — взять предмет и отпустить (у места — повесить, поставить)
     if (this.room && this.items) { this.items.squeeze(info, this.xrHits(info)); this.drawWrist(); return; }
     const h = this.xrHit(info);
+    this.noteHit(h); this.probeHand = info.grip;
     if (h && h.object.userData.dev) { this.app.pick3D(h.object.userData.dev, true); this.pulse(info, 0.4); }
     else if (h && h.object.userData.wire) { this.app.pickWire3D(h.object.userData.wire, true); this.pulse(info, 0.4); }
   }
@@ -1751,99 +1586,6 @@ class View3D {
       if (!g.board) this.lastGaze = { label: g.label, t: now };
     }
   }
-  // ---------- подсказки шагов на площадке: маяк, «Перейти к аппарату» ----------
-  // Маяк — столб света над аппаратом следующего шага: виден издалека, один вызов, только с подсказками
-  makeBeacon() {
-    const T = THREE, c = document.createElement('canvas');
-    c.width = 4; c.height = 128;
-    const x = c.getContext('2d'), g = x.createLinearGradient(0, 128, 0, 0);
-    g.addColorStop(0, 'rgba(255,255,255,0.15)'); g.addColorStop(0.08, 'rgba(255,255,255,0.85)'); g.addColorStop(0.45, 'rgba(255,255,255,0.45)'); g.addColorStop(1, 'rgba(255,255,255,0)');
-    x.fillStyle = g; x.fillRect(0, 0, 4, 128);
-    const tex = new T.CanvasTexture(c);
-    const m = new T.Mesh(new T.CylinderGeometry(0.22, 0.32, 16, 16, 1, true), new T.MeshBasicMaterial({ color: PAL.ui.guide, map: tex, transparent: true, opacity: 0.85,
-      blending: T.AdditiveBlending, depthWrite: false, side: T.DoubleSide, toneMapped: false }));
-    m.visible = false; m.renderOrder = 3; m.raycast = () => {}; m.frustumCulled = false;
-    this.scene.add(m);
-    this.beacon = m;
-  }
-  // Куда идти, чтобы выполнить шаг: аппарат (или модель ПЗ), иначе провод, на который накладывают ПЗ или ставят указатель
-  guideTarget(id) {
-    if (!id || this.room) return null;
-    if (this.dev.has(id)) return { dev: id };
-    const s = this.app.scheme, at = isPzId(id) ? id.slice(3) : id;
-    if (this.dev.has(at)) return { dev: at };
-    return s.wires.some(w => w.id === at) ? { wire: at } : null;
-  }
-  guidePoint(t) {
-    if (!t) return null;
-    if (t.dev) return this.dev.get(t.dev).group.getWorldPosition(new THREE.Vector3());
-    if (this.zru) { const n = this.app.tr.topo.wireNode.get(t.wire), q = this.zru.nodes.has(n) ? this.zru.inner(n) : null; if (q) return q; }
-    const w = this.app.scheme.wires.find(q => q.id === t.wire);
-    return w ? this.toWorld(wireMid(w)) : null;
-  }
-  // После каждого изменения: маяк — над аппаратом следующего шага
-  syncGuide() {
-    const g = this.room ? null : this.app.guideNext(), p = g ? this.guidePoint(this.guideTarget(g.step.id)) : null;
-    this.beacon.visible = !!p;
-    if (p) this.beacon.position.set(p.x, 8, p.z);
-  }
-  say(text, level = 'info') { this.app.toast(text, level); this.banner(text, level); }
-  // G, «Перейти · G», «К следующему» (щит, B/Y в шлеме): к аппарату следующего шага
-  goNext() {
-    const app = this.app, g = app.guideNext();
-    if (!g) { this.say(app.exam && app.exam.active() ? 'В экзамене подсказок нет.' : !app.stepGuide ? 'Подсказки шагов выключены.' : 'Задание не идёт — начните задание.'); return false; }
-    return this.goTo(g.step.id);
-  }
-  // G пешком: аппарат вдали под прицелом — к нему, иначе — к следующему шагу. В экзамене G нет
-  goG(aim) {
-    if (this.app.exam && this.app.exam.active()) { this.say('В экзамене подсказок нет: к аппарату — пешком или щелчком по земле.'); return; }
-    if (aim && aim.type === 'far') this.goTo(aim.id); else this.goNext();
-  }
-  // Перейти к аппарату id: пешком — к месту перед ним (прицел на нём), в «Обзоре» — камера на него, в шлеме — затемнением
-  goTo(id) {
-    const t = this.guideTarget(id);
-    if (!t || !this.ready) return false;
-    const a = this.aimTarget(t);
-    if (!a) return false;
-    if (this.renderer.xr.isPresenting) return this.xrGoTo(t, a);
-    if (!this.yardWalk) {
-      const o = this.orbit;
-      o.target.set(a.p.x, 1.5, a.p.z); o.r = Math.min(o.r, 20);
-      if (this.top) { o.ph = 0.98; this.top = false; }
-      this.applyOrbit(); this.setHover(t.dev || null);
-      return true;
-    }
-    const q = this.seekFor(t, a);
-    if (!q) { this.say(`Не нашлось места, откуда видно ${this.app.tr.nm(id)}.`, 'warn'); return false; }
-    this.walk.goPose(q);
-    return true;
-  }
-  seekFor(t, a) {
-    this.wireAim = !!t.wire;
-    try { return this.walk.seek(a.p, a.want, false, [3.2, 2.5, 4, 1.8, 5, 2.2, 5.6]); } finally { this.wireAim = false; }
-  }
-  // Шлем: место ищет тот же walk.seek (на время — rig в начале координат), переход — затемнением, взгляд — на аппарат
-  xrGoTo(t, a) {
-    const T = THREE, rig = this.rig, cam = this.camera, w = this.walk;
-    const head = cam.getWorldPosition(new T.Vector3()), dir = cam.getWorldDirection(new T.Vector3());
-    const rp = rig.position.clone(), ry = rig.rotation.y, cp = cam.position.clone(), cq = cam.quaternion.clone();
-    rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0); rig.updateMatrixWorld(true);
-    w.x = head.x; w.z = head.z; w.yaw = Math.atan2(-dir.x, -dir.z); w.pitch = 0;
-    let q = null;
-    try { q = this.seekFor(t, a); } finally {
-      rig.position.copy(rp); rig.rotation.set(0, ry, 0); cam.position.copy(cp); cam.quaternion.copy(cq); rig.updateMatrixWorld(true);
-    }
-    if (!q) { this.banner('Не нашлось места, откуда видно аппарат.', 'warn'); return false; }
-    this.tp.go(head, q, (x, z) => {
-      const c = cam.getWorldPosition(new T.Vector3()), d = cam.getWorldDirection(new T.Vector3()), hy = Math.atan2(-d.x, -d.z);
-      const ang = Math.atan2(Math.sin(q.yaw - hy), Math.cos(q.yaw - hy));
-      rig.position.sub(c).applyAxisAngle(this.tmp.up, ang).add(c); rig.rotation.y += ang;
-      rig.updateMatrixWorld(true);
-      const c2 = cam.getWorldPosition(new T.Vector3());
-      rig.position.x += x - c2.x; rig.position.z += z - c2.z;
-    }, 'fade');
-    return true;
-  }
   // Курок по полу: на площадке — до 25 м (как щелчок на ноутбуке), в помещении — до стены (пол только внутри)
   floorReach() { return this.room ? 80 : WALK_REACH.floor; }
   canStand(p) { return !this.world || this.world.walkable(p.x, p.z); }
@@ -1876,9 +1618,12 @@ class View3D {
   }
   onXRStart() {
     this.tp.cancel();
+    this.probe.dispose();
     this.showRoof(true);
     this.rig.position.copy(this.start);
     this.rig.rotation.set(0, 0, 0);
+    // площадка с заданием — у щита рядом с первым аппаратом, лицом к нему
+    if (!this.room && this.taskStart) { this.rig.position.set(this.taskStart.x, 0, this.taskStart.z); this.rig.rotation.y = this.taskStart.yaw; }
     // ходьба на ноутбуке отключается до выхода из шлема; камера — снова в начале координат
     if (this.walking()) { this.walk.disable(); this.camera.position.set(0, 0, 0); this.camera.rotation.set(0, 0, 0); }
     if (this.room) {
@@ -1887,6 +1632,7 @@ class View3D {
       if (this.items) this.items.xrStart();
     }
     this.tip(null); this.setHover(null);
+    this.coach.hide();
     document.getElementById('btnVR').textContent = 'Выйти из VR';
     const s = this.renderer.xr.getSession();
     const feats = s && s.enabledFeatures ? [...s.enabledFeatures].join(', ') : '';
@@ -1900,6 +1646,7 @@ class View3D {
   onXREnd() {
     // затемнение и метка не остаются после шлема
     this.tp.cancel();
+    this.probe.dispose();
     this.showRoof(this.yardWalk);
     Diag.sessionEnd();
     if (this.tutor) this.tutor.m.visible = false;
@@ -1910,6 +1657,7 @@ class View3D {
     this.bannerH.m.visible = false;
     document.getElementById('btnVR').textContent = 'Войти в VR';
     if (this.items) this.items.xrEnd();
+    if (this.coach.on) this.coach.update(true);
     // снова пешком на ноутбуке (полигон или площадка «Пешком») или обзор
     if (this.walking()) { if (this.active) this.walk.enable(this.world); this.walk.apply(); }
     else this.applyOrbit();
@@ -1917,5 +1665,8 @@ class View3D {
     if (!this.active) this.renderer.setAnimationLoop(null);
   }
 }
+
+// щит, запястье и панели шлема — board.js; подсказки шагов и щит у первого аппарата — guide.js (методы того же класса)
+Object.assign(View3D.prototype, Board, Guide);
 
 export { THREE, loadThree, S3, COL3, rr, View3D };

@@ -122,6 +122,13 @@ class Page {
     if (r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
     return r.result.result.value;
   }
+  // То же как действие пользователя (вход в VR, звук, полноэкранный режим требуют жеста)
+  async gesture(expr) {
+    const r = await this.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true });
+    if (!r.result) throw new Error('CDP: ' + JSON.stringify(r.error || r));
+    if (r.result.exceptionDetails) throw new Error((r.result.exceptionDetails.exception && r.result.exceptionDetails.exception.description) || r.result.exceptionDetails.text);
+    return r.result.result.value;
+  }
   // Функция в странице с аргументами (JSON)
   fn(f, ...args) { return this.eval(`(${f})(...${JSON.stringify(args)})`); }
   async waitFor(expr, ms = 5000, what = expr) {

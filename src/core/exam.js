@@ -53,6 +53,8 @@ function taskResult(run) {
     title: String(run.task.title || ''), score: +g.score || 0, secs: +g.secs || 0, completed: !!run.completed,
     verdict: String(g.verdict || ''), acc: +g.acc || 0,
     errors: (run.errors || []).map(e => ({ kind: e.kind, text: String(e.text || ''), t: +e.t || 0 })),
+    // замечания (полигон: проверка без самопроверки указателя) — в протоколе, на итог не влияют
+    remarks: (run.remarks || []).map(r => String(r.text || '')),
   };
 }
 
@@ -86,7 +88,7 @@ function protocol(x) {
     const errs = r.errors.map(e => errLine(e).replace(/\.$/, ''));
     return {
       n: i + 1, title: t.title, score: String(r.score), time: fmtSecs(r.secs),
-      errors: errs.length ? errs.slice(0, 4).join('; ') + (errs.length > 4 ? `; ещё ${errs.length - 4}` : '') : 'нет',
+      errors: (errs.length ? errs.slice(0, 4).join('; ') + (errs.length > 4 ? `; ещё ${errs.length - 4}` : '') : 'нет') + ((r.remarks || []).length ? `; замечаний: ${r.remarks.length} (без самопроверки указателя)` : ''),
       result: r.completed ? (r.acc ? 'авария' : r.score >= x.minScore ? 'выполнено' : 'ниже порога') : 'не завершено',
     };
   });

@@ -95,6 +95,7 @@ class Exam {
     // «Следующее мероприятие» полигона — подсказка: в экзамене её нет
     app.permit.guide = false;
     this.lock(true);
+    app.syncMax3D();
     this.startTask();
     app.toast(`Экзамен начат: ${x.person.fio}, заданий ${x.tasks.length}.`, 'ok');
   }
@@ -147,6 +148,7 @@ class Exam {
     this.cur = null; this.between = false; this.stopWhy = null;
     if (app.tr.run) app.tr.exitTask();
     this.lock(false);
+    app.syncMax3D();
     if (this.saved) { Object.assign(app.tr.opt, this.saved.opt); app.permit.guide = this.saved.guide; this.saved = null; }
     app.renderSide();
     if (app.v3 && app.v3.ready) app.v3.drawBoard();

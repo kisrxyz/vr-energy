@@ -8,7 +8,8 @@ import { ITEMS, ITEM } from './permit.js';
    Действие: { do, step, ... } — step: эталонный шаг (текст — tr.stepText(step)), у действий из мероприятий — мероприятие m.
      switch { id, menu? }   — щелчок по аппарату; у тележки — пункт меню menu («Отключить выключатель»)
      rack   { id, pos, menu } — тележку в положение pos (пункт меню)
-     check  { target, mount?, item? } — указатель: аппарат или провод; в полигоне — предмет item коснуться места mount
+     check  { target, mount?, item? } — указатель: аппарат или провод; в полигоне — предмет item коснуться места mount;
+            перед первой проверкой в полигоне — самопроверка { mount: 'tester', self: true } (проверочное устройство на стенде)
      pz     { target }      — переносное заземление на провод или шину (наложить или снять)
      wear   { item }        — надеть (перчатки, каска)
      place  { item, at }    — взять со стенда и повесить или поставить на место at (плакат, замок, ограждение, ПЗ)
@@ -36,6 +37,9 @@ function planTask(s, task) {
   };
   const itemAt = (at, kind, poster) => { for (const [id, a] of used) if (a === at && ITEM[id].kind === kind && (!poster || ITEM[id].poster === poster)) return id; return null; };
   const out = [];
+  // самопроверка указателя — один раз, перед первой проверкой в полигоне (указатель потом из рук не выпускают)
+  let tested = false;
+  const selfTest = st => { if (!tested) { tested = true; out.push({ do: 'check', target: null, mount: 'tester', item: 'uvn', self: true, step: st }); } };
   const sw = (st, id, on) => {
     const el = els.get(id), T = el ? TYPES[el.t] : null;
     out.push(T && T.cart && T.sw === 'breaker' ? { do: 'switch', id, menu: menuOn(on), step: st } : { do: 'switch', id, step: st });
@@ -65,6 +69,7 @@ function planTask(s, task) {
       if (st.op === 'pos') { out.push({ do: 'rack', id: st.id, pos: st.pos, menu: menuPos(st.pos), step: st }); continue; }
       if (st.op === 'check') {
         const mount = room ? contactMount(s, st.id) : null;
+        if (mount) selfTest(st);
         out.push(mount ? { do: 'check', target: st.id, mount, item: 'uvn', step: st } : { do: 'check', target: st.id, step: st });
         continue;
       }
@@ -92,6 +97,7 @@ function planTask(s, task) {
     else if (m.k === 'fence') put(m, 'fence', at);
     else if (m.k === 'check') {
       const mount = contactMount(s, m.wire);
+      if (mount) selfTest(m);
       out.push(mount ? { do: 'check', target: m.wire, mount, item: 'uvn', step: m } : { do: 'check', target: m.wire, step: m });
     } else if (m.k === 'earth') {
       if (m.id) sw(m, m.id, true);
@@ -117,6 +123,7 @@ function runAction(tr, pm, a) {
 
 // Текст действия для подписи: «Отключить В-10 Л-1», «Взять плакат „Не включать!“ и вывесить на привод яч.3»
 function actionText(tr, a) {
+  if (a.self) return 'Самопроверка указателя на проверочном устройстве';
   const t = a.step && a.step.op ? tr.stepText(a.step) : a.step && a.step.k ? (tr.addon('title', a.step) || '') : '';
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : (ITEM[a.item] ? ITEM[a.item].title : '');
 }

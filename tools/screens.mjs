@@ -1,7 +1,8 @@
-/* Снимки 3D для PR «до/после»: одни и те же ракурсы — обзор РП-10 и ПС 110/35/10, ячейка РП-10 пешком, ПС 110/10 «Пешком» у ворот,
-   полигон у стенда и с ограждением в руке у яч.3 (набор 0.5: не больше 6 пар).
+/* Снимки 3D для PR «до/после»: одни и те же ракурсы (набор 0.6: не больше 6 пар) — обзор РП-10 и ПС 110/35/10 (ЗРУ), ячейка РП-10 пешком,
+   вход в ЗРУ РП-10 вдоль коридора, выкаченная тележка яч.3 полигона, ПС 110/10 «Пешком» с начатым заданием (где начинается ходьба).
    node tools/screens.mjs --tag=before|after  →  docs/screens/<n>-<ракурс>-<tag>.png (только сцена, без панелей; ≤ 300 КБ).
-   Ракурсы считаются от координат схемы, а не от моделей: после правки моделей камера стоит там же.
+   Ракурсы считаются от координат схемы и здания ЗРУ, а не от моделей: после правки моделей камера стоит там же.
+   Снимки «до» снимаются этим же скриптом на копии main (git worktree) — поэтому только через TS, без новых функций.
    Vite — на свободном порту от 5182 (5173 не трогаем). Нужен Chrome (tools/cdp.mjs). */
 import { createServer } from 'vite';
 import { statSync } from 'node:fs';
@@ -15,11 +16,13 @@ const OUT = REVIEW ? 'e2e-out' : 'docs/screens';
 const SHOTS = [
   { n: 1, name: 'rp10-obzor', key: 'rp10' },
   { n: 2, name: 'rp10-yacheyka', key: 'rp10', walk: { el: 'В-10 Л-3', dx: 3.2, dz: 3.4, look: 1.3 } },
-  { n: 3, name: 'ps35-obzor', key: 'ps35' },
-  { n: 4, name: 'ps110-vorota', key: 'ps110', gate: true },
-  { n: 5, name: 'poly-stend', key: 'poly', room: { x: 2.7, z: 2.6, look: [4.6, 1.2, 1.9] } },
-  // ограждение в руке, прицел на пол перед яч.3 (−0,45; 0,2)
-  { n: 6, name: 'poly-ograzhdenie', key: 'poly', hold: 'fence', room: { x: 0.6, z: 2.7, look: [-0.45, 0, 0.3] } },
+  // от входа в ЗРУ вдоль коридора
+  { n: 3, name: 'rp10-vhod', key: 'rp10', zruIn: true },
+  { n: 4, name: 'ps35-obzor', key: 'ps35' },
+  // тележка яч.3 выкачена в ремонтное положение: начинка, шторка, ножи ЗН
+  { n: 5, name: 'poly-telezhka', key: 'poly', cart: 'В-10 яч.3', room: { x: 1.1, z: 2.3, look: [-0.45, 0.75, -0.2] } },
+  // начато первое задание — «Пешком» (до 0.6 — у ворот, с 0.6 — у щита рядом с первым аппаратом)
+  { n: 6, name: 'ps110-start', key: 'ps110', task: 0 },
 ];
 const REVIEW_SHOTS = [
   { n: 'r1', name: 'breaker110', key: 'ps110', walk: { el: 'В-110 Т1', dx: 3.6, dz: 2.6, look: 2.0 } },
@@ -41,21 +44,37 @@ try {
   const p = await browser.newPage();
   await p.goto(url);
   // снимок — без кнопок и подсказок поверх сцены
-  await p.eval(`(() => { const s = document.createElement('style'); s.textContent = '.v3-top, .v3-fps, .v3-tip, .v3-note, .toasts, .v3-load { display: none !important; }'; document.head.appendChild(s); })()`);
+  await p.eval(`(() => { const s = document.createElement('style'); s.textContent = '.v3-top, .v3-fps, .v3-intro, .v3-coach, .v3-tip, .v3-note, .toasts, .v3-load { display: none !important; }'; document.head.appendChild(s); })()`);
   for (const s of REVIEW ? REVIEW_SHOTS : SHOTS) {
     await p.eval(`(async () => { TS.app.chooseScheme('${s.key}'); TS.app.setMode('3d'); await TS.app.v3.show(); })()`);
     await p.fn(s => {
-      const v = TS.app.v3, T = v.kit.T, w = v.walk;
+      const v = TS.app.v3, T = v.kit.T, w = v.walk, tr = TS.app.tr;
+      tr.opt.interlocks = true;
       if (s.walk) {
         if (!v.yardWalk) v.toggleWalk();
-        // аппарат в ЗРУ (с 0.5) — стоим в коридоре перед ячейкой, на улице — как задано от точки схемы
+        // аппарат в ЗРУ (с 0.5) — стоим в коридоре перед ячейкой (в её местных осях: ряд лицом в коридор), на улице — как задано от точки схемы
         const el = TS.app.scheme.els.find(e => e.name === s.walk.el), d = v.dev.get(el.id), zru = d && d.zru;
         const c = zru ? d.group.getWorldPosition(new T.Vector3()) : v.toWorld([el.x, el.y]);
-        const x = c.x + (zru ? -1.9 : s.walk.dx), z = c.z + (zru ? 2.5 : s.walk.dz);
+        const at = zru ? d.group.localToWorld(new T.Vector3(-1.9, 0, 2.5)) : { x: c.x + s.walk.dx, z: c.z + s.walk.dz };
+        const x = at.x, z = at.z;
         w.pose({ x, z, yaw: Math.atan2(-(c.x - x), -(c.z - z)), pitch: Math.atan2(s.walk.look - 1.62, Math.hypot(c.x - x, c.z - z)) });
+      } else if (s.zruIn) {
+        if (!v.yardWalk) v.toggleWalk();
+        // вход в здание ЗРУ: 0.6 — тамбур у xa (view — середина коридора), 0.5 — проём в торце у ряда (коридор при z = 1,5)
+        const g = v.zru.group, zr = v.zru, bb = new T.Box3().setFromObject(g), at = zr.view ? g.worldToLocal(new T.Vector3(zr.view.x, 0, zr.view.z)) : null;
+        const p = at ? g.localToWorld(new T.Vector3(bb.min.x - g.position.x + 0.7, 0, 0)) : g.localToWorld(new T.Vector3(bb.min.x - g.position.x + 0.9, 0, 1.5));
+        const tgt = at ? g.localToWorld(new T.Vector3(bb.max.x - g.position.x, 1.1, 0)) : g.localToWorld(new T.Vector3(bb.max.x - g.position.x, 1.1, 1.5));
+        w.pose({ x: p.x, z: p.z, yaw: Math.atan2(-(tgt.x - p.x), -(tgt.z - p.z)), pitch: -0.05 });
+      } else if (s.task != null) {
+        if (v.yardWalk) v.toggleWalk();
+        v.walkPose = null;
+        TS.app.startTask(TS.app.scheme.tasks[s.task]);
+        v.toggleWalk();
+        if (v.tp) v.tp.cancel();
       } else if (s.gate) {
         if (!v.yardWalk) v.toggleWalk(); else w.reset(v.world.start);
       } else if (s.room) {
+        if (s.cart) { tr.opt.interlocks = false; const id = TS.app.scheme.els.find(e => e.name === s.cart).id; tr.operate(id); tr.operate(id, { pos: 'repair' }); v.update(true); }
         const [lx, ly, lz] = s.room.look;
         if (v.items) { for (const h of ['desk']) { const id = v.items.heldIn(h); if (id) v.items.toHome(v.items.list.get(id)); } if (s.hold) v.items.grab(s.hold, 'desk'); }
         w.pose({ x: s.room.x, z: s.room.z, yaw: Math.atan2(-(lx - s.room.x), -(lz - s.room.z)), pitch: Math.atan2(ly - 1.62, Math.hypot(lx - s.room.x, lz - s.room.z)) });

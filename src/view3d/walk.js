@@ -17,6 +17,27 @@ const EYE = 1.62, SPEED = 3.1, SENS = 0.0022, R = 0.25;
 const REACH = { dev: 6, board: 9, floor: 25 };
 // После выхода из захвата Chrome ~1 с отказывает в новом: отказ в эту паузу не считается, мс
 const LOCK_PAUSE = 1600;
+// Карточка «как управлять» на ноутбуке (кнопка «Понятно» — data-intro)
+const INTRO = {
+  room: `<h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
+    <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
+    <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем (сначала — проверочного устройства на полке, потом контактов). Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
+    <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+  yard: `<h3 id="v3IntroT">Площадка: как управлять</h3>
+    <ol><li><b>«Обзор»</b> — мышь вращает площадку, правая кнопка — сдвиг, колесо — ближе. Щелчок по аппарату — операция, Shift + щелчок — указатель напряжения.</li>
+    <li><b>«Пешком»</b> — WASD и мышь, Shift — бегом. E или щелчок — операция, V — указатель, P — ПЗ, щелчок по земле — перейти, G — к аппарату следующего шага.</li>
+    <li><b>В шлеме</b> — курок по аппарату — операция, боковая кнопка — указатель, курок по земле — переход, B или Y — к следующему шагу.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+  // при первом взятии указателя (не в экзамене и не в показе)
+  uvn: `<h3 id="v3IntroT">Указатель напряжения: как понять результат</h3>
+    <ol><li><b>Сначала самопроверка.</b> Коснитесь электрода проверочного устройства на полке стенда (E или касание, в шлеме — наконечником): огонёк мигает и пищит — указатель исправен.</li>
+    <li><b>Горит и пищит</b> на контактах — напряжение <b>есть</b>. Заземлять и работать нельзя.</li>
+    <li><b>Молчит, огонёк серый</b> — напряжения нет, но только после самопроверки: неисправный указатель тоже молчит.</li></ol>
+    <button class="btn primary" type="button" data-intro="ok">Понятно</button>`,
+};
+// какая карточка отмечается «прочитано» (площадка — только по кнопке «Обучение», не сама)
+const INTRO_SEEN = { room: 'ts.polyIntro', uvn: 'ts.uvnCard' };
 
 class Walk {
   constructor(v) {
@@ -46,29 +67,36 @@ class Walk {
         <span data-w="room"><kbd>Q</kbd> или правая кнопка — положить</span>
         <span data-w="yard"><kbd>V</kbd> указатель · <kbd>P</kbd> ПЗ · щелчок по земле — перейти</span>
         <span><kbd>Shift</kbd> бегом<i data-w="yard"> · <kbd>G</kbd> к аппарату</i></span></div>
-      <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>
-      <div class="v3-intro" role="dialog" aria-labelledby="v3IntroT" hidden><h3 id="v3IntroT">VR-полигон: как брать предметы</h3>
-        <ol><li><b>Подойдите к стенду справа от входа</b> — WASD и мышь (в шлеме — стик или курок по полу).</li>
-        <li><b>E — взять предмет.</b> Перчатки и каска надеваются сразу. С предметом в руке E — применить: повесить плакат, запереть замок, коснуться указателем контактов. Q — положить. В шлеме — боковая кнопка: взять (СИЗ — сразу надеть) и отпустить у места.</li>
-        <li><b>Аппараты переключают</b> щелчком или E: тележка ячейки — меню положений, рукоятка на правой стойке — ЗН. Щит с заданием — на правой стене.</li></ol>
-        <button class="btn primary" type="button" data-intro="ok">Понятно</button></div>`;
+      <button class="v3-click" type="button"><b>Мышь свободна — щёлкните по сцене</b><small></small></button>`;
     host.appendChild(el);
+    // карточка «как управлять» — поверх 3D и в «Обзоре», и пешком (не внутри HUD ходьбы: он в «Обзоре» спрятан);
+    // закрывается «Понятно», Esc, Enter, E или пробелом
+    const intro = document.createElement('div');
+    intro.className = 'v3-intro'; intro.hidden = true;
+    intro.setAttribute('role', 'dialog'); intro.setAttribute('aria-labelledby', 'v3IntroT');
+    host.appendChild(intro);
     this.hud = {
       root: el, aim: el.querySelector('.v3-aim'), next: el.querySelector('.v3-next'), ppe: el.querySelector('.ppe'),
       held: el.querySelector('.held'), click: el.querySelector('.v3-click'), clickWhy: el.querySelector('.v3-click small'),
-      intro: el.querySelector('.v3-intro'), cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
+      intro, cross: el.querySelector('.v3-cross'), said: el.querySelector('.v3-said'), drop: el.querySelector('.v3-drop'), tool: el.querySelector('.v3-tool'),
     };
     this.hud.click.addEventListener('click', () => this.lock());
     // телефон: клавиши Q нет — «Положить» рядом с тем, что в руке
     this.hud.drop.addEventListener('click', () => this.drop());
     // «Перейти · G» в строке следующего шага
     this.hud.next.addEventListener('click', e => { if (e.target.closest('button')) this.v.goNext(); });
-    this.hud.intro.querySelector('[data-intro]').addEventListener('click', () => this.intro(false));
+    intro.addEventListener('click', e => { if (e.target.closest('[data-intro]')) this.intro(false); });
   }
   bind() {
     const cv = () => this.v.renderer && this.v.renderer.domElement;
     const typing = e => { const t = (e.target && e.target.tagName || '').toLowerCase(); return t === 'input' || t === 'textarea' || t === 'select'; };
     const live = () => this.on && this.v.active && !(this.v.renderer && this.v.renderer.xr.isPresenting) && document.getElementById('modal').hidden;
+    // открытая карточка «как управлять» закрывается клавишей, и клавиша дальше не идёт (E не переключит аппарат за карточкой)
+    document.addEventListener('keydown', e => {
+      if (this.hud.intro.hidden || !this.v.active || typing(e) || !['Escape', 'Enter', 'KeyE', 'Space'].includes(e.code)) return;
+      e.preventDefault(); e.stopPropagation();
+      this.intro(false);
+    }, true);
     document.addEventListener('keydown', e => {
       if (!live() || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       const c = e.code;
@@ -112,18 +140,31 @@ class Walk {
     if (this.v.renderer) this.v.renderer.domElement.style.cursor = '';
     this.cur = null;
   }
-  // Итог действия у прицела на 2,6 с (проверка указателем): туда, куда человек смотрит; live — красным
-  said(text, live) {
+  // Итог действия у прицела (проверка указателем — 2,6 с, ошибка — дольше): туда, куда человек смотрит; live — красным;
+  // sub — вторая строка мельче (почему опасно)
+  said(text, live, ms = 2600, sub = '') {
     const el = this.hud.said;
-    el.textContent = text; el.classList.toggle('live', !!live); el.hidden = false;
+    el.innerHTML = esc(text) + (sub ? `<small>${esc(sub)}</small>` : ''); el.classList.toggle('live', !!live); el.hidden = false;
     clearTimeout(this._saidT);
-    this._saidT = setTimeout(() => { el.hidden = true; }, 2600);
+    this._saidT = setTimeout(() => { el.hidden = true; }, ms);
   }
-  // Карточка «как брать предметы» (полигон); quiet — спрятать, не отмечая «прочитано»
-  intro(on, quiet) {
-    this.hud.intro.hidden = !on;
-    if (!on && !quiet) store.set('ts.polyIntro', '1');
+  // Карточка «как управлять» на ноутбуке: полигон — как брать предметы, площадка — «Обзор», «Пешком», шлем.
+  // Открывается сама при первом входе в полигон и кнопкой «Обучение» на щите; quiet — спрятать, не отмечая «прочитано».
+  // Мышь на время карточки отпускается — иначе «Понятно» не нажать (курсор спрятан захватом)
+  // kind — какая карточка: room, yard (по умолчанию — по миру), uvn (как понять результат указателя)
+  intro(on, quiet, kind) {
+    const el = this.hud.intro;
+    if (on) {
+      kind = kind || (this.v.room ? 'room' : 'yard');
+      if (el.dataset.kind !== kind) { el.dataset.kind = kind; el.innerHTML = INTRO[kind]; }
+      this.unlock(); this.keys.clear();
+      if (this.locked) this.lockChanged(false);
+    }
+    const was = !el.hidden;
+    el.hidden = !on;
+    if (!on && !quiet && was && INTRO_SEEN[el.dataset.kind]) store.set(INTRO_SEEN[el.dataset.kind], '1');
     this.showClick();
+    if (on) { const b = el.querySelector('[data-intro]'); if (b) try { b.focus({ preventScroll: true }); } catch (e) { /* без фокуса */ } }
   }
   // Надпись «Мышь свободна» — пока мышь не захвачена и захват возможен; после отказа в паузе — «щёлкните ещё раз»
   showClick() {
@@ -163,7 +204,9 @@ class Walk {
     this.noLock = true; this.showClick();
     this.v.app.toast('Мышь не захватывается: смотрите, перетаскивая мышью, действие — щелчок по месту.');
   }
+  // Встать сразу (начало, «Обзор» и обратно): идущий переход отменяется — иначе он доведёт на старое место
   reset(start) {
+    if (this.v.tp && this.v.tp.busy) this.v.tp.cancel();
     this.x = start.x; this.z = start.z; this.yaw = start.yaw; this.pitch = -0.12; this.vx = 0; this.vz = 0;
     this.apply();
   }
@@ -199,7 +242,7 @@ class Walk {
     return pose;
   }
   // Встать и посмотреть (прямо, без анимации)
-  pose(q) { this.x = q.x; this.z = q.z; this.yaw = q.yaw; this.pitch = q.pitch; this.vx = 0; this.vz = 0; this.apply(); this.updateAim(); }
+  pose(q) { if (this.v.tp && this.v.tp.busy) this.v.tp.cancel(); this.x = q.x; this.z = q.z; this.yaw = q.yaw; this.pitch = q.pitch; this.vx = 0; this.vz = 0; this.apply(); this.updateAim(); }
 
   // ---------- мышь по холсту (view3d передаёт сюда, пока полигон открыт от первого лица) ----------
   pointer(e) {
@@ -361,6 +404,7 @@ class Walk {
   actYard(t) {
     const v = this.v, app = v.app;
     if (!t) { this.goFloor(); return; }
+    v.noteHit(t.h);
     if (t.type === 'menu') v.menuClick(t.h.uv);
     else if (t.type === 'board') v.boardClick(t.h.uv);
     else if (t.type === 'far') v.goTo(t.id);

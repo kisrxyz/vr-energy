@@ -62,14 +62,18 @@ const PAL = {
     rCeil: [0xd9d7cf, { roughness: 1 }], rLampBox: [0xc9ccc8, { metalness: 0.3 }], rDoor: [0x58707a, { metalness: 0.35, roughness: 0.55, tex: 'paint' }],
     rGstrip: [0xffffff, { roughness: 0.6, tex: 'gstrip' }], rKruDoor: [0xbcc3bd, { metalness: 0.05, roughness: 0.7, tex: 'paint' }],
     rCavity: [0x262b2a, { roughness: 0.9 }], rShutter: [0xb8432e, { roughness: 0.6 }], rTrolley: [0xa9b2ad, { metalness: 0.05, roughness: 0.75, tex: 'paint' }],
-    rPole: [0x5b3328, { roughness: 0.5 }], rCopper: [0xc8823e, { metalness: 0.6, roughness: 0.35 }],
+    // полюса вакуумного выключателя — тёмный литой эпоксид с блеском; изоляторы и «стаканы» отсека — эпоксид светлее
+    rPole: [0x515a60, { roughness: 0.3, metalness: 0.05 }], rCopper: [0xc8823e, { metalness: 0.6, roughness: 0.35 }], rEpoxy: [0x8a6a3a, { roughness: 0.4 }],
     rStand: [0x50646f, { roughness: 0.7, tex: 'paint' }], rShelf: [0x8b6b4a, { roughness: 0.8 }], rRed: [0xc8202c, { roughness: 0.45 }],
+    // ЗРУ на площадке: рифлёные стальные плиты кабельного канала, стекло окон (светлое — день за окном)
+    rPlate: [0x9aa0a3, { metalness: 0.55, roughness: 0.45, tex: 'plate' }], rWin: [0xcfe3f0, { roughness: 0.15, metalness: 0.1, emissive: 0x5d7180 }],
   },
   roomTube: 0xfafcff,   // светящиеся трубки светильников
   // предметы полигона
-  // ghost — призрак предмета на месте, spot — места, куда можно поставить, next — кольцо ближайшего мероприятия (с подсказками)
+  // ghost — призрак предмета на месте, spot — места, куда можно поставить, next — кольцо ближайшего мероприятия (с подсказками);
+  // огонёк указателя: lampOff — погасший (серый, видно, что не горит), lampOn — горит
   items: { glove: 0xe7c65a, ctrl: 0x202428, ghost: 0xeaf6ff, spot: 0x7fc8ff, next: 0xffd23f, hot: 0xffd23f, back: 0xd9d6cc, helmet: 0xf3f3ee, rod: 0xb3342a, handle: 0x1d2124, head: 0xe6e8e4,
-    metal: 0xc9ced2, pzRod: 0xe0a020, pzCable: 0x9b6a3a, brass: 0xc9a43c, post: 0x2b2f31, lampOff: 0x3a1010, lampOn: 0xff2d2d },
+    metal: 0xc9ced2, pzRod: 0xe0a020, pzCable: 0x9b6a3a, brass: 0xc9a43c, post: 0x2b2f31, lampOff: 0x8a9094, lampOn: 0xff2d2d },
 };
 
 // Детерминированный шум: одинаковые текстуры при каждом запуске (снимки «до/после» сравнимы)
@@ -145,6 +149,13 @@ const TEX = {
     x.strokeStyle = css(C[3], 1, 0.45); x.lineWidth = 3; x.strokeRect(0, 0, w, h);
   } },
   // контур заземления: жёлто-зелёные полосы
+  // рифлёная плита: ромбовидные выступы рядами (кабельный канал ЗРУ)
+  plate: { size: 128, draw(x, w, h) {
+    x.fillStyle = grey(200); x.fillRect(0, 0, w, h);
+    x.strokeStyle = grey(240); x.lineWidth = 3; x.lineCap = 'round';
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const cx = c * 16 + (r % 2) * 8 + 4, cy = r * 16 + 8, d = r % 2 ? 1 : -1; x.beginPath(); x.moveTo(cx - 4, cy - 3 * d); x.lineTo(cx + 4, cy + 3 * d); x.stroke(); }
+    x.strokeStyle = grey(150); x.lineWidth = 2; x.strokeRect(1, 1, w - 2, h - 2);
+  } },
   gstrip: { size: 128, height: 16, draw(x, w, h) {
     const [g, y] = PAL.tex.gstrip;
     x.fillStyle = css(g); x.fillRect(0, 0, w, h); x.fillStyle = css(y);

@@ -32,20 +32,21 @@ let page = null;
 const SUITES = {};
 // Набор проверок: SUITES[name] = { fn(keys), perScheme } — perScheme: идёт по схемам (ключи SAMPLES), --only=<схема> его сужает
 const onlySuites = () => ONLY.filter(o => SUITES[o]), onlyKeys = () => ONLY.filter(o => !SUITES[o]);
-async function check(name, key, fn) {
-  const t = Date.now(), e0 = page.errors.length;
+// pg — страница проверки (автопоказ идёт на второй странице параллельно остальным)
+async function check(name, key, fn, pg = page) {
+  const t = Date.now(), e0 = pg.errors.length;
   let ok = true, info = '';
   try { info = (await fn()) || ''; }
   catch (e) { ok = false; info = e.message || String(e); }
-  const errs = page.errors.slice(e0);
-  const diag = await page.eval('TS.Diag.errors().length').catch(() => 0);
+  const errs = pg.errors.slice(e0);
+  const diag = await pg.eval('TS.Diag.errors().length').catch(() => 0);
   if (errs.length) { ok = false; info += ' · ошибки консоли: ' + errs.slice(0, 3).join(' | '); }
-  if (diag) { ok = false; info += ` · журнал ошибок приложения: ${diag}`; await page.eval('TS.Diag.clearErrors()').catch(() => {}); }
-  const bad = await page.eval('E2E.badText()').catch(() => null);
+  if (diag) { ok = false; info += ` · журнал ошибок приложения: ${diag}`; await pg.eval('TS.Diag.clearErrors()').catch(() => {}); }
+  const bad = await pg.eval('E2E.badText()').catch(() => null);
   if (bad) { ok = false; info += ` · на экране: «${bad}»`; }
   rows.push({ проверка: name, схема: key || '', итог: ok ? 'ok' : 'СБОЙ', подробно: info.slice(0, 160), с: ((Date.now() - t) / 1000).toFixed(1) });
   console.log(`${ok ? '  ok ' : '  СБОЙ'} ${name}${key ? ' · ' + key : ''}${info ? ' — ' + info : ''}`);
-  if (!ok && SHOTS) await page.shot(`${OUT}/fail-${name}-${key}.png`.replace(/[^\w./-]+/g, '_'));
+  if (!ok && SHOTS) await pg.shot(`${OUT}/fail-${name}-${key}.png`.replace(/[^\w./-]+/g, '_'));
   return ok;
 }
 const fail = msg => { throw new Error(msg); };
@@ -804,24 +805,36 @@ SUITES.demo = { perScheme: false, fn: async () => {
   });
 } };
 // Автопоказ: ?demo=auto доходит до конца сам за 2–3 минуты, без ошибок
+// Автопоказ идёт 2–3 минуты по замыслу; в проверке — вчетверо быстрее (?speed=4: паузы и переходы короче, действия те же).
+// Длина настоящего показа = паузы по замыслу (plannedMs) + время самих действий (то, что вышло сверх пауз, делённых на 4) — 2–3 минуты.
+// pg — страница проверки
+const AUTO_SPEED = 4;
+async function autoRun(pg) {
+  await pg.goto(pg.base + '?demo=auto&speed=' + AUTO_SPEED);
+  await pg.eval(HELPER);
+  const t0 = Date.now();
+  let shot = 0;
+  while (!(await pg.eval('TS.app.demo.done'))) {
+    if (Date.now() - t0 > 240000) fail('автопоказ не закончился за 4 минуты');
+    if (!(await pg.eval('TS.app.demo.autoOn'))) fail('автопоказ остановился на шаге ' + ((await pg.eval('TS.app.demo.i')) + 1));
+    if (SHOTS && Date.now() - t0 > shot * 15000) { await pg.shot(`${OUT}/auto-${String(shot).padStart(2, '0')}.png`); shot++; }
+    await sleep(500);
+  }
+  const wall = await pg.eval('TS.app.demo.autoMs'), plan = await pg.eval('TS.app.demo.plannedMs');
+  const ms = plan + Math.max(0, wall - plan / AUTO_SPEED);
+  if (ms < 120000 || ms > 180000) fail(`автопоказ шёл бы ${Math.round(ms / 1000)} с — нужно 2–3 минуты (паузы ${Math.round(plan / 1000)} с, ускоренно — ${Math.round(wall / 1000)} с)`);
+  const b = await pg.fn(() => E2E.box('#demo [data-d="exit"]'));
+  if (!b || b.ok === false) fail('не нажать «Выйти»');
+  await pg.click(b.x, b.y);
+  await sleep(40);
+  return `до конца: показ ≈ ${Math.round(ms / 1000)} с (в проверке — ${Math.round(wall / 1000)} с, ×${AUTO_SPEED})`;
+}
 SUITES.auto = { perScheme: false, fn: async () => {
   await check('auto', '?demo=auto', async () => {
-    await page.goto(page.base + '?demo=auto');
-    await page.eval(HELPER);
-    const t0 = Date.now();
-    let shot = 0;
-    while (!(await page.eval('TS.app.demo.done'))) {
-      if (Date.now() - t0 > 240000) fail('автопоказ не закончился за 4 минуты');
-      if (!(await page.eval('TS.app.demo.autoOn'))) fail('автопоказ остановился на шаге ' + ((await page.eval('TS.app.demo.i')) + 1));
-      if (SHOTS && Date.now() - t0 > shot * 15000) { await page.shot(`${OUT}/auto-${String(shot).padStart(2, '0')}.png`); shot++; }
-      await sleep(500);
-    }
-    const ms = await page.eval('TS.app.demo.autoMs');
-    if (ms < 120000 || ms > 180000) fail(`автопоказ шёл ${Math.round(ms / 1000)} с — нужно 2–3 минуты`);
-    await clickBtn('#demo [data-d="exit"]', null, '«Выйти»');
+    const r = await autoRun(page);
     await page.goto(page.base);
     await page.eval(HELPER);
-    return `до конца за ${Math.round(ms / 1000)} с`;
+    return r;
   });
 } };
 
@@ -1081,6 +1094,7 @@ async function main() {
       if (!s.perScheme && !su.length && ok.length) continue;
       await s.fn(ok.length ? keys.filter(k => ok.includes(k)) : keys);
     }
+
   } catch (e) {
     console.error('Сбой прогона:', e.message || e);
     rows.push({ проверка: 'прогон', схема: '', итог: 'СБОЙ', подробно: String(e.message || e).slice(0, 160), с: '' });

@@ -74,7 +74,7 @@ class Coach {
     const t = st ? v.guideTarget(st.id) : null, id = t && (t.dev || t.wire);
     const xr = v.renderer.xr.isPresenting, aim = v.walk && v.walk.aim;
     // навели: пешком — прицел на аппарате (рядом), в шлеме — луч на нём
-    const aimed = !!id && (xr ? v.hover === id : !!(aim && aim.id === id && aim.type !== 'far'));
+    const aimed = !!id && (xr ? v.hover === id : v.fpsOn() && !!(aim && aim.id === id && aim.type !== 'far'));
     let cur = this.cur;
     if (cur === 'go' && (aimed || (xr && this.nearTo(t)))) cur = 'aim';
     if (cur === 'aim' && aimed) cur = 'act';

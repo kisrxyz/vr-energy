@@ -40,11 +40,20 @@ const Guide = {
     if (!a) return home();
     // щит на время поиска — у ворот (не загораживает); камера и rig — как были (поиск двигает камеру ходьбы)
     g.position.copy(this.boardHome.pos); g.rotation.y = this.boardHome.ry; this.boardBlocks = footprints(T, g);
+    // первый аппарат — в ЗРУ: начало в тамбуре перед щитом ЗРУ (как вход в полигон), щит площадки — у ворот
+    const zd = t.dev && this.dev.get(t.dev), zn = t.wire && this.zru ? this.app.tr.topo.wireNode.get(t.wire) : null;
+    if (this.zru && this.zru.board && ((zd && zd.zru) || (zn != null && this.zru.nodes.has(zn)))) {
+      const bp = this.zru.board.getWorldPosition(new T.Vector3()), n = new T.Vector3(0, 0, 1).applyQuaternion(this.zru.board.getWorldQuaternion(new T.Quaternion()));
+      const x = bp.x + n.x * 2.3, z = bp.z + n.z * 2.3;
+      if (this.world.walkable(x, z)) { this.taskStart = { x, z, yaw: Math.atan2(n.x, n.z), pitch: 0.03 }; return this.taskStart; }
+    }
     const cam = this.camera, rig = this.rig, w = this.walk, keep = [cam.position.clone(), cam.quaternion.clone(), rig.position.clone(), rig.rotation.y, w.x, w.z, w.yaw, w.pitch];
     const xr = this.renderer.xr.isPresenting;
     if (xr) { rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0); rig.updateMatrixWorld(true); }
     let q = null;
     this.wireAim = !!t.wire;
+    // поиск начинается «с ворот»: место ходьбы в «Обзоре» не определено (0, 0 может оказаться в стене или ячейке ЗРУ)
+    w.x = this.world.start.x; w.z = this.world.start.z;
     try { q = w.seek(a.p, a.want, false, [5.5, 5, 4.5, 4, 3.5]); } finally {
       this.wireAim = false;
       [w.x, w.z, w.yaw, w.pitch] = keep.slice(4);
@@ -58,10 +67,13 @@ const Guide = {
     this.taskStart = q;
     const spots = [];
     for (const fw of [3, 2.4, 3.6, 1.8]) for (const lat of [2.4, 3, 1.8]) for (const side of [-1, 1]) spots.push([fw, lat * side]);
-    for (const [fw, lt] of spots) {
+    // в здание ЗРУ щит площадки не ставится: там свой щит в тамбуре (zru.js), в коридоре большой щит перегородил бы проход
+    const zb = this.zru ? new T.Box3().setFromObject(this.zru.group).expandByScalar(1) : null;
+    const inZru = (x, z) => !!zb && x > zb.min.x && x < zb.max.x && z > zb.min.z && z < zb.max.z;
+    for (const [fw, lt] of inZru(q.x, q.z) ? [] : spots) {
       const bx = q.x + f[0] * fw + r[0] * lt, bz = q.z + f[1] * fw + r[1] * lt;
       const ry = Math.atan2(q.x - bx, q.z - bz), ex = Math.cos(ry) * 1.6, ez = -Math.sin(ry) * 1.6;
-      if (![[bx, bz], [bx + ex, bz + ez], [bx - ex, bz - ez]].every(([x, z]) => this.world.walkable(x, z, 0.35))) continue;
+      if (![[bx, bz], [bx + ex, bz + ez], [bx - ex, bz - ez]].every(([x, z]) => this.world.walkable(x, z, 0.35) && !inZru(x, z))) continue;
       g.position.set(bx, 0, bz); g.rotation.y = ry;
       this.boardBlocks = footprints(T, g);
       this.taskStart = { x: q.x, z: q.z, yaw: Math.atan2(-(bx - q.x), -(bz - q.z)), pitch: Math.atan2(2.25 - 1.62, Math.hypot(bx - q.x, bz - q.z)) };

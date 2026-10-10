@@ -1,4 +1,4 @@
-import { TYPES, clamp, bbox, vClass, wireRoute, isPzId } from '../core/elements.js';
+import { TYPES, clamp, bbox, vClass, isPzId } from '../core/elements.js';
 import { fmtTime } from '../core/engine.js';
 import { Sound } from '../ui/sound.js';
 import { Diag } from '../ui/diag.js';

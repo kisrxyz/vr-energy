@@ -82,8 +82,7 @@ function tracePhases(s, topo, opts) {
     if (q.devs.length) {
       const dv = q.devs[0];
       q.poles = [-1, 0, 1].map(j => add(q.P, dv.u, j * dv.gap)); q.u = dv.u; q.h = H3;
-      let c = 0;
-      for (const x of E) { const en = x.w.end[x.e]; en.kind = Math.abs(dot(en.n, dv.u)) > 0.7 ? 'A' : 'C'; if (en.kind === 'C') en.tap = c++; }
+      for (const x of E) { const en = x.w.end[x.e]; en.kind = Math.abs(dot(en.n, dv.u)) > 0.7 ? 'A' : 'C'; }
       continue;
     }
     if (E.length === 1) continue;
@@ -96,8 +95,7 @@ function tracePhases(s, topo, opts) {
     if (!pair) pair = [E[0]];
     const d0 = pair[0].w.end[pair[0].e].d, u = nrm(d0), gap = pair[0].w.gap;
     q.poles = [-1, 0, 1].map(j => add(q.P, u, j * gap)); q.u = u; q.m = d0; q.gap = gap; q.through = pair.length === 2 ? pair : null;
-    let c = 0;
-    for (const x of E) { const en = x.w.end[x.e]; if (pair.includes(x)) en.kind = 'A'; else { en.kind = 'C'; en.tap = c++; } }
+    for (const x of E) x.w.end[x.e].kind = pair.includes(x) ? 'A' : 'C';
   }
   // высоты: отпайка — выше полюсов, к которым спускается; узел из двух проводов — одна высота
   for (let it = 0; it < 8; it++) {

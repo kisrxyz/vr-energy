@@ -257,6 +257,8 @@ function makeKit(T, M, geoCache, nodeMatFor, gapFor = () => 0.35) {
     lite(x, y0, y1, z, r = 0.09, mat = M.porcelain) { return k.insulator(x, y0, y1, z, r, mat, 8, 0.22, false); },
     // три полюса по местной оси x: gap — расстояние между фазами; f(x, j) кладёт полюс j в точку x
     tri(gap, f) { for (const j of [-1, 0, 1]) f(j * gap, j + 1); },
+    // деталь, одинаковая у всех аппаратов (нож фазы): не сливается с соседними — все такие детали схемы рисуются одной сеткой экземпляров
+    solo(m) { m.userData.solo = true; return m; },
     // пластинчатый радиатор: n пластин вдоль оси z на длине l, каждая — толщиной t, глубиной dep, высотой h; коллекторы сверху и снизу
     fins(x, y, z, n, l, dep, h, mat, t = 0.035) {
       const g = new T.Group();

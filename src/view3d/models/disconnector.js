@@ -18,10 +18,10 @@ export function build(k, el, d) {
   g.add(k.box(0.006, 0.05, 0.03, M.handle, 0.954, 0.82, 0.08));
   g.add(k.tube([0.75, 1.18, 0], [0.75, 1.95, 0], 0.025, M.galv));
   if (gap + 0.15 < 0.74) g.add(k.tube([0.75, 1.95, 0], [gap + 0.14, 2.0, 0], 0.025, M.galv));
-  // общий вал ножей поперёк фаз и три ножа
+  // общий вал ножей поперёк фаз (лежит на оси поворота — неподвижен) и три ножа: каждый нож — одинаковая деталь (экземпляр)
+  g.add(k.cyl(0.03, 2 * gap + 0.12, M.galv, 0, H3 + 0.06, -S3, 'x', 8));
   d.pivot = k.group(0, H3 + 0.06, -S3);
-  d.pivot.add(k.cyl(0.03, 2 * gap + 0.12, M.galv, 0, 0, 0, 'x'));
-  k.tri(gap, x => d.pivot.add(k.box(0.08, 0.08, 2 * S3, M.blade, x, 0, S3)));
+  k.tri(gap, x => d.pivot.add(k.solo(k.box(0.08, 0.08, 2 * S3, M.blade, x, 0, S3))));
   g.add(d.pivot);
   k.lamp(0.75, 1.24, 0, 0.1);
   d.ang = 0; d.angT = 0;

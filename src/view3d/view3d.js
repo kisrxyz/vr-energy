@@ -485,8 +485,9 @@ class View3D {
     const T = THREE, buckets = new Map();
     g.updateMatrixWorld(true);
     const inv = new T.Matrix4().copy(g.matrixWorld).invert(), m4 = new T.Matrix4();
-    // невидимые коробки для щелчка и луча (полигон: на тележке) не сливаются — у них своя роль
-    g.traverse(o => { if (o.isMesh && o !== g && !o.userData.proxy) { let l = buckets.get(o.material); if (!l) buckets.set(o.material, l = []); l.push(o); } });
+    // невидимые коробки для щелчка и луча (полигон: на тележке) не сливаются — у них своя роль;
+    // solo — одинаковые детали разных аппаратов (ножи трёх фаз): не сливаются, а становятся экземплярами одной сетки (batch.js)
+    g.traverse(o => { if (o.isMesh && o !== g && !o.userData.proxy && !o.userData.solo) { let l = buckets.get(o.material); if (!l) buckets.set(o.material, l = []); l.push(o); } });
     for (const [mat, list] of buckets) {
       if (list.length < 2) continue;
       const geo = this.joinGeos(list.map(m => { const q = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); q.applyMatrix4(m4.multiplyMatrices(inv, m.matrixWorld)); return q; }));

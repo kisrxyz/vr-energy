@@ -14,7 +14,7 @@ export function build(k, el, d) {
   });
   const L = Math.hypot(H3 - hy, S3 + hz);
   d.pivot = k.group(0, hy, hz);
-  k.tri(gap, x => d.pivot.add(k.box(0.07, L, 0.07, el.t === 'kz' ? M.stripe : M.earthBlade, x, L / 2, 0)));
+  k.tri(gap, x => d.pivot.add(k.solo(k.box(0.07, L, 0.07, el.t === 'kz' ? M.stripe : M.earthBlade, x, L / 2, 0))));
   g.add(d.pivot);
   d.closedAng = -Math.atan2(S3 + hz, H3 - hy); d.openAng = 1.2;
   k.lamp(0, hy + 0.14, hz + 0.24, 0.1);

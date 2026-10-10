@@ -441,17 +441,20 @@ class Scheme2D {
     if (this.placing) { app.placeAt(this.placing, g, e.shiftKey); this.drag = null; return; }
     // Shift или Ctrl (или кнопка «Выделение»): по пустому месту — рамка, по элементу или проводу — добавить или убрать.
     // Точки подключения и ручки лежат поверх элементов — смотрим, что под ними
-    if (e.shiftKey || e.ctrlKey || e.metaKey || this.boxMode) {
-      const under = (document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [t]).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean);
-      if (under && under.dataset.el) { this.toggle('el', under.dataset.el); this.drag = null; return; }
-      if (under && under.dataset.w) { this.toggle('wire', under.dataset.w); this.drag = null; return; }
-      this.drag = { kind: 'rect', a: p, b: p };
+    const mod = e.shiftKey || e.ctrlKey || e.metaKey, box = mod || this.boxMode;
+    const under = box ? (document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [t]).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean) : null;
+    const hitEl = box ? under && under.dataset.el : elG && elG.dataset.el;
+    const hitW = box ? under && !hitEl && under.dataset.w : !elG && wG && wG.dataset.w;
+    // по элементу или проводу из выделенной группы — переносим всю группу, и в режиме «Выделение» (Shift/Ctrl — добавить или убрать)
+    const inGroup = this.sel && this.sel.type === 'group' && ((hitEl && this.sel.els.has(hitEl)) || (hitW && this.sel.wires.has(hitW)));
+    if (inGroup && !mod && (this.boxMode || (!pt && !we))) {
+      this.drag = { kind: 'gmove', grip: grip(app.scheme, this.selSets()), p0: p, dx: 0, dy: 0, started: false, box: this.boxMode, one: hitEl ? { type: 'el', id: hitEl } : { type: 'wire', id: hitW } };
       return;
     }
-    // по элементу или проводу из выделенной группы — переносим всю группу
-    const inGroup = this.sel && this.sel.type === 'group' && ((elG && this.sel.els.has(elG.dataset.el)) || (!elG && wG && this.sel.wires.has(wG.dataset.w)));
-    if (inGroup && !pt && !we) {
-      this.drag = { kind: 'gmove', grip: grip(app.scheme, this.selSets()), p0: p, dx: 0, dy: 0, started: false, one: elG ? { type: 'el', id: elG.dataset.el } : { type: 'wire', id: wG.dataset.w } };
+    if (box) {
+      if (hitEl) { this.toggle('el', hitEl); this.drag = null; return; }
+      if (hitW) { this.toggle('wire', hitW); this.drag = null; return; }
+      this.drag = { kind: 'rect', a: p, b: p };
       return;
     }
     if (we) { const [wid, end] = we.split(':'); app.history(); this.drag = { kind: 'wend', wid, end }; return; }
@@ -540,13 +543,18 @@ class Scheme2D {
     if (d.kind === 'rect') {
       this.overlayExtra();
       // рамка — новое выделение: элементы целиком внутри, провода — обоими концами
-      if (!cancel && moved) { const r = inRect(this.app.scheme, d.a[0], d.a[1], d.b[0], d.b[1]); this.setSel(r.els, r.wires); }
+      // кнопка «Выделение» отжимается сама, как только рамка что-то выделила: дальше группу сразу можно тащить
+      if (!cancel && moved) {
+        const r = inRect(this.app.scheme, d.a[0], d.a[1], d.b[0], d.b[1]);
+        this.setSel(r.els, r.wires);
+        if (this.boxMode && r.els.length + r.wires.length) this.setBoxMode(false);
+      }
       return;
     }
     if (d.kind === 'gmove') {
       if (d.started) { this.app.commit(); return; }
-      // щелчок без переноса по одному из группы — выделить только его
-      if (!cancel) this.select(d.one);
+      // щелчок без переноса по одному из группы — выделить только его; в режиме «Выделение» — убрать из группы
+      if (!cancel) { if (d.box) this.toggle(d.one.type, d.one.id); else this.select(d.one); }
       return;
     }
     if (d.kind === 'wend' || d.kind === 'bus') { this.app.commit(); return; }

@@ -1032,6 +1032,76 @@ SUITES.yard = { perScheme: true, fn: async keys => {
 
 // Сцена 3D: невидимые коробки (щелчок, луч, прицел), места для предметов и предметы на стенде — там же, где в базе
 // (tests/scene3d-base.json): графика не должна ломать ходьбу, предметы и автопроходку
+// ---------- 2D-редактор: перетаскивание мышью и пальцем ----------
+const scr = p => page.fn(p => E2E.toScreen(p), p);
+const touch = (type, pts) => page.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y]) => ({ x, y })) });
+// Перетащить из a в b (точки окна): мышью с зажатой левой кнопкой или пальцем
+async function drag(a, b, finger, steps = 10) {
+  const at = i => [a[0] + (b[0] - a[0]) * i / steps, a[1] + (b[1] - a[1]) * i / steps];
+  if (finger) {
+    await touch('touchStart', [a]);
+    for (let i = 1; i <= steps; i++) { await touch('touchMove', [at(i)]); await sleep(16); }
+    await touch('touchEnd', []);
+  } else {
+    await page.move(a[0], a[1]);
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: a[0], y: a[1], button: 'left', buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= steps; i++) { const [x, y] = at(i); await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 1 }); await sleep(16); }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: b[0], y: b[1], button: 'left', clickCount: 1 });
+  }
+  await sleep(80);
+}
+// Свежая страница на телефоне (390×844, касания) или на ноутбуке
+async function reopen(phone) {
+  if (phone) await page.viewport(390, 844, true); else await page.viewport(1366, 860);
+  await page.goto(page.base);
+  await page.eval(HELPER);
+  await page.eval("localStorage.setItem('ts.coach', '1')");
+}
+const elId = name => page.eval(`TS.app.scheme.els.find(e => e.name === ${JSON.stringify(name)}).id`);
+const elX = name => page.eval(`TS.app.scheme.els.find(e => e.name === ${JSON.stringify(name)}).x`);
+
+// «Выделение»: рамка кнопкой (пальцем на телефоне) — кнопка отжимается сама, группу сразу можно тащить; перенос — один шаг Ctrl+Z
+SUITES.select = { perScheme: false, fn: async () => {
+  for (const phone of [false, true]) await check('select', phone ? 'телефон 390×844' : 'ноутбук', async () => {
+    if (phone) await reopen(true);
+    try {
+      await chooseScheme('ps110');
+      await setMode('edit');
+      await page.fn(() => E2E.centerOn([5, 41], 0.8));
+      await clickBtn('#zSel', null, '«Выделение»');
+      if (!(await page.eval('TS.app.view.boxMode'))) fail('«Выделение» не включилось');
+      await drag(await scr([2.5, 32.6]), await scr([8.5, 50.5]), phone);
+      const s1 = await page.eval(`({ box: TS.app.view.boxMode, pressed: document.getElementById('zSel').getAttribute('aria-pressed'), n: TS.app.view.selSets().els.length })`);
+      if (s1.n !== 6) fail(`рамка выделила ${s1.n} элементов, ждали 6 (присоединение Л-1)`);
+      if (s1.box || s1.pressed !== 'false') fail('кнопка «Выделение» не отжалась после рамки');
+      const x0 = await elX('ШР Л-1'), u0 = await page.eval('TS.app.undoStack.length');
+      const cell = await page.eval('TS.app.view.k * 20');
+      const p = await page.fn(t => E2E.hit(t), await elId('В-10 Л-1'));
+      if (!p || !p.ok) fail('не попасть в В-10 Л-1');
+      await drag([p.x, p.y], [p.x + 3 * cell, p.y], phone);
+      const s2 = await page.eval(`({ n: TS.app.view.selSets().els.length, u: TS.app.undoStack.length })`);
+      const x1 = await elX('ШР Л-1'), xl = await elX('Цех №1');
+      if (x1 !== x0 + 3 || xl !== x0 + 3) fail(`группа не переехала: ШР Л-1 ${x0} → ${x1}, Цех №1 → ${xl}`);
+      if (s2.n !== 6) fail('после переноса выделение потерялось');
+      if (s2.u !== u0 + 1) fail(`перенос — ${s2.u - u0} шагов «Отменить», ждали 1`);
+      // кнопку нажали снова — группа всё равно тащится (раньше щелчок по выделенному убирал его из группы)
+      await clickBtn('#zSel', null, '«Выделение»');
+      const q = await page.fn(t => E2E.hit(t), await elId('В-10 Л-1'));
+      await drag([q.x, q.y], [q.x + 3 * cell, q.y], phone);
+      const s3 = await page.eval(`({ box: TS.app.view.boxMode, n: TS.app.view.selSets().els.length, u: TS.app.undoStack.length })`);
+      if ((await elX('ШР Л-1')) !== x0 + 6) fail('в режиме «Выделение» группа не тащится');
+      if (!s3.box || s3.n !== 6 || s3.u !== u0 + 2) fail(`в режиме «Выделение»: кнопка ${s3.box}, выделено ${s3.n}, шагов ${s3.u - u0}`);
+      await page.key('KeyZ', { mods: 2 });
+      await page.key('KeyZ', { mods: 2 });
+      await sleep(80);
+      if ((await elX('ШР Л-1')) !== x0 || (await elX('Цех №1')) !== x0) fail('Ctrl+Z не вернул группу');
+      await page.key('Escape');
+      if (SHOTS) await page.shot(`${OUT}/select-${phone ? 'phone' : 'laptop'}.png`);
+      return 'рамка → кнопка отжата → перенос группы за В-10 Л-1 → Ctrl+Z';
+    } finally { if (phone) await reopen(false); }
+  });
+} };
+
 const SCENE_BASE = new URL('../tests/scene3d-base.json', import.meta.url);
 SUITES.scene3d = { perScheme: true, fn: async keys => {
   const base = existsSync(SCENE_BASE) ? JSON.parse(readFileSync(SCENE_BASE, 'utf8')) : {};

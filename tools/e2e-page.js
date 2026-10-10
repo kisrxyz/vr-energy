@@ -34,6 +34,11 @@ window.E2E = (() => {
     v.tx = r.width / 2 - p[0] * v.k * g; v.ty = r.height / 2 - p[1] * v.k * g;
     v.applyView();
   }
+  // Точка окна для точки схемы (в клетках)
+  function toScreen(p) {
+    const v = app().view, r = v.svg.getBoundingClientRect(), g = G();
+    return [r.left + v.tx + p[0] * v.k * g, r.top + v.ty + p[1] * v.k * g];
+  }
   function candidates(target) {
     const pts = [];
     const g = document.querySelector(`#le [data-el="${CSS.escape(target)}"]`);
@@ -106,6 +111,6 @@ window.E2E = (() => {
     const r = app().tr.run;
     return r ? { ops: r.ops.length, errors: r.errors.map(e => (KIND[e.kind] || e.kind) + ': ' + e.text), done: r.done } : null;
   }
-  return { box, opt, hit, centerOn, aim, held, badText, report, run };
+  return { box, opt, hit, centerOn, toScreen, aim, held, badText, report, run };
 })();
 true;

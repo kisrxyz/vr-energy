@@ -1,7 +1,7 @@
 // Силовой трансформатор: фундамент, бак с рёбрами жёсткости и крышкой, пластинчатые радиаторы с вентиляторами,
 // расширитель на опорах с маслоуказателем, вводы с рёбрами, шкаф привода РПН.
 // tank() общий для двух- и трёхобмоточного трансформатора и ТСН.
-// o.bush — группы вводов: [x, z, высота, номер точки подключения]; у группы три ввода по x, провод — от среднего.
+// o.bush — группы вводов: [x, z, высота, номер точки подключения, шаг]; у группы три ввода по x — по фазе, от каждого — отвод к своему полюсу вывода.
 export function tank(k, d, o) {
   const { M } = k, g = d.group, w = o.w || 1.9, h = o.h || 2.1, l = o.l || 2.3, top = 0.3 + h;
   g.add(k.box(w + 0.5, 0.3, l + 0.7, M.concrete, 0, 0.15, 0));
@@ -30,9 +30,11 @@ export function tank(k, d, o) {
   // шкаф привода РПН на торце бака
   if (o.fans !== false) g.add(k.box(0.5, 0.75, 0.22, M.cabinet, w * 0.22, 0.3 + h * 0.4, -(l / 2 + 0.11)));
   for (const [x, z, hb, i, dx = 0.3] of o.bush) {
-    const r = Math.min(0.07, dx * 0.24);
-    for (const bx of o.single ? [x] : [x - dx, x, x + dx]) g.add(k.insulator(bx, top, top + hb, z, r));
-    g.add(k.tube([x, top + hb, z], k.port(i), 0.04, k.node(i)));
+    const r = Math.min(0.07, dx * 0.24), poles = k.poles(i);
+    [-1, 0, 1].forEach((j, n) => {
+      g.add(k.lite(x + j * dx, top, top + hb, z, r, M.porcelain));
+      g.add(k.tube([x + j * dx, top + hb, z], poles[n], 0.035, k.node(i)));
+    });
   }
   d.speed = 0; d.speedT = 0;
 }

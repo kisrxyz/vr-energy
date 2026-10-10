@@ -10,6 +10,7 @@
      и «Стой! Напряжение» в обоих торцах, окна под потолком, светильники; кабельный канал (рифлёные плиты) перед рядами, КЛ — из стены
      за рядом в траншею с плитами к концевой муфте; к трансформатору и ТСН — шинный мост на высоте проводов. */
 import { buildCell, CW, CD, CH, CONTACT } from './cell.js';
+import { offsetLine } from './phases.js';
 import { roomMats } from './room.js';
 import { MODELS, PAL, makeMaterials } from './models/index.js';
 
@@ -224,8 +225,9 @@ function buildZRU(v, s, topo, kru, W) {
       const za = (p.rowB ? hc : -hc) - (p.rowB ? -1 : 1) * CD / 2, zb = (q.rowB ? hc : -hc) - (q.rowB ? -1 : 1) * CD / 2;
       g.add(k.box(0.36, 0.3, Math.abs(zb - za) + 0.36, M.kru, (p.x + q.x) / 2, yb, (za + zb) / 2));
       for (const o of ties) g.add(k.box(0.36, yb - CH, 0.36, M.kru, o.x, (CH + yb) / 2, (o.rowB ? hc : -hc) + (o.rowB ? 1 : -1) * CD / 2));
-      g.add(k.box(0.06, 0.06, Math.abs(zb - za), mat, (p.x + q.x) / 2, yb - 0.17, (za + zb) / 2));
-    } else g.add(k.box(Math.abs(q.x - p.x) + 0.1, 0.08, 0.012, mat, (p.x + q.x) / 2, busY + 0.25, -hc - CD / 2));
+      // три фазы под коробом моста
+      for (const dx of [-0.1, 0, 0.1]) g.add(k.box(0.03, 0.05, Math.abs(zb - za), mat, (p.x + q.x) / 2 + dx, yb - 0.17, (za + zb) / 2));
+    } else for (const dzb of [-0.22, 0, 0.22]) g.add(k.box(Math.abs(q.x - p.x) + 0.1, 0.08, 0.012, mat, (p.x + q.x) / 2, busY + 0.25, -hc - CD / 2 + dzb));
   }
   // ---------- здание: пол, кабельный канал, стены с дверями, окна, потолок со светильниками ----------
   const BW = xb - xa, BD = zB - zA, t = Z.t, h = Z.h, cx = (xa + xb) / 2, cz = (zA + zB) / 2;
@@ -332,10 +334,22 @@ function buildZRU(v, s, topo, kru, W) {
         const wl = wpt(o.g, 0, 0, -CD - Z.back - t + 0.02);
         root.add(v.tube([wl.x, 0.35, wl.z], [ws.x, 0.06, ws.z], 0.045, M.dark));
       } else {
-        // шинный мост: из ячейки вверх под потолок, через стену за рядом — к выводу трансформатора на высоте проводов
+        // шинный мост: из ячейки вверх под потолок, через стену за рядом — к выводу трансформатора на высоте проводов; три фазы —
+        // рядом поперёк хода (углы «в ус»), к выводу — каждая к своему полюсу (полюса — поперёк символа трансформатора)
         const yb = Z.h - 0.5, top = wpt(o.g, 0, CH + 0.05, -CD / 2), mat = nm(dn.node), wb = wpt(o.g, 0, 0, -CD - Z.back - t - 0.6);
-        const pts = [[top.x, top.y, top.z], [top.x, yb, top.z], [wb.x, yb, wb.z], [P.x, yb, wb.z], [P.x, yb, P.z], [P.x, P.y, P.z]];
-        for (let j = 0; j < pts.length - 1; j++) if (Math.hypot(pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1], pts[j + 1][2] - pts[j][2]) > 0.02) root.add(v.tube(pts[j], pts[j + 1], 0.07, mat));
+        const plan = [[top.x, top.z], [wb.x, wb.z], [P.x, wb.z], [P.x, P.z]].filter((q, j, a) => !j || Math.hypot(q[0] - a[j - 1][0], q[1] - a[j - 1][1]) > 0.02);
+        const gap = Math.min(0.3, v.ph ? v.ph.gapOf(dn.node) : 0.3), dg = v.ph ? v.ph.gapOf(dn.node) : gap;
+        const u = d.group.localToWorld(new T.Vector3(1, 0, 0)).sub(d.group.getWorldPosition(new T.Vector3())).normalize();
+        const poles = [-1, 0, 1].map(j => [P.x + u.x * j * dg, P.y, P.z + u.z * j * dg]);
+        const lines = [-1, 0, 1].map(j => offsetLine(plan, j * gap));
+        // фаза к полюсу — по порядку вдоль оси полюсов (так отводы не пересекаются)
+        const ord = a => a.map((q, i) => [q[0] * u.x + q[q.length - 1] * u.z, i]).sort((p, q) => p[0] - q[0]).map(q => q[1]);
+        const li = ord(lines.map(l => l[l.length - 1])), pi = ord(poles.map(p => [p[0], p[2]]));
+        li.forEach((l, k) => {
+          const line = lines[l], s = line[0], pl = poles[pi[k]];
+          const pts = [[s[0], top.y, s[1]], [s[0], yb, s[1]], ...line.slice(1).map(q => [q[0], yb, q[1]]), [pl[0], yb, pl[2]], pl];
+          for (let j = 0; j < pts.length - 1; j++) if (Math.hypot(pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1], pts[j + 1][2] - pts[j][2]) > 0.02) root.add(v.tube(pts[j], pts[j + 1], 0.05, mat));
+        });
       }
     }
   };

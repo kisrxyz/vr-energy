@@ -203,7 +203,8 @@ SUITES.tasks = { perScheme: true, fn: async keys => {
 
 // Типовая ошибка на схему: что сделать и какого вида ошибка должна попасть в отчёт
 const MISTAKES = {
-  ps110: { task: 0, interlocks: false, kind: 'Авария', text: 'разорван ток нагрузки', do: [{ do: 'switch', name: 'ШР Л-1' }] },
+  // случай из отзыва тестировщика: СВ-10 включён, ШР-10 Т1 отключают при включённом В-10 Т1 — ток нагрузки шёл и через Т1 (правило 4)
+  ps110: { task: 1, interlocks: false, kind: 'Авария', text: 'параллельно — через СВ-10', do: [{ do: 'switch', name: 'СВ-10' }, { do: 'switch', name: 'ШР-10 Т1' }] },
   tp10: { task: 1, interlocks: false, kind: 'Авария', text: 'включён на участок под напряжением', do: [{ do: 'switch', name: 'ЗН-10' }] },
   ps35: { task: 0, interlocks: true, kind: 'Блокировка', text: 'выключатель включён', do: [{ do: 'rack', name: 'В-10 Л-1', pos: 'test', menu: 'Тележку в контрольное положение' }] },
   poly: { task: 0, interlocks: true, kind: 'Охрана труда', text: 'Операция без СИЗ', do: [{ do: 'switch', name: 'В-10 яч.3', menu: 'Отключить выключатель' }] },

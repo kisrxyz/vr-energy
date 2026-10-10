@@ -16,9 +16,11 @@ export function build(k, el, d, disc) {
   g.add(k.box(0.01, 0.06, 0.2, M.qf, 0.524, 2.14, -0.45));
   // вентиляционные щели на боковых стенках
   for (const z of [-0.851, 0.851]) for (let i = 0; i < 4; i++) g.add(k.box(0.5, 0.02, 0.006, M.dark, 0.1, 1.85 + i * 0.06, z));
+  // вводы сверху — по три (фазы), шаг — не шире шкафа
+  const w = Math.min(0.3, k.gap(0));
   for (const [i, z] of [[0, -0.45], [1, 0.45]]) {
-    g.add(k.insulator(0, 2.34, 2.77, z, 0.06));
-    g.add(k.tube([0, 2.78, z], k.port(i), 0.035, k.node(i)));
+    const p = k.poles(i);
+    k.tri(w, (x, j) => { g.add(k.lite(x, 2.34, 2.77, z, 0.05, M.porcelain)); g.add(k.tube([x, 2.78, z], p[j], 0.03, k.node(i))); });
   }
   d.slide = k.group(0, 0, 0);
   d.slide.add(k.box(0.8, 0.1, 1.0, M.dark, 0.15, 0.2, 0));

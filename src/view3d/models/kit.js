@@ -209,7 +209,7 @@ function makeMaterials(T, spec = PAL.mats) {
   return M;
 }
 
-function makeKit(T, M, geoCache, nodeMatFor) {
+function makeKit(T, M, geoCache, nodeMatFor, gapFor = () => 0.35) {
   const boxGeo = (w, h, d) => { const k = `b${w}|${h}|${d}`; if (!geoCache.has(k)) geoCache.set(k, new T.BoxGeometry(w, h, d)); return geoCache.get(k); };
   const cylGeo = (r, h, r2 = r, n = 14) => { const k = `c${r}|${h}|${r2}|${n}`; if (!geoCache.has(k)) geoCache.set(k, new T.CylinderGeometry(r2, r, h, n)); return geoCache.get(k); };
   // коробка с UV по размеру граней (одна клетка рисунка — cell м): решётка и рисунки не растягиваются вдоль длинной стойки
@@ -227,7 +227,7 @@ function makeKit(T, M, geoCache, nodeMatFor) {
   const k = {
     T, M, S3, H3, PAL,
     box(w, h, d, mat, x = 0, y = 0, z = 0) { const m = new T.Mesh(boxGeo(w, h, d), mat); m.position.set(x, y, z); return m; },
-    cyl(r, h, mat, x = 0, y = 0, z = 0, axis) { const m = new T.Mesh(cylGeo(r, h), mat); m.position.set(x, y, z); return orient(m, axis); },
+    cyl(r, h, mat, x = 0, y = 0, z = 0, axis, seg = 14) { const m = new T.Mesh(cylGeo(r, h, r, seg), mat); m.position.set(x, y, z); return orient(m, axis); },
     // усечённый конус: r — низ, r2 — верх
     cone(r, r2, h, mat, x = 0, y = 0, z = 0, axis) { const m = new T.Mesh(cylGeo(r, h, r2), mat); m.position.set(x, y, z); return orient(m, axis); },
     // решётчатая стойка или балка (опоры порталов, ячеек ОРУ): рисунок решётки с клеткой cell м
@@ -235,21 +235,28 @@ function makeKit(T, M, geoCache, nodeMatFor) {
     tube(a, b, r, mat) {
       const va = new T.Vector3(a[0], a[1], a[2]), vb = new T.Vector3(b[0], b[1], b[2]);
       const dir = vb.clone().sub(va), len = dir.length();
-      const m = new T.Mesh(new T.CylinderGeometry(r, r, Math.max(len, 0.001), 10), mat);
+      const m = new T.Mesh(new T.CylinderGeometry(r, r, Math.max(len, 0.001), 8), mat);
       m.position.copy(va).addScaledVector(dir, 0.5);
       if (len > 0) m.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), dir.normalize());
       return m;
     },
     group(x = 0, y = 0, z = 0) { const g = new T.Group(); g.position.set(x, y, z); return g; },
     // изолятор: стержень с юбками (рёбрами), от y0 до y1; mat — фарфор (по умолчанию) или полимер; фланцы — оцинковка
-    insulator(x, y0, y1, z, r = 0.09, mat = M.porcelain) {
-      const g = new T.Group(), h = y1 - y0;
-      g.add(k.cyl(r, h, mat, x, (y0 + y1) / 2, z));
-      const n = Math.max(2, Math.round(h / 0.16));
-      for (let i = 1; i < n; i++) g.add(k.cone(r * (i % 2 ? 1.8 : 1.5), r * 1.1, 0.05, mat, x, y0 + h * i / n, z));
-      g.add(k.cyl(r * 1.3, 0.05, M.galv, x, y0 + 0.025, z), k.cyl(r * 1.3, 0.05, M.galv, x, y1 - 0.025, z));
+    // seg — граней по кругу, step — шаг юбок: у трёхполюсных аппаратов изоляторов втрое больше — граней и юбок меньше (k.lite),
+    // фланцы — только у крупных (бюджет треугольников в шлеме)
+    insulator(x, y0, y1, z, r = 0.09, mat = M.porcelain, seg = 10, step = 0.16, flange = true) {
+      const g = new T.Group(), h = y1 - y0, c = (rr, hh, r2, y) => { const m = new T.Mesh(cylGeo(rr, hh, r2, seg), mat); m.position.set(x, y, z); return m; };
+      g.add(c(r, h, r, (y0 + y1) / 2));
+      const n = Math.max(2, Math.round(h / step));
+      for (let i = 1; i < n; i++) g.add(c(r * (i % 2 ? 1.8 : 1.5), 0.05, r * 1.1, y0 + h * i / n));
+      const f = (y) => { const m = new T.Mesh(cylGeo(r * 1.3, 0.05, r * 1.3, seg), M.galv); m.position.set(x, y, z); return m; };
+      if (flange) g.add(f(y0 + 0.025), f(y1 - 0.025));
       return g;
     },
+    // облегчённый изолятор трёхполюсного аппарата: 8 граней, юбки через 0,22 м, без фланцев
+    lite(x, y0, y1, z, r = 0.09, mat = M.porcelain) { return k.insulator(x, y0, y1, z, r, mat, 8, 0.22, false); },
+    // три полюса по местной оси x: gap — расстояние между фазами; f(x, j) кладёт полюс j в точку x
+    tri(gap, f) { for (const j of [-1, 0, 1]) f(j * gap, j + 1); },
     // пластинчатый радиатор: n пластин вдоль оси z на длине l, каждая — толщиной t, глубиной dep, высотой h; коллекторы сверху и снизу
     fins(x, y, z, n, l, dep, h, mat, t = 0.035) {
       const g = new T.Group();
@@ -266,6 +273,9 @@ function makeKit(T, M, geoCache, nodeMatFor) {
     return Object.assign(Object.create(k), {
       node: i => nodeMatFor(tm[i] != null ? tm[i] : tm[0]),
       port: i => d.ports[i] || [0, H3, 0],
+      // три фазы: расстояние между фазами у вывода i (по классу напряжения, phases.js) и полюса вывода — поперёк символа (местная ось x)
+      gap: i => gapFor(tm[i] != null ? tm[i] : tm[0]),
+      poles: i => { const p = d.ports[i] || [0, H3, 0], g = gapFor(tm[i] != null ? tm[i] : tm[0]); return [-1, 0, 1].map(j => [p[0] + j * g, p[1], p[2]]); },
       // сигнальная лампа положения (все лампы схемы рисуются одним вызовом)
       lamp: (x, y, z, s = 0.12) => { d.lamps.push({ p: [x, y, z], s }); },
     });

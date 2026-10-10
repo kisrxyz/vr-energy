@@ -12,6 +12,7 @@ import { whyOf } from '../core/explain.js';
 import { Walk, REACH as WALK_REACH } from './walk.js';
 import { Teleport } from './teleport.js';
 import { findKRU, buildZRU } from './zru.js';
+import { tracePhases, phaseGap } from './phases.js';
 import { footprints, makeYardWorld } from './world.js';
 import { Batch } from './batch.js';
 import { Probe } from './probe.js';
@@ -114,7 +115,7 @@ class View3D {
     this.ray = new T.Raycaster();
     this.clock = new T.Clock();
     this.tmp = { m: new T.Matrix4(), v: new T.Vector3(), v2: new T.Vector3(), dir: new T.Vector3(), up: new T.Vector3(0, 1, 0) };
-    this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 12, 8) };
+    this.geo = { sphere: new T.SphereGeometry(1, 18, 12), ring: new T.TorusGeometry(1.1, 0.06, 8, 48), lamp: new T.SphereGeometry(1, 8, 5) };
     this.makeMats();
     // указатель напряжения на площадке: в руке и касание по месту (probe.js)
     this.probe = new Probe(this);
@@ -141,7 +142,7 @@ class View3D {
   makeMats() {
     // материалы и процедурные текстуры — по палитре models/kit.js
     this.M = makeMaterials(THREE);
-    this.kit = makeKit(THREE, this.M, this.geoCache, n => this.nodeMat(n));
+    this.kit = makeKit(THREE, this.M, this.geoCache, n => this.nodeMat(n), n => (this.ph ? this.ph.gapOf(n) : phaseGap(null)));
     this.kit.sphere = this.geo.sphere;
     this.kit.winTex = () => this.winTex();
   }
@@ -158,7 +159,7 @@ class View3D {
   tube(a, b, r, mat) {
     const T = THREE, va = new T.Vector3(a[0], a[1], a[2]), vb = new T.Vector3(b[0], b[1], b[2]);
     const dir = vb.clone().sub(va), len = dir.length();
-    const m = new T.Mesh(new T.CylinderGeometry(r, r, Math.max(len, 0.001), 10), mat);
+    const m = new T.Mesh(new T.CylinderGeometry(r, r, Math.max(len, 0.001), 8), mat);
     m.position.copy(va).addScaledVector(dir, 0.5);
     if (len > 0) m.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), dir.normalize());
     return m;
@@ -289,8 +290,12 @@ class View3D {
     this.buildRoads(hx, hz);
     // ЗРУ: ячейки КРУ (тележка, ТТ, ЗН, ТН, предохранитель) — в здании (zru.js); на улице их не строим
     const kru = findKRU(s, topo);
+    // три фазы (phases.js): провода, отпайки и подъёмы к шинам — до моделей, модели берут из неё расстояние между фазами
+    this.ph = tracePhases(s, topo, { W: p => { const v = W(p); return [v.x, v.z]; },
+      skipEl: id => !!(kru && kru.inside.has(id)), skipWire: w => !!(kru && kru.nodes.has(topo.wireNode.get(w.id))) });
     this.zru = kru ? buildZRU(this, s, topo, kru, W) : null;
-    // Провода: видимые трубы (сливаются по узлам) и невидимые коробки для луча — на провод накладывают ПЗ и ставят указатель
+    // Провода: три фазы — видимые трубы (сливаются по узлам) и одна невидимая коробка на отрезок провода (шире на три фазы)
+    // для луча — на провод накладывают ПЗ и ставят указатель
     const pmat = new T.MeshBasicMaterial({ color: PAL.ui.proxy });
     for (const w of s.wires) {
       // провод внутри ЗРУ (шины, узлы ячеек) не висит над площадкой: его коробка — у нижних контактов ячейки или у шин
@@ -300,18 +305,21 @@ class View3D {
         if (p) { const px = new T.Mesh(this.boxGeo(0.5, 0.25, 0.3), pmat); px.position.copy(p); px.visible = false; px.userData.wire = w.id; px.userData.proxy = true; this.root.add(px); this.pickables.push(px); }
         continue;
       }
-      const pts = wireRoute(w).map(p => { const v = W(p); v.y = H3; return v; });
-      const mat = this.nodeMat(topo.wireNode.get(w.id));
-      for (let i = 0; i < pts.length - 1; i++) {
-        if (pts[i].distanceTo(pts[i + 1]) < 1e-6) continue;
-        const m = this.tube(pts[i].toArray(), pts[i + 1].toArray(), 0.045, mat);
-        this.root.add(m);
-        const a = pts[i], b = pts[i + 1], px = new T.Mesh(this.boxGeo(Math.abs(b.x - a.x) + 0.35, 0.35, Math.abs(b.z - a.z) + 0.35), pmat);
-        px.position.set((a.x + b.x) / 2, H3, (a.z + b.z) / 2);
+      const rec = this.ph.wires.get(w.id);
+      if (!rec) continue;
+      const mat = this.nodeMat(wn);
+      for (const ph of rec.phases) for (let i = 0; i < ph.length - 1; i++) this.root.add(this.tube(ph[i], ph[i + 1], 0.04, mat));
+      const r = rec.route, wide = 2 * rec.gap + 0.35;
+      for (let i = 0; i < r.length - 1; i++) {
+        const a = r[i], b = r[i + 1], along = Math.abs(b[0] - a[0]) > Math.abs(b[1] - a[1]);
+        const px = new T.Mesh(this.boxGeo(along ? Math.abs(b[0] - a[0]) + 0.35 : wide, 0.35, along ? wide : Math.abs(b[1] - a[1]) + 0.35), pmat);
+        px.position.set((a[0] + b[0]) / 2, rec.level, (a[1] + b[1]) / 2);
         px.visible = false; px.userData.wire = w.id; px.userData.proxy = true;
         this.root.add(px); this.pickables.push(px);
       }
     }
+    // аппарат прямо на шине (без провода): подъёмы полюсов к шинам
+    for (const l of this.ph.links) for (let i = 0; i < l.pts.length - 1; i++) this.root.add(this.tube(l.pts[i], l.pts[i + 1], 0.04, this.nodeMat(l.node)));
     for (const el of s.els) {
       if (this.zru && this.zru.inside.has(el.id)) continue;
       const g = this.model(el, topo);
@@ -347,7 +355,7 @@ class View3D {
     const T = THREE, per = [], step = 3, gate = YARD_GATE;
     for (let x = -hx; x <= hx + 0.01; x += step) { per.push([x, -hz]); if (Math.abs(x) > gate) per.push([x, hz]); }
     for (let z = -hz + step; z < hz - 0.01; z += step) per.push([-hx, z], [hx, z]);
-    const im = new T.InstancedMesh(this.cylGeo(0.05, 2.2), this.M.post, per.length);
+    const im = new T.InstancedMesh(new T.CylinderGeometry(0.05, 0.05, 2.2, 6), this.M.post, per.length);
     const m4 = new T.Matrix4();
     per.forEach((p, i) => { m4.makeTranslation(p[0], 1.1, p[1]); im.setMatrixAt(i, m4); });
     this.root.add(im);
@@ -675,11 +683,32 @@ class View3D {
     const mod = MODELS[el.t];
     if (!mod) return null;
     const d = { el, group: new THREE.Group(), kind: el.t, trip: false, mod };
+    if (el.t === 'bus') d.taps = this.busTaps(el);
     const k = this.kit.forEl(el, topo, d);
     const r = mod.build(k, el, d) || {};
     d.labelPos = r.label || [0, H3 + 0.8, 0];
     this.dev.set(el.id, d);
     return d.group;
+  }
+  // Где к шине подходят фазы присоединений (местная ось x шины): там не ставят опоры
+  busTaps(el) {
+    const out = [], b = this.ph && this.ph.buses.get(el.id);
+    if (!b) return out;
+    const a = b.lines[1][0], along = p => (p[0] - a[0]) * b.e[0] + (p[2] - a[2]) * b.e[1];
+    for (const rec of this.ph.wires.values()) for (const ph of rec.phases) for (const p of [ph[0], ph[ph.length - 1]]) {
+      if (Math.abs(p[1] - b.y) > 1e-6) continue;
+      const t = along(p), off = (p[0] - a[0]) * b.w[0] + (p[2] - a[2]) * b.w[1];
+      if (t > -0.5 && t < Math.hypot(b.lines[1][1][0] - a[0], b.lines[1][1][2] - a[2]) + 0.5 && Math.abs(off) <= b.gap + 1e-6) out.push(t);
+    }
+    for (const l of this.ph.links) { const p = l.pts[l.pts.length - 1]; out.push(along(p)); }
+    return out;
+  }
+  // Высота и шаг фаз провода или шины в точке (ПЗ, указатель): у шины — над проводами, у отпайки — выше проводов
+  phaseAt(at) {
+    const b = this.ph && this.ph.buses.get(at);
+    if (b) return { y: b.y, gap: b.gap };
+    const w = this.ph && this.ph.wires.get(at);
+    return w ? { y: w.level, gap: w.gap } : { y: H3, gap: 0.35 };
   }
   // ПЗ, наложенные в тренажёре: модель ставится в точку провода и убирается, когда ПЗ снято
   // Модель пересоздаётся и тогда, когда ПЗ перенесли в другую точку, пока 3D был скрыт.
@@ -695,6 +724,8 @@ class View3D {
       const pl = this.app.view.pzPlace(id);
       if (!pl) continue;
       const el = tr.elOf(id), d = { el, group: new THREE.Group(), kind: 'pz', trip: false, mod: MODELS.pz };
+      // на площадке — три зажима на фазах провода или шины в этой точке (внутри ЗРУ — у нижних контактов ячейки, как было)
+      d.at = this.phaseAt(id.slice(3));
       const k = this.kit.forEl(el, tr.topo, d);
       MODELS.pz.build(k, el, d);
       this.mergeInto(d.show);
@@ -852,7 +883,7 @@ class View3D {
     }
     const p = !dv && h ? h.clone() : this.posOf(d.target);
     if (!p) return out;
-    if (!dv && !p.indoor) p.y = H3;
+    if (!dv && !p.indoor) p.y = this.phaseAt(isPzId(d.target) ? d.target.slice(3) : d.target).y;
     out.push({ p, live: d.live });
     return out;
   }

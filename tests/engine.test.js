@@ -17,6 +17,8 @@ import * as Plan from '../src/core/plan.js';
 import * as Demo from '../src/core/demo.js';
 import * as Exam from '../src/core/exam.js';
 import * as Models3d from './models3d.js';
+import { tracePhases, phaseGap } from '../src/view3d/phases.js';
+import { checkPhases } from './phases-check.js';
 import { readFileSync } from 'node:fs';
 const E = { ...lib, ...samples, ...engine };
 let fails = 0;
@@ -1512,6 +1514,60 @@ function doMeasure(tr, pm, m) {
     for (let i = 0; i < 6 && !k.tr.run.done; i++) { const h = k.tr.nextStep(); if (!h) break; if (h.op === 'pos') k.tr.operate(h.id, { pos: h.pos }); else k.tr.operate(h.id); }
     ok(k.tr.run.done && k.tr.run.grade.score === 100 && k.tr.state.loads.size === 7, 'drill by hints — 100, both sections powered');
   }
+}
+/* ===== Три фазы в 3D (src/view3d/phases.js): концы — на полюсах и шинах, разные фазы не пересекаются ===== */
+function phaseRun(s) {
+  const topo = engine.buildTopo(s), kru = findKRU(s, topo), W = p => [p[0] * 1.25, p[1] * 1.25];
+  const T = tracePhases(s, topo, { W, skipEl: id => !!(kru && kru.inside.has(id)), skipWire: w => !!(kru && kru.nodes.has(topo.wireNode.get(w.id))) });
+  return { T, r: checkPhases(s, topo, T, W, kru) };
+}
+{
+  console.log('Three phases in 3D: every ready scheme — phase ends on poles, busbars or the next wire, phases never cross');
+  ok(phaseGap(0.4) < phaseGap(10) && phaseGap(10) < phaseGap(35) && phaseGap(35) < phaseGap(110) && phaseGap(110) <= phaseGap(220), 'phase spacing grows with the voltage class');
+  for (const smp of E.SAMPLES) {
+    if (smp.poly) continue;
+    const { T, r } = phaseRun(smp.make());
+    ok(T.wires.size > 0 && r.bad.length === 0, `${smp.key}: ${T.wires.size} wires, ${r.segs} segments, ${r.nets} phase nets, clearance ≥ 0.1 m` + (r.bad.length ? ' :: ' + r.bad.slice(0, 4).join('; ') : ''));
+    ok([...T.wires.values()].every(w => w.phases.length === 3 && w.level >= 3.4 - 1e-9), `${smp.key}: three phases per wire, never below the terminals`);
+    ok([...T.buses.values()].every(b => b.y > 3.4 && b.lines.length === 3), `${smp.key}: busbars — three, above the wires`);
+  }
+}
+{
+  console.log('Three phases in 3D: rotated devices, L-shaped wires, a cross junction, a bus fed from both sides and at its end, a device right on a bus');
+  // источник → ЛР (r=1, по горизонтали) → провод с поворотом → выключатель (r=0) → шина; с шины — присоединения вверх и вниз, у конца шины — СР
+  const { tr, id, s } = mini(s => {
+    E.makeEl(s, 'source', 0, -8, { name: 'С', p: { kv: 35 } });               // (0,-7)
+    E.makeWire(s, [0, -7], [0, -5]);
+    E.makeEl(s, 'disconnector', 1, -5, { name: 'ЛР', r: 1 });                 // (2,-5)-(0,-5)
+    E.makeWire(s, [2, -5], [6, -2], true);                                      // поворот
+    E.makeEl(s, 'breaker', 6, -1, { name: 'В' });                              // (6,-2)-(6,0)
+    E.makeWire(s, [6, 0], [6, 2]);
+    E.makeEl(s, 'bus', 0, 2, { name: 'Ш', p: { len: 14 } });                   // x 0..14
+    for (const [x, dir, n] of [[3, 1, 'Н1'], [9, 1, 'Н2'], [11, -1, 'Н3']]) {
+      E.makeWire(s, [x, 2], [x, 2 + dir]);
+      E.makeEl(s, 'disconnector', x, 2 + dir * 2, { name: 'ШР' + n, r: dir > 0 ? 0 : 2 });
+      E.makeWire(s, [x, 2 + dir * 3], [x, 2 + dir * 5]);
+      E.makeEl(s, 'load', x, 2 + dir * 6, { name: n, r: dir > 0 ? 0 : 2 });
+    }
+    // у конца шины — СР вдоль оси шины, дальше — крестовина: четыре провода к четырём ЗН
+    E.makeWire(s, [14, 2], [15, 2]);
+    E.makeEl(s, 'disconnector', 16, 2, { name: 'СР', r: 1 });                 // (17,2)-(15,2)
+    E.makeWire(s, [17, 2], [20, 2]);
+    for (const [dx, dy, r, n] of [[3, 0, 3, 'ЗН-в'], [0, -3, 0, 'ЗН-с'], [0, 3, 2, 'ЗН-ю']]) {
+      const p = [20 + dx, 2 + dy];
+      E.makeWire(s, [20, 2], p);
+      const q = E.rot([0, -1], r);
+      E.makeEl(s, 'earth', p[0] - q[0], p[1] - q[1], { name: n, r });
+    }
+    // ТН прямо на шине, без провода (вывод — в точке шины)
+    E.makeEl(s, 'vt', 6, 3, { name: 'ТН' });                                    // (6,2)
+  });
+  const { T, r } = phaseRun(s);
+  ok(r.bad.length === 0, `synthetic: ${T.wires.size} wires, ${r.segs} segments — no crossings, no loose ends` + (r.bad.length ? ' :: ' + r.bad.slice(0, 5).join('; ') : ''));
+  ok(T.links.length === 3, 'device right on the bus: three risers to the busbars');
+  const lr = [...T.wires.values()].find(w => w.route.length === 3);
+  ok(lr && lr.phases.every(p => p.length >= 3), 'L-shaped wire: every phase turns at its own corner');
+  ok(phaseGap(tr.state.V.get(tr.topo.term.get(id('С'))[0])) === T.gapOf(tr.topo.term.get(id('С'))[0]), 'gap by the node voltage in the normal scheme');
 }
 {
   console.log('3D models: each builds in Node; moving parts, ports, labels, lamps and size as in the base (tests/models3d-base.json); triangles and materials within limits');

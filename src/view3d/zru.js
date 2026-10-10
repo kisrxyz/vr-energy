@@ -225,8 +225,9 @@ function buildZRU(v, s, topo, kru, W) {
       const za = (p.rowB ? hc : -hc) - (p.rowB ? -1 : 1) * CD / 2, zb = (q.rowB ? hc : -hc) - (q.rowB ? -1 : 1) * CD / 2;
       g.add(k.box(0.36, 0.3, Math.abs(zb - za) + 0.36, M.kru, (p.x + q.x) / 2, yb, (za + zb) / 2));
       for (const o of ties) g.add(k.box(0.36, yb - CH, 0.36, M.kru, o.x, (CH + yb) / 2, (o.rowB ? hc : -hc) + (o.rowB ? 1 : -1) * CD / 2));
-      g.add(k.box(0.06, 0.06, Math.abs(zb - za), mat, (p.x + q.x) / 2, yb - 0.17, (za + zb) / 2));
-    } else g.add(k.box(Math.abs(q.x - p.x) + 0.1, 0.08, 0.012, mat, (p.x + q.x) / 2, busY + 0.25, -hc - CD / 2));
+      // три фазы под коробом моста
+      for (const dx of [-0.1, 0, 0.1]) g.add(k.box(0.03, 0.05, Math.abs(zb - za), mat, (p.x + q.x) / 2 + dx, yb - 0.17, (za + zb) / 2));
+    } else for (const dzb of [-0.22, 0, 0.22]) g.add(k.box(Math.abs(q.x - p.x) + 0.1, 0.08, 0.012, mat, (p.x + q.x) / 2, busY + 0.25, -hc - CD / 2 + dzb));
   }
   // ---------- здание: пол, кабельный канал, стены с дверями, окна, потолок со светильниками ----------
   const BW = xb - xa, BD = zB - zA, t = Z.t, h = Z.h, cx = (xa + xb) / 2, cz = (zA + zB) / 2;

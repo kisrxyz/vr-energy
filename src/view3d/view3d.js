@@ -1238,7 +1238,8 @@ class View3D {
     if (!this.active) return;
     const p = this.posOf(d.id);
     if (!p) return;
-    if (!this.room && !p.indoor) p.y = H3;
+    // на проводе и шине — на высоте их фаз (отпайки выше проводов, шины — ещё выше)
+    if (!this.room && !p.indoor) p.y = this.dev.has(d.id) ? H3 : this.phaseAt(isPzId(d.id) ? d.id.slice(3) : d.id).y;
     this.arc(p);
   }
   arc(p) {

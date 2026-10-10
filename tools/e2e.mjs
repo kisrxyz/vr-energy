@@ -1273,10 +1273,12 @@ SUITES.ctxmenu = { perScheme: false, fn: async () => {
     if (!m.items.some(i => i.t === 'Отключить') || !m.items.some(i => i.t === 'Проверить отсутствие напряжения')) fail('в экзамене нет операции или указателя: ' + JSON.stringify(m.items));
     const s = await openMenu(await elId('ВЛ-110 «Восток»'));
     if (s.items.some(i => /энергосистем/.test(i.t))) fail('в задании можно снять напряжение энергосистемы');
+    if (await page.eval('TS.app.tr.opt.explain')) fail('в экзамене включены пояснения «Допустимо: … ток холостого хода»');
     await page.key('Escape');
     await clickBtn('[data-act="exam-abort"]', null, '«Прервать экзамен»');
     await clickBtn('#modal footer .btn', 'Прервать');
     await page.waitFor('!TS.app.exam.active()', 3000, 'экзамен прерван');
+    if (!(await page.eval('TS.app.tr.opt.explain'))) fail('после экзамена пояснения не вернулись');
     await closeModal();
     return 'операции и указатель есть, «Подробнее» и источника нет';
   });

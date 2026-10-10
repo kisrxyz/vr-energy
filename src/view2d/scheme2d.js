@@ -412,10 +412,29 @@ class Scheme2D {
     for (const w of this.app.scheme.wires) for (const end of ['a', 'b']) if (keys.has(ptKey(w[end]))) out.push({ w, end, x: w[end][0], y: w[end][1] });
     return out;
   }
+  // Что под точкой окна: элемент или провод (точки подключения и ручки лежат поверх — смотрим под ними) — для меню ПКМ
+  ctxAt(cx, cy) {
+    const under = (document.elementsFromPoint ? document.elementsFromPoint(cx, cy) : []).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean);
+    const c = { cx, cy, p: this.toWorld(cx, cy) };
+    if (under && under.dataset.el) c.el = under.dataset.el;
+    else if (under && under.dataset.w) c.w = under.dataset.w;
+    return c;
+  }
+  // Долгое нажатие пальцем (~0,5 с без сдвига) — меню, как правая кнопка мыши: начатое нажатием (перенос, рамка) отменяется
+  longPress() {
+    this.lp = null;
+    if (this.pointers.size !== 1 || !this.down || this.down.moved) return;
+    const c = this.ctxAt(this.down.x, this.down.y);
+    this.drag = null;
+    this.overlayExtra();
+    this.down.long = true;
+    this.app.openCtx(c);
+  }
   onDown(e) {
     this.app.userGesture();
     try { this.svg.setPointerCapture(e.pointerId); } catch (_) { /* старые браузеры */ }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    clearTimeout(this.lp); this.lp = null;
     if (this.pointers.size === 2) {
       const [p1, p2] = [...this.pointers.values()];
       const r = this.svg.getBoundingClientRect();
@@ -432,7 +451,10 @@ class Scheme2D {
     const pt = t.getAttribute('data-pt'), we = t.getAttribute('data-we'), bh = t.getAttribute('data-bh');
     this.down = { x: e.clientX, y: e.clientY, moved: false };
     const pan = extra => Object.assign({ kind: 'pan', x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty }, extra || {});
-    if (e.button === 1 || e.button === 2) { this.drag = pan(); return; }
+    // правая кнопка: перетаскивание — сдвинуть схему, щелчок без сдвига — меню
+    if (e.button === 1 || e.button === 2) { this.drag = pan({ ctx: e.button === 2 }); return; }
+    // ручки концов провода и длины шины меняют схему сразу — у них долгого нажатия нет
+    if (e.pointerType === 'touch' && !this.placing && !we && !bh) this.lp = setTimeout(() => this.longPress(), 500);
     if (!edit) {
       const at = { cx: e.clientX, cy: e.clientY, p };
       this.drag = pan({ click: elG ? Object.assign({ el: elG.dataset.el }, at) : wG ? Object.assign({ w: wG.dataset.w }, at) : null });
@@ -441,17 +463,20 @@ class Scheme2D {
     if (this.placing) { app.placeAt(this.placing, g, e.shiftKey); this.drag = null; return; }
     // Shift или Ctrl (или кнопка «Выделение»): по пустому месту — рамка, по элементу или проводу — добавить или убрать.
     // Точки подключения и ручки лежат поверх элементов — смотрим, что под ними
-    if (e.shiftKey || e.ctrlKey || e.metaKey || this.boxMode) {
-      const under = (document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [t]).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean);
-      if (under && under.dataset.el) { this.toggle('el', under.dataset.el); this.drag = null; return; }
-      if (under && under.dataset.w) { this.toggle('wire', under.dataset.w); this.drag = null; return; }
-      this.drag = { kind: 'rect', a: p, b: p };
+    const mod = e.shiftKey || e.ctrlKey || e.metaKey, box = mod || this.boxMode;
+    const under = box ? (document.elementsFromPoint ? document.elementsFromPoint(e.clientX, e.clientY) : [t]).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean) : null;
+    const hitEl = box ? under && under.dataset.el : elG && elG.dataset.el;
+    const hitW = box ? under && !hitEl && under.dataset.w : !elG && wG && wG.dataset.w;
+    // по элементу или проводу из выделенной группы — переносим всю группу, и в режиме «Выделение» (Shift/Ctrl — добавить или убрать)
+    const inGroup = this.sel && this.sel.type === 'group' && ((hitEl && this.sel.els.has(hitEl)) || (hitW && this.sel.wires.has(hitW)));
+    if (inGroup && !mod && (this.boxMode || (!pt && !we))) {
+      this.drag = { kind: 'gmove', grip: grip(app.scheme, this.selSets()), p0: p, dx: 0, dy: 0, started: false, box: this.boxMode, one: hitEl ? { type: 'el', id: hitEl } : { type: 'wire', id: hitW } };
       return;
     }
-    // по элементу или проводу из выделенной группы — переносим всю группу
-    const inGroup = this.sel && this.sel.type === 'group' && ((elG && this.sel.els.has(elG.dataset.el)) || (!elG && wG && this.sel.wires.has(wG.dataset.w)));
-    if (inGroup && !pt && !we) {
-      this.drag = { kind: 'gmove', grip: grip(app.scheme, this.selSets()), p0: p, dx: 0, dy: 0, started: false, one: elG ? { type: 'el', id: elG.dataset.el } : { type: 'wire', id: wG.dataset.w } };
+    if (box) {
+      if (hitEl) { this.toggle('el', hitEl); this.drag = null; return; }
+      if (hitW) { this.toggle('wire', hitW); this.drag = null; return; }
+      this.drag = { kind: 'rect', a: p, b: p };
       return;
     }
     if (we) { const [wid, end] = we.split(':'); app.history(); this.drag = { kind: 'wend', wid, end }; return; }
@@ -482,7 +507,7 @@ class Scheme2D {
     }
     const p = this.toWorld(e.clientX, e.clientY), g = [Math.round(p[0]), Math.round(p[1])];
     this.cursorW = p;
-    if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 5) this.down.moved = true;
+    if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 5) { this.down.moved = true; clearTimeout(this.lp); this.lp = null; }
     if (!d) {
       if (this.placing) { if (!this.ghostAt || this.ghostAt[0] !== g[0] || this.ghostAt[1] !== g[1]) { this.ghostAt = g; this.overlayExtra(); } }
       return;
@@ -525,12 +550,14 @@ class Scheme2D {
   }
   onUp(e, cancel) {
     this.pointers.delete(e.pointerId);
+    clearTimeout(this.lp); this.lp = null;
     const d = this.drag;
     if (d && d.kind === 'pinch') { if (this.pointers.size === 0) this.drag = null; return; }
     this.drag = null;
     const moved = this.down && this.down.moved;
     this.down = null;
     if (!d) return;
+    if (d.kind === 'pan' && d.ctx) { if (!moved && !cancel) this.app.openCtx(this.ctxAt(e.clientX, e.clientY)); return; }
     if (d.kind === 'wire') {
       if (!cancel && (d.b[0] !== d.a[0] || d.b[1] !== d.a[1])) this.app.addWire(d.a, d.b, d.vf);
       this.overlayExtra();
@@ -540,13 +567,18 @@ class Scheme2D {
     if (d.kind === 'rect') {
       this.overlayExtra();
       // рамка — новое выделение: элементы целиком внутри, провода — обоими концами
-      if (!cancel && moved) { const r = inRect(this.app.scheme, d.a[0], d.a[1], d.b[0], d.b[1]); this.setSel(r.els, r.wires); }
+      // кнопка «Выделение» отжимается сама, как только рамка что-то выделила: дальше группу сразу можно тащить
+      if (!cancel && moved) {
+        const r = inRect(this.app.scheme, d.a[0], d.a[1], d.b[0], d.b[1]);
+        this.setSel(r.els, r.wires);
+        if (this.boxMode && r.els.length + r.wires.length) this.setBoxMode(false);
+      }
       return;
     }
     if (d.kind === 'gmove') {
       if (d.started) { this.app.commit(); return; }
-      // щелчок без переноса по одному из группы — выделить только его
-      if (!cancel) this.select(d.one);
+      // щелчок без переноса по одному из группы — выделить только его; в режиме «Выделение» — убрать из группы
+      if (!cancel) { if (d.box) this.toggle(d.one.type, d.one.id); else this.select(d.one); }
       return;
     }
     if (d.kind === 'wend' || d.kind === 'bus') { this.app.commit(); return; }

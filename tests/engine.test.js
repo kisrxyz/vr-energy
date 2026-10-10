@@ -155,6 +155,135 @@ function setup(key) {
   ok(r.viol && r.viol.kind === 'accident', 'earth on energized LV: ' + (r.viol && r.viol.text));
   ok(r.tripped.includes(id('В-110 Т1')), 'В-110 Т1 trips: ' + r.tripped.map(x => tr.nm(x)));
 }
+/* ===== Правило 4 при параллельном питании: ток нагрузки идёт через аппарат, хотя потребители питание не теряют ===== */
+{
+  console.log('Rule 4, parallel feed: СВ-10 on, В-10 Т1 on — bus/transformer/line disconnectors carry load current');
+  const names = ['ШР-10 Т1', 'ТР-10 Т1', 'ЛР-110 Т1', 'СР-1', 'СР-2', 'ШР-10 Т2'];
+  for (const n of names) {
+    const { s, tr, id } = setup('ps110');
+    tr.operate(id('СВ-10'));
+    ok(tr.state.loads.size === 4, 'parallel: all loads powered');
+    let r = tr.operate(id(n));
+    ok(r.blocked && tr.sim.st[id(n)].on === true, `${n}: blocked with interlocks, still closed :: ${r.text}`);
+    ok(r.blocked && /под нагрузкой/.test(r.text) && /параллельно/.test(r.text), `${n}: block text says parallel :: ${r.text}`);
+    tr.opt.interlocks = false;
+    r = tr.operate(id(n));
+    ok(r.viol && r.viol.kind === 'accident' && /разорван ток нагрузки/.test(r.text) && /параллельно/.test(r.text), `${n}: accident without interlocks :: ${r.text}`);
+    ok(whyOf(r.viol) === WHY_OP.loadParallel, `${n}: «почему опасно» — про параллельный путь`);
+    ok(r.tripped.length > 0, `${n}: arc trips protection: ${r.tripped.map(x => tr.nm(x))}`);
+  }
+  const { s, tr, id } = setup('ps110');
+  tr.operate(id('СВ-10'));
+  let r = tr.operate(id('ШР-10 Т1'));
+  ok(r.text.includes('Сначала отключите В-10 Т1'), 'ШР-10 Т1: block names В-10 Т1 :: ' + r.text);
+  ok(r.text.includes('1СШ') && r.text.includes('Т1') && r.text.includes('СВ-10'), 'ШР-10 Т1: block names 1СШ, Т1 and СВ-10 :: ' + r.text);
+  tr.opt.interlocks = false;
+  r = tr.operate(id('ШР-10 Т1'));
+  ok(r.text === 'Авария: разъединителем ШР-10 Т1 разорван ток нагрузки: 1СШ питается и через Т1 (параллельно — через СВ-10). Электрическая дуга.', 'accident text :: ' + r.text);
+  ok(r.tripped.includes(id('В-10 Т1')) && r.tripped.includes(id('СВ-10')), 'arc on bus disconnector: В-10 Т1 and СВ-10 trip: ' + r.tripped.map(x => tr.nm(x)));
+  const q = setup('ps110');
+  q.tr.operate(q.id('СВ-10'));
+  r = q.tr.operate(q.id('СР-1'));
+  ok(r.blocked && r.text.includes('Сначала отключите СВ-10'), 'СР-1: block names СВ-10 :: ' + r.text);
+  r = q.tr.operate(q.id('ЛР-110 Т1'));
+  ok(r.blocked && r.text.includes('Сначала отключите В-110 Т1'), 'ЛР-110 Т1: block names В-110 Т1 :: ' + r.text);
+}
+{
+  console.log('Rule 4, parallel feed: after В-10 Т1 is off the same disconnectors are allowed');
+  const { s, tr, id } = setup('ps110');
+  tr.operate(id('СВ-10'));
+  tr.operate(id('В-10 Т1'));
+  for (const n of ['ШР-10 Т1', 'ТР-10 Т1']) { const r = tr.operate(id(n)); ok(r.ok && !r.viol, `${n} off after В-10 Т1 :: ${r.text || ''}`); }
+  const r = tr.operate(id('ЛР-110 Т1'));
+  ok(r.ok && !r.viol, 'ЛР-110 Т1 off: unloaded Т1 (no-load current) is allowed :: ' + (r.text || ''));
+  ok(tr.state.loads.size === 4, 'nobody lost power');
+  // включить обратно в том же порядке, без нагрузки: можно
+  for (const n of ['ЛР-110 Т1', 'ТР-10 Т1']) { const x = tr.operate(id(n)); ok(x.ok && !x.viol, `${n} on without load :: ${x.text || ''}`); }
+}
+{
+  console.log('Rule 4, unloaded transformer: disconnector may switch its no-load current; the log says why');
+  const { s, tr, id } = setup('ps110');
+  tr.operate(id('СВ-10'));
+  tr.operate(id('В-10 Т1'));
+  let r = tr.operate(id('ТР-110 Т1'));
+  ok(r.ok && !r.viol, 'ТР-110 Т1 off with В-110 Т1 on: no-load Т1 — allowed');
+  ok(tr.log.some(e => e.text === 'Допустимо: разъединителем ТР-110 Т1 отключён ток холостого хода Т1 (трансформатор без нагрузки).'), 'log explains no-load current :: ' + tr.log.slice(0, 3).map(e => e.text).join(' | '));
+  ok(!tr.run, 'not a task: no score involved');
+  r = tr.operate(id('ТР-110 Т1'));
+  ok(r.ok && !r.viol && tr.log[0].text === 'Допустимо: разъединителем ТР-110 Т1 включён ток холостого хода Т1 (трансформатор без нагрузки).', 'closing explained too :: ' + tr.log[0].text);
+  const n = tr.log.length;
+  tr.operate(id('ШР-10 Т1'));
+  ok(!tr.log.slice(0, tr.log.length - n).some(e => /холостого хода/.test(e.text)), 'dead-end disconnector (ШР-10 Т1): no no-load note');
+  tr.opt.explain = false;
+  tr.operate(id('ТР-110 Т1'));
+  ok(!/холостого хода/.test(tr.log[0].text), 'explain off (exam): no note');
+  // в задании — та же запись, баллы и ошибки не меняются
+  const t = setup('ps110');
+  t.tr.startTask(Object.assign({}, t.s.tasks[1], { steps: [['on', 'СВ-10'], ['off', 'В-10 Т1'], ['off', 'ТР-10 Т1'], ['off', 'ШР-10 Т1'], ['off', 'ТР-110 Т1']].map(([op, n]) => ({ op, id: t.id(n) })) }));
+  for (const st of t.tr.run.task.steps) t.tr.operate(st.id);
+  ok(!t.tr.run.errors.length && t.tr.log.some(e => /холостого хода Т1/.test(e.text)), 'in a task: note in the log, no errors');
+}
+{
+  console.log('Rule 4, shunt: disconnector bypassed by closed switches only (transfer between bus systems with ШСВ on) — allowed');
+  // две системы шин, ШСВ; присоединение с двумя шинными разъединителями
+  const { tr, id } = mini(s => {
+    E.makeEl(s, 'source', 0, -6, { name: 'Ввод', p: { kv: 10 } });
+    chain(s, 0, -5, [['breaker', 'В-ввод']]);
+    E.makeWire(s, [0, -2], [0, 0]);
+    E.makeEl(s, 'bus', 0, 0, { name: '1СШ', p: { len: 20 } });
+    E.makeEl(s, 'bus', 0, 10, { name: '2СШ', p: { len: 20 } });
+    chain(s, 18, 0, [['disconnector', 'ШСР-1'], ['breaker', 'ШСВ'], ['disconnector', 'ШСР-2']]);
+    E.makeWire(s, [18, 9], [18, 10]);
+    // присоединение: ШР1 от 1СШ, ШР2 от 2СШ, сходятся в точке (8, 6), дальше выключатель и нагрузка
+    E.makeEl(s, 'disconnector', 6, 3, { name: 'ШР1' }); E.makeWire(s, [6, 0], [6, 2]); E.makeWire(s, [6, 4], [8, 6]);
+    E.makeEl(s, 'disconnector', 10, 8, { name: 'ШР2' }); E.makeWire(s, [10, 10], [10, 9]); E.makeWire(s, [10, 7], [8, 6]);
+    E.makeEl(s, 'breaker', 8, 13, { name: 'В-1' }); E.makeWire(s, [8, 6], [8, 12]);
+    E.makeEl(s, 'load', 8, 16, { name: 'Н1' }); E.makeWire(s, [8, 14], [8, 15]);
+  });
+  ok(tr.state.loads.has(id('Н1')), 'load powered through ШР1 and ШР2 in parallel');
+  let r = tr.operate(id('ШР1'));
+  ok(r.ok && !r.viol, 'ШР1 off: shunted by ШР2 — 2СШ — ШСВ — allowed :: ' + (r.text || ''));
+  r = tr.operate(id('ШР1'));
+  ok(r.ok && !r.viol, 'ШР1 on again: shunted — allowed :: ' + (r.text || ''));
+  // без ШСВ шунта нет: ток нагрузки перераспределяется через ШР1/ШР2 — авария
+  tr.opt.interlocks = false;
+  r = tr.operate(id('ШСВ'));
+  ok(r.ok && !r.viol, 'ШСВ off (breaker) is fine');
+  r = tr.operate(id('ШР2'));
+  ok(r.ok && !r.viol, 'ШР2 off: 2СШ is fed only through ШР2 — no load there, allowed :: ' + (r.text || ''));
+}
+{
+  console.log('Rule 4, closing a parallel with a disconnector: both sides live, after closing it carries load current, no shunt — accident');
+  const { s, tr, id } = setup('ps110');
+  tr.operate(id('СВ-10'));
+  tr.operate(id('В-10 Т1'));
+  tr.operate(id('ШР-10 Т1'));
+  let r = tr.operate(id('В-10 Т1'));
+  ok(r.ok && !r.viol, 'В-10 Т1 on with ШР-10 Т1 open');
+  r = tr.operate(id('ШР-10 Т1'));
+  ok(r.blocked && /Отключите В-10 Т1, затем включайте/.test(r.text), 'closing ШР-10 Т1 into parallel blocked, names В-10 Т1 :: ' + r.text);
+  tr.opt.interlocks = false;
+  r = tr.operate(id('ШР-10 Т1'));
+  ok(r.viol && r.viol.kind === 'accident' && /параллел/.test(r.text), 'closing into parallel: accident :: ' + r.text);
+  ok(whyOf(r.viol) === WHY_OP.loadParallel, 'closing into parallel: why — parallel');
+  // правильный порядок: разъединители при отключённом выключателе, потом выключатель — без ошибок
+  const g = setup('ps110');
+  g.tr.operate(g.id('СВ-10')); g.tr.operate(g.id('В-10 Т1')); g.tr.operate(g.id('ШР-10 Т1'));
+  r = g.tr.operate(g.id('ШР-10 Т1'));
+  ok(r.ok && !r.viol, 'ШР-10 Т1 on with В-10 Т1 open: allowed');
+  r = g.tr.operate(g.id('В-10 Т1'));
+  ok(r.ok && !r.viol, 'then В-10 Т1 closes the parallel: breaker, allowed');
+}
+{
+  console.log('Rule 4 unchanged where nothing is in parallel: ТН, dead ends, one feed');
+  const { s, tr, id } = setup('ps35');
+  const vt = s.els.find(e => e.t === 'cartdisc' && /ТН/.test(e.name)) || s.els.find(e => e.t === 'disconnector' && /ТН/.test(e.name));
+  if (vt) { const r = tr.operate(vt.id, E.TYPES[vt.t].cart ? { pos: 'test' } : undefined); ok(r.ok && !r.viol, 'VT disconnector/trolley under voltage: allowed :: ' + vt.name + ' ' + (r.text || '')); }
+  const p = setup('ps110');
+  const r = p.tr.operate(p.id('ШР Л-1'));
+  ok(r.blocked && r.text === 'Блокировка: ШР Л-1 под нагрузкой. Сначала отключите В-10 Л-1.', 'single feed: old block text :: ' + r.text);
+}
+
 {
   console.log('Scheme 2 tasks');
   for (const k of [0, 1]) {

@@ -92,6 +92,8 @@ class Exam {
     if (app.mode === 'edit') app.setMode('train');
     app.setScheme(s, src.startsWith('my:') || SAMPLES.some(q => q.key === src) ? src : 'file');
     app.tr.opt.interlocks = x.interlocks; app.tr.opt.requireCheck = true;
+    // «Допустимо: … ток холостого хода» в журнале — оценка операции: в экзамене её нет
+    app.tr.opt.explain = false;
     // «Следующее мероприятие» полигона — подсказка: в экзамене её нет
     app.permit.guide = false;
     this.lock(true);

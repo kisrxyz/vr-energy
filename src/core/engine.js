@@ -12,6 +12,10 @@ import { TYPES, POS, POS_NAME, ptKey, clamp, portPoints, fmtKv, isSwitchable, wi
    4. Разъединителем отключён ток нагрузки (потребитель или БК потеряли питание) → авария.
    5. Разъединителем включена нагрузка → авария.
       Разъединителем можно отключать и включать ненагруженные шины, трансформаторы, ТН и линии.
+      Ток нагрузки через аппарат — и при параллельном питании, когда потребители питание не теряют: аппарат лежит на простом пути
+      от включённого источника к потребителю под током (при отключении — до операции, при включении — после). Исключение — шунт:
+      выводы аппарата соединены и без него только включёнными коммутационными аппаратами, ТТ, шинами и проводами (перевод
+      присоединения с шины на шину при включённом ШСВ). Включение — так же, если обе стороны под напряжением (параллель под нагрузкой).
    6. ЗН (и ПЗ) без проверки отсутствия напряжения указателем → нарушение порядка (если правило включено).
    7. В задании потребитель из списка «не обесточивать» потерял питание → ошибка «перерыв питания».
    С включёнными блокировками опасные операции 1–5 не выполняются, но считаются попыткой ошибки.
@@ -166,13 +170,49 @@ function compute(s, topo, sim, ov) {
   return { V, G: Gd, loads, cur, adj, src, srcNodes };
 }
 
+// Ток нагрузки через аппарат (правило 4 при параллельном питании): лежит ли ребро аппарата a—b на простом пути от включённого
+// источника к потребителю. Это два непересекающихся пути от выводов: один — к источнику, другой — к потребителю; ищем их потоком
+// величины 2 с пропускной способностью каждого узла 1 (граф схемы маленький). Возвращает узлы путей от выводов или null
+function feedPaths(adj, a, b, srcNodes, loadNodes, devId) {
+  const idx = new Map(), nodes = [];
+  const add = n => { if (!idx.has(n)) { idx.set(n, nodes.length); nodes.push(n); } return idx.get(n); };
+  for (const [n, es] of adj) { add(n); for (const e of es) add(e.to); }
+  [a, b, ...srcNodes, ...loadNodes].forEach(add);
+  // узел i — вход 2i и выход 2i+1; X — к выводам, SS и LL — сток источников и потребителей, Y — общий сток
+  const N = nodes.length, X = 2 * N, SS = X + 1, LL = X + 2, Y = X + 3;
+  const g = Array.from({ length: Y + 1 }, () => []);
+  const edge = (u, v) => { const f = { to: v, cap: 1, fw: true }, r = { to: u, cap: 0, rev: f }; f.rev = r; g[u].push(f); g[v].push(r); };
+  for (let i = 0; i < N; i++) edge(2 * i, 2 * i + 1);
+  for (const [n, es] of adj) for (const e of es) if (e.id !== devId) edge(2 * idx.get(n) + 1, 2 * idx.get(e.to));
+  edge(X, 2 * idx.get(a)); edge(X, 2 * idx.get(b));
+  for (const n of new Set(srcNodes)) edge(2 * idx.get(n) + 1, SS);
+  for (const n of new Set(loadNodes)) edge(2 * idx.get(n) + 1, LL);
+  edge(SS, Y); edge(LL, Y);
+  for (let k = 0; k < 2; k++) {
+    const prev = new Array(Y + 1).fill(null), q = [X];
+    prev[X] = true;
+    for (let i = 0; i < q.length && !prev[Y]; i++) for (const f of g[q[i]]) if (f.cap > 0 && prev[f.to] === null) { prev[f.to] = f; q.push(f.to); }
+    if (!prev[Y]) return null;
+    for (let v = Y; v !== X;) { const f = prev[v]; f.cap--; f.rev.cap++; v = f.rev.to; }
+  }
+  const walk = v => {
+    const path = [];
+    while (v !== SS && v !== LL) { if (v % 2 === 0) path.push(nodes[v / 2]); v = g[v].find(e => e.fw && e.cap === 0).to; }
+    return { path, end: v };
+  };
+  const two = g[X].filter(e => e.fw && e.cap === 0).map(e => walk(e.to));
+  const src = two.find(w => w.end === SS), load = two.find(w => w.end === LL);
+  return src && load ? { src: src.path, load: load.path } : null;
+}
+
 const fmtTime = sec => { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); };
 const capFirst = t => t.charAt(0).toUpperCase() + t.slice(1);
 
 class Trainer {
   constructor() {
     this.ls = new Set();
-    this.opt = { interlocks: true, requireCheck: true };
+    // explain — пояснения «почему допустимо» в журнале (ток холостого хода); в экзамене выключены
+    this.opt = { interlocks: true, requireCheck: true, explain: true };
     this.log = []; this.run = null; this.rec = null;
     this.addons = [];
   }
@@ -300,6 +340,7 @@ class Trainer {
     return res;
   }
   analyzeNet(el, T, tm, nxt, racking, before, after) {
+    let note = null;
     const conflict = [...after.V.keys()].filter(n => after.G.has(n));
     if (conflict.length) {
       const earths = this.earthsNear(after, conflict, el.id, nxt.on);
@@ -364,11 +405,98 @@ class Trainer {
                                  : `Блокировка: нагрузку ${racking ? 'тележкой' : T.sw === 'fuse' ? 'предохранителем' : T.by || 'этим аппаратом'} не включают. ${q ? 'Отключите ' + this.nm(q) + ', затем включайте.' : 'Включайте нагрузку выключателем.'}` },
           faultNodes: side.length ? side : [tm[0]] };
       }
+      // потребители питание не теряют, но ток нагрузки через аппарат идёт: параллельное питание
+      const wasOn = conducts(el, this.sim.st[el.id]), isOn = conducts(el, nxt);
+      if (wasOn !== isOn) {
+        const pl = this.parallelLoad(el, tm, wasOn, before, after);
+        const head = racking ? `тележка ${el.name}` : el.name;
+        if (pl) {
+          const { fed, via, par, q } = pl;
+          return {
+            viol: { kind: 'accident',
+                    text: wasOn ? `Авария: ${what} разорван ток нагрузки: ${fed} питается и через ${via} (параллельно — через ${par}). ${arcAt}`
+                                : `Авария: ${what} включена параллель под нагрузкой: ${fed} питается через ${par}, а теперь и через ${via}. ${arcAt}`,
+                    block: wasOn ? `Блокировка: ${head} под нагрузкой — ${fed} питается и через ${via} (параллельно — через ${par}). ${q ? 'Сначала отключите ' + this.nm(q) + '.' : 'Сначала снимите нагрузку выключателем.'}`
+                                 : `Блокировка: ${head} не включается под нагрузкой — ${fed} уже питается через ${par}, включение замкнёт параллель через ${via}. ${q ? 'Отключите ' + this.nm(q) + ', затем включайте.' : 'Включайте выключателем.'}` },
+            faultNodes: tm };
+        }
+        // отключён или включён ненагруженный трансформатор: ток холостого хода — допустимо (правило 4), пояснение в журнал
+        const lit = (st, t) => this.topo.term.get(t.id).some(n => st.V.has(n));
+        const xx = this.s.els.filter(t => TYPES[t.t].cls === 'transformer' && lit(before, t) !== lit(after, t));
+        if (xx.length) {
+          const by = racking ? `тележкой ${el.name}` : `${T.sw === 'fuse' ? 'предохранителем' : T.by || 'аппаратом'} ${el.name}`;
+          note = `Допустимо: ${by} ${wasOn ? 'отключён' : 'включён'} ток холостого хода ${this.names(xx.map(t => t.id))} (${xx.length > 1 ? 'трансформаторы' : 'трансформатор'} без нагрузки).`;
+        }
+      }
     }
     if (T.cls === 'earth' && T.ek !== 'kz' && nxt.on && this.needCheck() && !this.sim.checked.has(tm[0])) {
       return { viol: { kind: 'proc', text: `Нарушение порядка: ${el.name} ${T.ek === 'pz' ? 'наложено' : 'включён'} без проверки отсутствия напряжения указателем.` }, faultNodes: [] };
     }
-    return { viol: null, faultNodes: [] };
+    return { viol: null, faultNodes: [], note };
+  }
+
+  // Правило 4 при параллельном питании: через аппарат без дугогашения идёт ток нагрузки, хотя потребители питание не теряют.
+  // opening — аппарат отключают (граф с аппаратом — до операции), иначе включают (после; обе стороны должны быть под напряжением).
+  // Шунт — выводы соединены и без аппарата только коммутационными аппаратами, ТТ, шинами и проводами: ток через аппарат почти нулевой.
+  // Возвращает { fed — что питается, via — через что (присоединение аппарата), par — параллельный путь, q — чем снять ток } или null
+  parallelLoad(el, tm, opening, before, after) {
+    const withDev = opening ? before : after, without = opening ? after : before;
+    if (!opening && !(before.V.has(tm[0]) && before.V.has(tm[1]))) return null;
+    if (this.shunted(without.adj, tm[0], tm[1], el.id)) return null;
+    const loadNodes = [...withDev.cur].map(i => this.topo.term.get(i)[0]);
+    const p = feedPaths(withDev.adj, tm[0], tm[1], [...withDev.srcNodes], loadNodes, el.id);
+    if (!p) return null;
+    const elAt = (n, f) => (this.topo.nodeEls.get(n) || []).find(i => { const e = this.byId.get(i); return e && f(e); });
+    // что питается: первая шина на пути к потребителю, без шин — сам потребитель
+    let fedNode = p.load.find(n => this.topo.busNodes.has(n)), fed;
+    if (fedNode != null) fed = this.nm(elAt(fedNode, e => e.t === 'bus'));
+    else { fedNode = p.load[p.load.length - 1]; const l = elAt(fedNode, e => withDev.cur.has(e.id)); fed = l ? this.nm(l) : this.nodeName(fedNode); }
+    // через что: трансформатор присоединения (не выходя на шины), иначе выключатель цепочки, иначе источник
+    const via = this.viaOf(el.id, tm, withDev) || elAt(p.src[p.src.length - 1], e => TYPES[e.t].cls === 'source');
+    const par = this.parallelOf(fedNode, without, el.id);
+    return { fed, via: via ? this.nm(via) : 'другой путь', par: par ? this.nm(par) : 'другой путь', q: this.seriesBreaker(el.id, before) };
+  }
+  shunted(adj, a, b, id) {
+    const seen = new Set([a]), q = [a];
+    for (let i = 0; i < q.length; i++) for (const e of adj.get(q[i]) || []) {
+      if (e.id === id || e.k !== 'sw' || seen.has(e.to)) continue;
+      const x = this.byId.get(e.id);
+      if (TYPES[x.t].cls !== 'switch' && x.t !== 'ct') continue;
+      if (e.to === b) return true;
+      seen.add(e.to); q.push(e.to);
+    }
+    return false;
+  }
+  // Присоединение аппарата: ближайший трансформатор, не выходя на шины; нет — выключатель той же цепочки
+  viaOf(id, tm, st) {
+    const seen = new Set(tm), q = tm.filter(n => !this.topo.busNodes.has(n));
+    for (let i = 0; i < q.length; i++) for (const e of st.adj.get(q[i]) || []) {
+      if (e.id === id) continue;
+      if (e.k === 'tr') return e.id;
+      if (!seen.has(e.to) && !this.topo.busNodes.has(e.to)) { seen.add(e.to); q.push(e.to); }
+    }
+    return this.seriesBreaker(id, st);
+  }
+  // Параллельный путь от того, что питается, к источнику без аппарата: через другую шину — первый выключатель после шины (СВ-10),
+  // иначе — трансформатор, которым идёт питание (Т2), иначе источник
+  parallelOf(from, st, id) {
+    const prev = new Map([[from, null]]), q = [from];
+    let end = null;
+    for (let i = 0; i < q.length && end == null; i++) for (const e of st.adj.get(q[i]) || []) {
+      if (e.id === id || prev.has(e.to)) continue;
+      prev.set(e.to, { e, from: q[i] }); q.push(e.to);
+      if (st.srcNodes.has(e.to)) { end = e.to; break; }
+    }
+    if (end == null) return null;
+    const path = [];
+    for (let n = end; prev.get(n); n = prev.get(n).from) path.unshift(prev.get(n).e);
+    let crossed = false, lb = null;
+    for (const e of path) {
+      if (e.k === 'tr') return crossed && lb ? lb : e.id;
+      if (!lb && e.lb) lb = e.id;
+      if (this.topo.busNodes.has(e.to)) crossed = true;
+    }
+    return crossed && lb ? lb : (this.topo.nodeEls.get(end) || []).find(i => TYPES[this.byId.get(i).t].cls === 'source') || null;
   }
 
   // Включённые ЗН, КЗ и ПЗ, которые заземляют участок с конфликтом
@@ -498,6 +626,8 @@ class Trainer {
       this.addLog('info', cur.blown ? `Заменён предохранитель ${el.name}.` : `${nxt.on ? did[0] : did[1]} ${el.name}${T.cart && cur.pos !== 'work' ? ` (тележка в ${POS_NAME[cur.pos]} положении)` : ''}.`, id);
       this.record({ op: nxt.on ? 'on' : 'off', id });
     }
+    // почему операция допустима (ток холостого хода трансформатора) — пояснение, не ошибка; в экзамене выключено
+    if (!a.viol && a.note && this.opt.explain) this.addLog('info', a.note, id);
     let tripped = [];
     if (severe) {
       this.addLog('err', a.viol.text, id);
@@ -764,4 +894,4 @@ class Trainer {
   cancelRec() { this.rec = null; this.addLog('info', 'Запись отменена.'); this.emit('rec', { cancel: true }); }
 }
 
-export { buildTopo, makeSim, compute, conducts, pzNode, fmtTime, capFirst, Trainer };
+export { buildTopo, makeSim, compute, conducts, pzNode, feedPaths, fmtTime, capFirst, Trainer };

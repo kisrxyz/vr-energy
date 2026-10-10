@@ -412,10 +412,29 @@ class Scheme2D {
     for (const w of this.app.scheme.wires) for (const end of ['a', 'b']) if (keys.has(ptKey(w[end]))) out.push({ w, end, x: w[end][0], y: w[end][1] });
     return out;
   }
+  // Что под точкой окна: элемент или провод (точки подключения и ручки лежат поверх — смотрим под ними) — для меню ПКМ
+  ctxAt(cx, cy) {
+    const under = (document.elementsFromPoint ? document.elementsFromPoint(cx, cy) : []).map(n => n.closest && n.closest('[data-el], [data-w]')).find(Boolean);
+    const c = { cx, cy, p: this.toWorld(cx, cy) };
+    if (under && under.dataset.el) c.el = under.dataset.el;
+    else if (under && under.dataset.w) c.w = under.dataset.w;
+    return c;
+  }
+  // Долгое нажатие пальцем (~0,5 с без сдвига) — меню, как правая кнопка мыши: начатое нажатием (перенос, рамка) отменяется
+  longPress() {
+    this.lp = null;
+    if (this.pointers.size !== 1 || !this.down || this.down.moved) return;
+    const c = this.ctxAt(this.down.x, this.down.y);
+    this.drag = null;
+    this.overlayExtra();
+    this.down.long = true;
+    this.app.openCtx(c);
+  }
   onDown(e) {
     this.app.userGesture();
     try { this.svg.setPointerCapture(e.pointerId); } catch (_) { /* старые браузеры */ }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    clearTimeout(this.lp); this.lp = null;
     if (this.pointers.size === 2) {
       const [p1, p2] = [...this.pointers.values()];
       const r = this.svg.getBoundingClientRect();
@@ -432,7 +451,10 @@ class Scheme2D {
     const pt = t.getAttribute('data-pt'), we = t.getAttribute('data-we'), bh = t.getAttribute('data-bh');
     this.down = { x: e.clientX, y: e.clientY, moved: false };
     const pan = extra => Object.assign({ kind: 'pan', x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty }, extra || {});
-    if (e.button === 1 || e.button === 2) { this.drag = pan(); return; }
+    // правая кнопка: перетаскивание — сдвинуть схему, щелчок без сдвига — меню
+    if (e.button === 1 || e.button === 2) { this.drag = pan({ ctx: e.button === 2 }); return; }
+    // ручки концов провода и длины шины меняют схему сразу — у них долгого нажатия нет
+    if (e.pointerType === 'touch' && !this.placing && !we && !bh) this.lp = setTimeout(() => this.longPress(), 500);
     if (!edit) {
       const at = { cx: e.clientX, cy: e.clientY, p };
       this.drag = pan({ click: elG ? Object.assign({ el: elG.dataset.el }, at) : wG ? Object.assign({ w: wG.dataset.w }, at) : null });
@@ -485,7 +507,7 @@ class Scheme2D {
     }
     const p = this.toWorld(e.clientX, e.clientY), g = [Math.round(p[0]), Math.round(p[1])];
     this.cursorW = p;
-    if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 5) this.down.moved = true;
+    if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 5) { this.down.moved = true; clearTimeout(this.lp); this.lp = null; }
     if (!d) {
       if (this.placing) { if (!this.ghostAt || this.ghostAt[0] !== g[0] || this.ghostAt[1] !== g[1]) { this.ghostAt = g; this.overlayExtra(); } }
       return;
@@ -528,12 +550,14 @@ class Scheme2D {
   }
   onUp(e, cancel) {
     this.pointers.delete(e.pointerId);
+    clearTimeout(this.lp); this.lp = null;
     const d = this.drag;
     if (d && d.kind === 'pinch') { if (this.pointers.size === 0) this.drag = null; return; }
     this.drag = null;
     const moved = this.down && this.down.moved;
     this.down = null;
     if (!d) return;
+    if (d.kind === 'pan' && d.ctx) { if (!moved && !cancel) this.app.openCtx(this.ctxAt(e.clientX, e.clientY)); return; }
     if (d.kind === 'wire') {
       if (!cancel && (d.b[0] !== d.a[0] || d.b[1] !== d.a[1])) this.app.addWire(d.a, d.b, d.vf);
       this.overlayExtra();

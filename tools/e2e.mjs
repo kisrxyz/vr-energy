@@ -1102,6 +1102,185 @@ SUITES.select = { perScheme: false, fn: async () => {
   });
 } };
 
+// ---------- меню по правой кнопке (на телефоне — долгое нажатие) ----------
+const menuState = `(() => { const m = document.getElementById('ctxmenu'); if (!m) return null; const r = m.getBoundingClientRect();
+  return { title: (m.querySelector('.ctxmenu-h') || {}).textContent || '', items: [...m.querySelectorAll('[data-i]')].map(b => ({ t: b.querySelector('span').textContent, k: (b.querySelector('kbd') || {}).textContent || '' })),
+    inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight }; })()`;
+// Открыть меню у аппарата, провода или точки: ПКМ мышью или долгое нажатие пальцем
+async function openMenu(target, finger) {
+  const p = target.x != null ? target : await page.fn(t => E2E.hit(t), target);
+  if (!p || p.ok === false) fail('не попасть в ' + target + (p && p.why ? ': ' + p.why : ''));
+  if (finger) { await touch('touchStart', [[p.x, p.y]]); await sleep(650); await touch('touchEnd', []); }
+  else await page.click(p.x, p.y, 'right');
+  await page.waitFor('!!document.getElementById("ctxmenu")', 1500, 'меню');
+  const m = await page.eval(menuState);
+  if (!m.inside) fail('меню выходит за экран');
+  return m;
+}
+async function menuPick(label) {
+  const b = await page.fn(t => { const b = [...document.querySelectorAll('#ctxmenu [data-i]')].find(x => x.querySelector('span').textContent === t); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }, label);
+  if (!b) fail(`в меню нет «${label}»: ${(await page.eval(menuState) || { items: [] }).items.map(i => i.t).join(', ')}`);
+  await page.click(b.x, b.y);
+  await sleep(60);
+  if (await page.eval('!!document.getElementById("ctxmenu")')) fail('меню не закрылось после пункта');
+}
+// Действие плана через меню: тот же пункт, что у тележки, или единственная операция аппарата, указатель, ПЗ
+async function actMenu(a) {
+  if (a.do === 'switch' || a.do === 'rack') {
+    await openMenu(a.id);
+    await menuPick(a.menu || await page.fn(id => TS.app.tr.actions(id)[0].label, a.id));
+    return;
+  }
+  if (a.do === 'check') { await openMenu(a.target); await menuPick('Проверить отсутствие напряжения'); return; }
+  if (a.do === 'pz') {
+    const m = await openMenu(a.target);
+    await menuPick(m.items.some(i => i.t === 'Снять ПЗ') ? 'Снять ПЗ' : 'Наложить ПЗ');
+    return;
+  }
+  fail('действие не для меню: ' + a.do);
+}
+SUITES.ctxmenu = { perScheme: false, fn: async () => {
+  await check('ctxmenu', 'редактор', async () => {
+    await chooseScheme('ps110');
+    await setMode('edit');
+    const id = await elId('ШР Л-1');
+    let m = await openMenu(id);
+    const want = [['Повернуть', 'R'], ['Копировать', 'Ctrl+C'], ['Свойства', ''], ['Подробнее', ''], ['Удалить', 'Del']];
+    if (want.some(([t, k]) => !m.items.some(i => i.t === t && i.k === k))) fail('пункты элемента: ' + JSON.stringify(m.items));
+    if (SHOTS) await page.shot(`${OUT}/ctxmenu-edit.png`);
+    const u0 = await page.eval('TS.app.undoStack.length');
+    await menuPick('Повернуть');
+    if ((await page.eval(`TS.app.scheme.els.find(e => e.id === '${id}').r`)) !== 1) fail('«Повернуть» не повернул');
+    await openMenu(id); await menuPick('Свойства');
+    if (!(await page.eval(`document.getElementById('propSec').classList.contains('lit')`))) fail('«Свойства» не подсветил панель');
+    await openMenu(id); await menuPick('Подробнее');
+    if (!(await page.eval(`!document.getElementById('modal').hidden && /Разъединитель/.test(document.getElementById('dlgT').textContent)`))) fail('«Подробнее» не открыл справку');
+    await closeModal();
+    await openMenu(id); await menuPick('Копировать');
+    await openMenu(id); await menuPick('Удалить');
+    if (await page.eval(`TS.app.scheme.els.some(e => e.id === '${id}')`)) fail('«Удалить» не удалил');
+    if ((await page.eval('TS.app.undoStack.length')) !== u0 + 2) fail('повернуть и удалить — не по одному шагу «Отменить»');
+    // пустое место: «Вставить сюда» — копия ШР Л-1 в точку щелчка
+    const n0 = await page.eval('TS.app.scheme.els.length');
+    m = await openMenu(Object.assign({ ok: true }, await page.fn(() => { const [x, y] = E2E.toScreen([22, 44]); return { x, y }; })));
+    if (m.items.length !== 1 || m.items[0].t !== 'Вставить сюда' || m.items[0].k !== 'Ctrl+V') fail('пустое место: ' + JSON.stringify(m.items));
+    await menuPick('Вставить сюда');
+    const pasted = await page.eval(`TS.app.scheme.els.slice(-1)[0]`);
+    if ((await page.eval('TS.app.scheme.els.length')) !== n0 + 1 || Math.abs(pasted.x - 22) > 1 || Math.abs(pasted.y - 44) > 2) fail('вставка не в точку щелчка: ' + JSON.stringify([pasted.x, pasted.y]));
+    // Esc и щелчок мимо закрывают
+    await openMenu(await elId('В-10 Л-2'));
+    await page.key('Escape');
+    if (await page.eval('!!document.getElementById("ctxmenu")')) fail('Esc не закрыл меню');
+    await openMenu(await elId('В-10 Л-2'));
+    await page.click(200, 300);
+    if (await page.eval('!!document.getElementById("ctxmenu")')) fail('щелчок мимо не закрыл меню');
+    // стрелки и Enter
+    await openMenu(await elId('В-10 Л-2'));
+    await page.key('ArrowDown'); await page.key('ArrowUp'); await page.key('Enter');
+    await sleep(60);
+    if ((await page.eval(`TS.app.scheme.els.find(e => e.name === 'В-10 Л-2').r`)) !== 1) fail('стрелки и Enter не выбрали «Повернуть»');
+    for (let i = 0; i < 4; i++) await page.key('KeyZ', { mods: 2 });
+    await sleep(60);
+    const back = await page.eval(`({ shr: TS.app.scheme.els.find(e => e.name === 'ШР Л-1'), n: TS.app.scheme.els.length, v: TS.app.scheme.els.find(e => e.name === 'В-10 Л-2').r })`);
+    if (!back.shr || back.shr.r !== 0 || back.n !== n0 + 1 || back.v !== 0) fail('Ctrl+Z не вернул схему: ' + JSON.stringify({ r: back.shr && back.shr.r, n: back.n - n0 - 1, v: back.v }));
+    return 'повернуть, свойства, подробнее, копировать, удалить, вставить, Esc, мимо, стрелки + Enter, Ctrl+Z';
+  });
+  await check('ctxmenu', 'переключения: журнал как от щелчка', async () => {
+    await chooseScheme('ps110');
+    await setMode('train');
+    const id = await elId('В-10 Л-2');
+    const m = await openMenu(id);
+    if (!m.items.some(i => i.t === 'Отключить') || !m.items.some(i => i.t === 'Проверить отсутствие напряжения' && i.k === 'V') || !m.items.some(i => i.t === 'Подробнее')) fail('пункты аппарата: ' + JSON.stringify(m.items));
+    if (SHOTS) await page.shot(`${OUT}/ctxmenu-train.png`);
+    await menuPick('Отключить');
+    const a = await page.eval(`({ log: TS.app.tr.log.slice(0, 2).map(e => e.text).join(' / '), on: TS.app.tr.sim.st['${id}'].on, tool: TS.app.tool })`);
+    await clickBtn('[data-act="reset"]', null, '«Нормальный режим»');
+    await clickAt(await page.fn(t => E2E.hit(t), id), 'В-10 Л-2');
+    const b = await page.eval(`({ log: TS.app.tr.log.slice(0, 2).map(e => e.text).join(' / '), on: TS.app.tr.sim.st['${id}'].on, tool: TS.app.tool })`);
+    if (a.log !== b.log || a.on !== b.on || a.on !== false) fail(`меню: «${a.log}», щелчок: «${b.log}»`);
+    // указатель и ПЗ из меню: инструмент панели не включается
+    const w = await page.eval(`TS.app.scheme.wires.find(w => TS.app.tr.topo.wireNode.get(w.id) === TS.app.tr.topo.term.get(TS.app.scheme.els.find(e => e.name === 'ЛР Л-2').id)[1]).id`);
+    await openMenu(await elId('ЛР Л-2')); await menuPick('Отключить');
+    await openMenu(w); await menuPick('Проверить отсутствие напряжения');
+    const c = await page.eval(`({ log: TS.app.tr.log[0].text, tool: TS.app.tool })`);
+    if (!/^Указатель напряжения/.test(c.log) || c.tool) fail('указатель из меню: ' + JSON.stringify(c));
+    await openMenu(w); await menuPick('Наложить ПЗ');
+    const d = await page.eval(`({ log: TS.app.tr.log[0].text, pz: TS.app.tr.pzOn().length, tool: TS.app.tool })`);
+    if (!/^Наложено ПЗ/.test(d.log) || d.pz !== 1 || d.tool) fail('ПЗ из меню: ' + JSON.stringify(d));
+    const pz = await page.eval('TS.app.tr.pzOn()[0]');
+    await openMenu(pz); await menuPick('Снять ПЗ');
+    if (await page.eval('TS.app.tr.pzOn().length')) fail('«Снять ПЗ» не снял');
+    await clickBtn('[data-act="reset"]', null, '«Нормальный режим»');
+    return `«${a.log}» — и меню, и щелчок; указатель, ПЗ наложить и снять — без инструмента панели`;
+  });
+  // задания целиком через меню: 100 баллов, как щелчками (разъединители, тележки КРУ, указатель, ПЗ)
+  for (const key of ['ps110', 'ps35', 'rp10']) await check('ctxmenu', `задание ${key} #1 через меню`, async () => {
+    await openScheme(key);
+    await startTask(0);
+    const plan = await page.eval('TS.Plan.planTask(TS.app.scheme, TS.app.tr.run.task)');
+    for (let i = 0; i < plan.length; i++) {
+      const before = await page.eval('E2E.run()');
+      await actMenu(plan[i]);
+      const after = await page.eval('E2E.run()');
+      if (after.errors.length > before.errors.length) fail(`шаг ${i + 1}: ${after.errors.slice(-1)[0]}`);
+      if (after.ops !== before.ops + 1) fail(`шаг ${i + 1}: операция не записана`);
+    }
+    const r = await waitReport();
+    if (r.score !== 100 || r.verdict !== 'Выполнено без ошибок') fail(`отчёт: ${r.score}, «${r.verdict}»`);
+    await closeModal();
+    return `${plan.length} действий через меню, 100 баллов`;
+  });
+  await check('ctxmenu', 'телефон: долгое нажатие', async () => {
+    await reopen(true);
+    try {
+      await chooseScheme('ps110');
+      await setMode('train');
+      await page.fn(() => E2E.centerOn([13, 40], 1));
+      const id = await elId('В-10 Л-2');
+      const m = await openMenu(id, true);
+      if (!m.items.some(i => i.t === 'Отключить')) fail('пункты: ' + JSON.stringify(m.items));
+      if (SHOTS) await page.shot(`${OUT}/ctxmenu-phone.png`);
+      if (await page.eval(`TS.app.tr.sim.st['${id}'].on !== true`)) fail('долгое нажатие переключило аппарат');
+      await menuPick('Проверить отсутствие напряжения');
+      if (!(await page.eval(`/^Указатель напряжения на В-10 Л-2/.test(TS.app.tr.log[0].text)`))) fail('указатель из меню на телефоне');
+      // короткое касание — переключает, перетаскивание — сдвигает схему, меню нет
+      const p = await page.fn(t => E2E.hit(t), id);
+      await page.tap(p.x, p.y);
+      await sleep(100);
+      if (await page.eval(`TS.app.tr.sim.st['${id}'].on !== false`)) fail('касание не переключило');
+      const tx = await page.eval('TS.app.view.tx');
+      await drag([p.x, p.y + 60], [p.x + 80, p.y + 60], true, 6);
+      if (await page.eval('!!document.getElementById("ctxmenu")') || (await page.eval('TS.app.view.tx')) === tx) fail('перетаскивание: меню или схема не сдвинулась');
+      await touch('touchStart', [[p.x + 80, p.y + 60]]); await sleep(150); await touch('touchMove', [[p.x + 120, p.y + 60]]); await sleep(500); await touch('touchEnd', []);
+      if (await page.eval('!!document.getElementById("ctxmenu")')) fail('меню открылось, хотя палец сдвинулся');
+      // редактор: долгое нажатие — меню элемента, «Повернуть»
+      await setMode('edit');
+      await page.fn(() => E2E.centerOn([13, 40], 1));
+      await openMenu(await elId('ШР Л-2'), true);
+      await menuPick('Повернуть');
+      if ((await page.eval(`TS.app.scheme.els.find(e => e.name === 'ШР Л-2').r`)) !== 1) fail('«Повернуть» на телефоне');
+      if (SHOTS) { await openMenu(await elId('ШР Л-2'), true); await page.shot(`${OUT}/ctxmenu-phone-edit.png`); await page.key('Escape'); }
+      return 'долгое нажатие — меню, касание — переключить, перетаскивание — без меню';
+    } finally { await reopen(false); }
+  });
+  await check('ctxmenu', 'экзамен: только разрешённое', async () => {
+    await chooseScheme('ps110');
+    await setMode('train');
+    await examSetup({ tasks: 1, fio: 'Менюшкин Пётр' });
+    const m = await openMenu(await elId('В-10 Л-1'));
+    if (m.items.some(i => /Подробнее/.test(i.t))) fail('в экзамене есть «Подробнее»');
+    if (!m.items.some(i => i.t === 'Отключить') || !m.items.some(i => i.t === 'Проверить отсутствие напряжения')) fail('в экзамене нет операции или указателя: ' + JSON.stringify(m.items));
+    const s = await openMenu(await elId('ВЛ-110 «Восток»'));
+    if (s.items.some(i => /энергосистем/.test(i.t))) fail('в задании можно снять напряжение энергосистемы');
+    await page.key('Escape');
+    await clickBtn('[data-act="exam-abort"]', null, '«Прервать экзамен»');
+    await clickBtn('#modal footer .btn', 'Прервать');
+    await page.waitFor('!TS.app.exam.active()', 3000, 'экзамен прерван');
+    await closeModal();
+    return 'операции и указатель есть, «Подробнее» и источника нет';
+  });
+} };
+
 const SCENE_BASE = new URL('../tests/scene3d-base.json', import.meta.url);
 SUITES.scene3d = { perScheme: true, fn: async keys => {
   const base = existsSync(SCENE_BASE) ? JSON.parse(readFileSync(SCENE_BASE, 'utf8')) : {};

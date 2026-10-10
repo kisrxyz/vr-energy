@@ -14,6 +14,7 @@ import { Sound } from './ui/sound.js';
 import { View3D } from './view3d/view3d.js';
 import { Demo } from './ui/demo.js';
 import { Exam } from './ui/exam.js';
+import { CtxMenu } from './ui/ctxmenu.js';
 
 /* ===== Приложение: режимы, правка схемы, связка движка с 2D, 3D и панелями =====
    source — откуда схема: ключ готовой схемы (SAMPLES) или 'my:<id>' — запись в «Моих схемах» (src/ui/myschemes.js).
@@ -45,6 +46,8 @@ const app = Object.assign({
     // VR-полигон: СИЗ, плакаты, замок, порядок мероприятий — дополнение движка (до остальных слушателей)
     this.permit = this.tr.use(new Permit());
     this.view = new Scheme2D(this, document.getElementById('sch'));
+    // меню по правой кнопке и долгому нажатию на 2D-схеме (src/ui/ctxmenu.js)
+    this.ctx = new CtxMenu(this);
     this.buildPalette();
     this.bindUI();
     this.tr.on((type, d) => this.onTrainer(type, d));
@@ -97,6 +100,7 @@ const app = Object.assign({
     this.scheme = s; this.source = source; this.schemeVersion++;
     this.undoStack = []; this.redoStack = []; this.taskIdx = 0;
     this.view.sel = null; this.view.setPlacing(null); this.paletteState(null);
+    if (this.ctx) this.ctx.close();
     this.tr.load(s);
     this.fillSchemeSelect();
     this.polyTools();
@@ -165,6 +169,7 @@ const app = Object.assign({
       this.tr.run = null; this.tool = null;
     } else { this.view.setPlacing(null); this.paletteState(null); }
     this.mode = m;
+    this.ctx.close();
     this.polyTools();
     const root = document.getElementById('app');
     root.dataset.mode = m; root.dataset.tool = this.tool || '';
@@ -222,14 +227,39 @@ const app = Object.assign({
   },
 
   // ---------- действия на схеме ----------
-  pick2D(c) {
-    if (this.tool === 'pz') {
+  // Щелчок по схеме в тренажёре; tool — инструмент (по умолчанию — включённый в панели): так же идут пункты меню ПКМ
+  pick2D(c, tool = this.tool) {
+    if (tool === 'pz') {
       if (c.w) { const w = this.scheme.wires.find(v => v.id === c.w); this.tr.pzToggle(c.w, w && c.p ? nearestOnWire(w, c.p) : null); return; }
       if (c.el) this.pzAt(c.el, c.p);
       return;
     }
-    if (c.el) { this.pickEl(c.el, this.tool === 'check', c); return; }
-    if (c.w && this.tool === 'check') this.tr.check(c.w);
+    if (c.el) { this.pickEl(c.el, tool === 'check', c); return; }
+    if (c.w && tool === 'check') this.tr.check(c.w);
+  },
+  // Действие аппарата из меню (тележка КРУ, меню ПКМ): то же, что щелчок
+  doAct(id, a) { this.tr.operate(id, a && a.pos ? { pos: a.pos } : undefined); },
+  // Меню по правой кнопке (на телефоне — долгое нажатие): c — { el?, w?, p, cx, cy }
+  openCtx(c) {
+    if (this.mode === '3d') return false;
+    this.closeActMenu();
+    // элемент из палитры «в руке»: правая кнопка — отменить, как Esc
+    if (this.mode === 'edit' && this.view.placing) { this.view.setPlacing(null); this.paletteState(null); return false; }
+    return this.ctx.open(c);
+  },
+  // «Свойства» из меню: панель справа (на телефоне — снизу) прокручивается к свойствам, раздел подсвечивается
+  showProps() {
+    const sec = document.getElementById('propSec');
+    if (!sec) return;
+    sec.scrollIntoView({ block: 'nearest' });
+    sec.classList.remove('lit'); void sec.offsetWidth; sec.classList.add('lit');
+  },
+  // «Подробнее» об элементе схемы: что это, зачем, переключения, как ведёт себя в тренажёре
+  showMore(id) {
+    const el = this.tr.elOf(id) || this.scheme.els.find(e => e.id === id);
+    if (!el || !GLOSSARY[el.t]) return;
+    const T = TYPES[el.t];
+    this.openModal(`${el.name} · ${T.title}`, this.moreHTML(el.t, true), [{ label: 'Понятно', primary: true, act: () => this.closeModal() }]);
   },
   // ПЗ инструментом: на шину — наложить, на значок ПЗ — снять, на аппарат — подсказать
   pzAt(id, p) {
@@ -282,7 +312,7 @@ const app = Object.assign({
       if (!b) return;
       const a = acts[+b.dataset.i];
       this.closeActMenu();
-      this.tr.operate(id, a.pos ? { pos: a.pos } : undefined);
+      this.doAct(id, a);
     });
     const f = m.querySelector('button');
     if (f) f.focus();
@@ -311,7 +341,7 @@ const app = Object.assign({
   whyToast(e) { return this.mode === '3d' && !(this.v3 && this.v3.ready && this.v3.fpsOn()) ? whyOf(e) : null; },
   onTrainer(type, d) {
     if (type === 'state') {
-      this.closeActMenu();
+      this.closeActMenu(); this.ctx.close();
       if (this.mode !== 'edit') this.view.render();
       if (this.v3 && this.v3.ready) this.v3.update();
       // «Нормальный режим», новое задание, «Ещё раз»: предметы полигона — с рук и с пола на стенд
@@ -462,13 +492,17 @@ const app = Object.assign({
     this.toast(`Скопировано: ${countText(clip.els.length, clip.wires.length)}. Ctrl+V — вставить (и в другую схему).`);
     return true;
   },
-  // Вставка под курсор (центр группы — в клетку под курсором); курсор не над схемой — в середину видимого
-  paste() {
+  clipboard() {
     let clip = this.clip;
     if (!clip) { try { clip = JSON.parse(store.get('ts.clip') || 'null'); } catch (e) { clip = null; } }
-    if (!clip || clip.kind !== 'ts-group') { this.toast('Буфер пуст: выделите элементы и нажмите Ctrl+C.'); return; }
+    return clip && clip.kind === 'ts-group' ? clip : null;
+  },
+  // Вставка под курсор (центр группы — в клетку под курсором; из меню — в точку щелчка); курсор не над схемой — в середину видимого
+  paste(to) {
+    const clip = this.clipboard();
+    if (!clip) { this.toast('Буфер пуст: выделите элементы и нажмите Ctrl+C.'); return; }
     const v = this.view, r = v.svg.getBoundingClientRect();
-    const at = v.cursorW || v.toWorld(r.left + r.width / 2, r.top + r.height / 2);
+    const at = to || v.cursorW || v.toWorld(r.left + r.width / 2, r.top + r.height / 2);
     this.history();
     const res = Ed.pasteGroup(this.scheme, clip, Math.round(at[0] - clip.w / 2), Math.round(at[1] - clip.h / 2));
     this.commit();
